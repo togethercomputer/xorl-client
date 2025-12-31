@@ -15,6 +15,16 @@ from typing import Any, Dict, Optional
 
 import requests
 
+from xorl_client.exceptions import (
+    APIConnectionError,
+    APITimeoutError,
+    APIStatusError,
+    BadRequestError,
+    AuthenticationError,
+    NotFoundError,
+    InternalServerError,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,6 +39,7 @@ class ClientHolder:
 
     Args:
         base_url: Base URL for the training API (e.g., "http://localhost:5555")
+        api_key: API key for authentication (optional)
         timeout: Default timeout for HTTP requests in seconds
         **kwargs: Additional arguments (for future compatibility)
     """
@@ -36,10 +47,12 @@ class ClientHolder:
     def __init__(
         self,
         base_url: str = "http://localhost:5555",
+        api_key: Optional[str] = None,
         timeout: float = 300.0,
         **kwargs: Any,
     ):
         self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
         self.timeout = timeout
 
         # Session management
@@ -56,6 +69,8 @@ class ClientHolder:
 
         # HTTP session
         self._http_session = requests.Session()
+        if self.api_key:
+            self._http_session.headers["Authorization"] = f"Bearer {self.api_key}"
 
         logger.info(f"ClientHolder initialized: session_id={self._session_id}, base_url={self.base_url}")
 
@@ -131,7 +146,13 @@ class ClientHolder:
             Response JSON
 
         Raises:
-            RuntimeError: If request fails
+            APIConnectionError: If unable to connect to the server
+            APITimeoutError: If the request times out
+            BadRequestError: If the server returns HTTP 400
+            AuthenticationError: If the server returns HTTP 401
+            NotFoundError: If the server returns HTTP 404
+            InternalServerError: If the server returns HTTP 500+
+            APIStatusError: For other HTTP errors
         """
         url = f"{self.base_url}{endpoint}"
         timeout_val = timeout if timeout is not None else self.timeout
@@ -140,21 +161,51 @@ class ClientHolder:
             response = self._http_session.post(url, json=data, timeout=timeout_val)
             response.raise_for_status()
             return response.json()
+        except requests.exceptions.ConnectTimeout as e:
+            logger.error(f"POST {url} connection timed out")
+            raise APITimeoutError(url, timeout_val, e) from e
+        except requests.exceptions.ReadTimeout as e:
+            logger.error(f"POST {url} read timed out")
+            raise APITimeoutError(url, timeout_val, e) from e
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"POST {url} connection failed: {e}")
+            raise APIConnectionError(url, e) from e
         except requests.exceptions.HTTPError as e:
             # Extract error detail if available
-            error_detail = str(e)
+            error_detail = None
+            response_body = None
+            status_code = e.response.status_code if e.response is not None else 500
             try:
                 if e.response is not None:
+                    response_body = e.response.text
                     error_json = e.response.json()
                     if "detail" in error_json:
                         error_detail = error_json["detail"]
             except Exception:
                 pass
-            logger.error(f"POST {url} failed: {error_detail}")
-            raise RuntimeError(error_detail) from e
+
+            logger.error(f"POST {url} failed with HTTP {status_code}: {error_detail or response_body}")
+
+            # Raise appropriate exception based on status code
+            if status_code == 400:
+                raise BadRequestError(url, error_detail or "Bad request", response_body) from e
+            elif status_code == 401:
+                raise AuthenticationError(url, error_detail) from e
+            elif status_code == 404:
+                raise NotFoundError(url, error_detail) from e
+            elif status_code >= 500:
+                raise InternalServerError(url, status_code, error_detail) from e
+            else:
+                raise APIStatusError(
+                    error_detail or f"HTTP {status_code} error",
+                    url,
+                    status_code,
+                    response_body,
+                ) from e
         except requests.exceptions.RequestException as e:
+            # Catch-all for other request exceptions
             logger.error(f"POST {url} failed: {e}")
-            raise RuntimeError(str(e)) from e
+            raise APIConnectionError(url, e) from e
 
     def post_async(
         self, endpoint: str, data: Dict[str, Any], timeout: Optional[float] = None
@@ -186,7 +237,9 @@ class ClientHolder:
             Response JSON
 
         Raises:
-            RuntimeError: If request fails
+            APIConnectionError: If unable to connect to the server
+            APITimeoutError: If the request times out
+            APIStatusError: For HTTP errors
         """
         url = f"{self.base_url}{endpoint}"
         timeout_val = timeout if timeout is not None else self.timeout
@@ -195,9 +248,62 @@ class ClientHolder:
             response = self._http_session.get(url, timeout=timeout_val)
             response.raise_for_status()
             return response.json()
+        except requests.exceptions.ConnectTimeout as e:
+            logger.error(f"GET {url} connection timed out")
+            raise APITimeoutError(url, timeout_val, e) from e
+        except requests.exceptions.ReadTimeout as e:
+            logger.error(f"GET {url} read timed out")
+            raise APITimeoutError(url, timeout_val, e) from e
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"GET {url} connection failed: {e}")
+            raise APIConnectionError(url, e) from e
+        except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code if e.response is not None else 500
+            error_detail = None
+            try:
+                if e.response is not None:
+                    error_json = e.response.json()
+                    if "detail" in error_json:
+                        error_detail = error_json["detail"]
+            except Exception:
+                pass
+            logger.error(f"GET {url} failed with HTTP {status_code}")
+            raise APIStatusError(
+                error_detail or f"HTTP {status_code} error",
+                url,
+                status_code,
+            ) from e
         except requests.exceptions.RequestException as e:
             logger.error(f"GET {url} failed: {e}")
-            raise RuntimeError(str(e)) from e
+            raise APIConnectionError(url, e) from e
+
+    def get_async(
+        self,
+        endpoint: str,
+        params: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+    ) -> Future[Dict[str, Any]]:
+        """Send asynchronous GET request.
+
+        Args:
+            endpoint: API endpoint
+            params: Optional query parameters
+            timeout: Optional timeout override
+
+        Returns:
+            Future that will contain the response JSON
+        """
+        # Build URL with query params
+        if params:
+            query_string = "&".join(f"{k}={v}" for k, v in params.items())
+            full_endpoint = f"{endpoint}?{query_string}"
+        else:
+            full_endpoint = endpoint
+
+        def _get():
+            return self.get(full_endpoint, timeout)
+
+        return self._executor.submit(_get)
 
     def shutdown(self):
         """Shutdown the client holder and cleanup resources."""

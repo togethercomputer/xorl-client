@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from concurrent.futures import Future
-from typing import Generic, TypeVar, Optional
+from typing import Generator, Generic, TypeVar, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,21 @@ class APIFuture(Generic[T]):
             The exception, or None if no exception was raised
         """
         return self._future.exception(timeout=timeout)
+
+    def __await__(self) -> Generator[None, None, T]:
+        """Make APIFuture directly awaitable.
+
+        This allows using `await future` syntax instead of `await future.result_async()`.
+
+        Returns:
+            The result value
+
+        Example:
+            >>> save_future = await training_client.save_state_async("checkpoint-001")
+            >>> result = await save_future  # Uses __await__
+            >>> print(f"Saved to: {result.path}")
+        """
+        return self.result_async().__await__()
 
 
 class ImmediateAPIFuture(APIFuture[T]):

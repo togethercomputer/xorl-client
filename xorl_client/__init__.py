@@ -15,6 +15,20 @@ from .client.service_client import ServiceClient
 from .client.api_future import APIFuture
 from .client.training_client import TrainingClient
 from .client.sampling_client import SamplingClient
+from .client.rest_client import RestClient
+
+# Import exceptions
+from .exceptions import (
+    XorlClientError,
+    APIError,
+    APIConnectionError,
+    APITimeoutError,
+    APIStatusError,
+    BadRequestError,
+    AuthenticationError,
+    NotFoundError,
+    InternalServerError,
+)
 
 # DedicatedEndpointSamplingClient requires openai package
 # Import explicitly: from xorl_client.dedicated_endpoint import DedicatedEndpointSamplingClient
@@ -44,9 +58,20 @@ __all__ = [
     "ServiceClient",
     "TrainingClient",
     "SamplingClient",
+    "RestClient",
     "APIFuture",
     # Types module
     "types",
+    # Exceptions
+    "XorlClientError",
+    "APIError",
+    "APIConnectionError",
+    "APITimeoutError",
+    "APIStatusError",
+    "BadRequestError",
+    "AuthenticationError",
+    "NotFoundError",
+    "InternalServerError",
     # Commonly used types
     "Datum",
     "ModelInput",

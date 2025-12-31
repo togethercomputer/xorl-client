@@ -33,6 +33,9 @@ extras_require = {
         "openai>=1.0.0",
         
     ],
+    "tokenizer": [
+        "transformers>=4.45.0",
+    ],
     "dev": [
         "pytest>=7.0.0",
         "black>=23.0.0",
