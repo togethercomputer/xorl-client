@@ -21,8 +21,8 @@ logging.getLogger("httpx").setLevel(logging.WARN)
 
 @chz.chz
 class Config:
-    base_url: str = "http://research-secure-20:5000"
-    log_path: str = "outputs/xorl_client-tulu3-sft"
+    base_url: str = "http://research-common-21:5000"
+    log_path: str = "outputs/xorl_client-sft"
     model_name: str = "Qwen/Qwen3-4B-Instruct-2507"
     batch_size: int = 128
     learning_rate: float = 1e-4

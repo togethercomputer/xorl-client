@@ -265,7 +265,8 @@ class TestServiceClientMocked:
             rank=32,
         )
 
-        assert training_client.model_id == "test-model-id-123"
+        # TrainingClient uses "default" as model_id (xorl_client uses single model)
+        assert training_client.model_id == "default"
         assert training_client.base_model == "Qwen/Qwen2.5-3B-Instruct"
 
     def test_create_lora_training_client_with_custom_config(self, mock_client_holder):
@@ -296,9 +297,10 @@ class TestDatumSerialization:
 
         d = datum.to_dict()
 
-        # Check structure matches what API expects
+        # Check structure matches what server API expects (flat input_ids format)
         assert "model_input" in d
         assert "loss_fn_inputs" in d
+        assert "input_ids" in d["model_input"]
         assert d["model_input"]["input_ids"] == [1, 2, 3, 4]
         # Lists are auto-converted to TensorData, so they serialize as dicts
         assert d["loss_fn_inputs"]["target_tokens"]["data"] == [2, 3, 4, 5]
@@ -320,5 +322,6 @@ class TestDatumSerialization:
         serialized = [d.to_dict() for d in datums]
 
         assert len(serialized) == 2
+        # Server-compatible flat input_ids format
         assert serialized[0]["model_input"]["input_ids"] == [1, 2, 3]
         assert serialized[1]["model_input"]["input_ids"] == [5, 6, 7]

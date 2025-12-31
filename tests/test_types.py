@@ -95,23 +95,17 @@ class TestTensorData:
 
 
 class TestModelInput:
-    """Tests for ModelInput class."""
+    """Tests for ModelInput class (tinker-compatible chunks-based API)."""
 
     def test_from_ints(self):
         """Test creating ModelInput from token IDs."""
         tokens = [1, 2, 3, 4, 5]
         model_input = types.ModelInput.from_ints(tokens)
 
-        assert model_input.tokens == tokens
-        assert model_input.text is None
-
-    def test_from_str(self):
-        """Test creating ModelInput from text."""
-        text = "Hello, world!"
-        model_input = types.ModelInput.from_str(text)
-
-        assert model_input.text == text
-        assert model_input.tokens is None
+        # New API uses chunks
+        assert len(model_input.chunks) == 1
+        assert isinstance(model_input.chunks[0], types.EncodedTextChunk)
+        assert list(model_input.chunks[0].tokens) == tokens
 
     def test_to_ints(self):
         """Test converting ModelInput to list of ints."""
@@ -120,30 +114,35 @@ class TestModelInput:
 
         assert model_input.to_ints() == tokens
 
-    def test_to_ints_raises_when_no_tokens(self):
-        """Test that to_ints raises ValueError when only text is set."""
-        model_input = types.ModelInput.from_str("Hello")
+    def test_to_ints_with_multiple_chunks(self):
+        """Test to_ints with multiple EncodedTextChunks."""
+        model_input = types.ModelInput.empty()
+        model_input = model_input.append(types.EncodedTextChunk(tokens=[1, 2]))
+        model_input = model_input.append(types.EncodedTextChunk(tokens=[3, 4]))
 
-        with pytest.raises(ValueError, match="tokens are not set"):
+        assert model_input.to_ints() == [1, 2, 3, 4]
+
+    def test_to_ints_raises_with_non_text_chunks(self):
+        """Test that to_ints raises ValueError when non-text chunks are present."""
+        model_input = types.ModelInput.from_ints([1, 2, 3])
+        # Add an image chunk
+        model_input = model_input.append(
+            types.ImageAssetPointerChunk(format="png", location="/path/to/image.png", expected_tokens=100)
+        )
+
+        with pytest.raises(ValueError, match="only supported for ModelInput with EncodedTextChunks"):
             model_input.to_ints()
 
-    def test_to_dict_with_tokens(self):
-        """Test ModelInput serialization with tokens."""
+    def test_model_dump(self):
+        """Test ModelInput serialization with model_dump (Pydantic)."""
         tokens = [1, 2, 3]
         model_input = types.ModelInput.from_ints(tokens)
-        d = model_input.to_dict()
+        d = model_input.model_dump(mode="json")
 
-        assert d["input_ids"] == tokens
-        assert "text" not in d
-
-    def test_to_dict_with_text(self):
-        """Test ModelInput serialization with text."""
-        text = "Hello"
-        model_input = types.ModelInput.from_str(text)
-        d = model_input.to_dict()
-
-        assert d["text"] == text
-        assert "input_ids" not in d
+        assert "chunks" in d
+        assert len(d["chunks"]) == 1
+        assert d["chunks"][0]["tokens"] == tokens
+        assert d["chunks"][0]["type"] == "encoded_text"
 
     def test_length_with_tokens(self):
         """Test length property with tokens."""
@@ -152,12 +151,122 @@ class TestModelInput:
 
         assert model_input.length == 4
 
-    def test_length_with_text(self):
-        """Test length property with text."""
-        text = "Hello"
-        model_input = types.ModelInput.from_str(text)
+    def test_length_with_multiple_chunks(self):
+        """Test length property with multiple chunks."""
+        model_input = types.ModelInput.empty()
+        model_input = model_input.append(types.EncodedTextChunk(tokens=[1, 2, 3]))
+        model_input = model_input.append(types.EncodedTextChunk(tokens=[4, 5]))
 
-        assert model_input.length == 5  # Character count
+        assert model_input.length == 5
+
+    def test_empty(self):
+        """Test creating empty ModelInput."""
+        model_input = types.ModelInput.empty()
+
+        assert model_input.chunks == []
+        assert model_input.length == 0
+
+    def test_append(self):
+        """Test appending chunks to ModelInput."""
+        model_input = types.ModelInput.empty()
+        chunk = types.EncodedTextChunk(tokens=[1, 2, 3])
+        model_input = model_input.append(chunk)
+
+        assert len(model_input.chunks) == 1
+        assert list(model_input.chunks[0].tokens) == [1, 2, 3]
+
+    def test_append_int(self):
+        """Test appending single token to ModelInput."""
+        model_input = types.ModelInput.from_ints([1, 2])
+        model_input = model_input.append_int(3)
+
+        assert model_input.to_ints() == [1, 2, 3]
+
+
+class TestEncodedTextChunk:
+    """Tests for EncodedTextChunk class."""
+
+    def test_create(self):
+        """Test creating EncodedTextChunk."""
+        chunk = types.EncodedTextChunk(tokens=[1, 2, 3])
+
+        assert list(chunk.tokens) == [1, 2, 3]
+        assert chunk.type == "encoded_text"
+
+    def test_length(self):
+        """Test length property."""
+        chunk = types.EncodedTextChunk(tokens=[1, 2, 3, 4])
+
+        assert chunk.length == 4
+
+    def test_model_dump(self):
+        """Test serialization."""
+        chunk = types.EncodedTextChunk(tokens=[10, 20])
+        d = chunk.model_dump(mode="json")
+
+        assert d["tokens"] == [10, 20]
+        assert d["type"] == "encoded_text"
+
+
+class TestImageChunk:
+    """Tests for ImageChunk class."""
+
+    def test_create(self):
+        """Test creating ImageChunk."""
+        data = b"fake image data"
+        chunk = types.ImageChunk(data=data, format="png", expected_tokens=100)
+
+        assert chunk.data == data
+        assert chunk.format == "png"
+        assert chunk.expected_tokens == 100
+        assert chunk.type == "image"
+
+    def test_length(self):
+        """Test length property."""
+        chunk = types.ImageChunk(data=b"data", format="jpeg", expected_tokens=50)
+
+        assert chunk.length == 50
+
+    def test_length_raises_without_expected_tokens(self):
+        """Test that length raises when expected_tokens is not set."""
+        chunk = types.ImageChunk(data=b"data", format="png")
+
+        with pytest.raises(ValueError, match="expected_tokens needs to be set"):
+            _ = chunk.length
+
+    def test_model_dump_base64_encoding(self):
+        """Test that image data is base64 encoded in JSON mode."""
+        import base64
+        data = b"test image data"
+        chunk = types.ImageChunk(data=data, format="png", expected_tokens=10)
+        d = chunk.model_dump(mode="json")
+
+        assert d["data"] == base64.b64encode(data).decode("utf-8")
+        assert d["format"] == "png"
+        assert d["type"] == "image"
+
+
+class TestImageAssetPointerChunk:
+    """Tests for ImageAssetPointerChunk class."""
+
+    def test_create(self):
+        """Test creating ImageAssetPointerChunk."""
+        chunk = types.ImageAssetPointerChunk(
+            format="jpeg", location="/path/to/image.jpg", expected_tokens=200
+        )
+
+        assert chunk.format == "jpeg"
+        assert chunk.location == "/path/to/image.jpg"
+        assert chunk.expected_tokens == 200
+        assert chunk.type == "image_asset_pointer"
+
+    def test_length(self):
+        """Test length property."""
+        chunk = types.ImageAssetPointerChunk(
+            format="png", location="/img.png", expected_tokens=150
+        )
+
+        assert chunk.length == 150
 
 
 class TestDatum:
@@ -189,6 +298,8 @@ class TestDatum:
         datum = types.Datum(model_input=model_input, loss_fn_inputs=loss_fn_inputs)
         d = datum.to_dict()
 
+        # ModelInput is serialized to flat input_ids format (server-compatible)
+        assert "input_ids" in d["model_input"]
         assert d["model_input"]["input_ids"] == [1, 2, 3]
         # Lists are auto-converted to TensorData, so they serialize as dicts
         assert d["loss_fn_inputs"]["target_tokens"]["data"] == [2, 3, 4]
@@ -248,7 +359,7 @@ class TestAdamParams:
         assert params.learning_rate == 1e-4
         assert params.beta1 == 0.9
         assert params.beta2 == 0.95
-        assert params.eps == 1e-8
+        assert params.eps == 1e-12
 
     def test_custom_values(self):
         """Test AdamParams with custom values."""
@@ -272,7 +383,7 @@ class TestAdamParams:
         assert d["learning_rate"] == 1e-4
         assert d["beta1"] == 0.9
         assert d["beta2"] == 0.95
-        assert d["eps"] == 1e-8
+        assert d["eps"] == 1e-12
 
 
 class TestSamplingParams:
@@ -366,11 +477,9 @@ class TestResponseTypes:
         """Test OptimStepResponse."""
         response = types.OptimStepResponse(
             metrics={"grad_norm": 1.5},
-            step=10,
         )
 
         assert response.metrics["grad_norm"] == 1.5
-        assert response.step == 10
 
     def test_save_weights_response(self):
         """Test SaveWeightsResponse."""

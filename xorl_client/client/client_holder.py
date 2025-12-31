@@ -35,7 +35,6 @@ class ClientHolder:
     - Manages HTTP session and base URL
     - Tracks session ID and model IDs
     - Provides async execution via thread pool
-    - Handles worker routing for sampling
 
     Args:
         base_url: Base URL for the training API (e.g., "http://localhost:5555")
@@ -63,10 +62,6 @@ class ClientHolder:
         # Thread pool for async operations
         self._executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="xorl_client-client")
 
-        # Worker registry: maps model_path -> worker URLs
-        self._worker_registry: Dict[str, list[str]] = {}
-        self._worker_registry_lock = threading.Lock()
-
         # HTTP session
         self._http_session = requests.Session()
         if self.api_key:
@@ -90,49 +85,6 @@ class ClientHolder:
         model_id = f"model-{model_seq}"
         logger.info(f"Generated model_id: {model_id}")
         return model_id
-
-    def register_workers_for_model(self, model_path: str, worker_urls: list[str]):
-        """Register which workers serve a particular model.
-
-        Args:
-            model_path: Model path (e.g., "xorl://model-123/step-100")
-            worker_urls: List of worker URLs that serve this model
-        """
-        with self._worker_registry_lock:
-            self._worker_registry[model_path] = worker_urls
-            logger.info(f"Registered workers for {model_path}: {worker_urls}")
-
-    def get_workers_for_model(self, model_path: str) -> list[str]:
-        """Get worker URLs for a model path.
-
-        First checks local cache, then queries the training server.
-
-        Args:
-            model_path: Model path
-
-        Returns:
-            List of worker URLs
-
-        Raises:
-            ValueError: If model_path is not registered
-        """
-        with self._worker_registry_lock:
-            # Check local cache first
-            if model_path in self._worker_registry:
-                return self._worker_registry[model_path]
-
-        # Query server for worker URLs
-        try:
-            response = self.get(f"/api/v1/get_workers?model_path={model_path}", timeout=10)
-            worker_urls = response.get("worker_urls", [])
-            if worker_urls:
-                with self._worker_registry_lock:
-                    self._worker_registry[model_path] = worker_urls
-                return worker_urls
-        except Exception as e:
-            logger.warning(f"Failed to fetch workers from server for {model_path}: {e}")
-
-        raise ValueError(f"Model path not found in registry: {model_path}")
 
     def post(self, endpoint: str, data: Dict[str, Any], timeout: Optional[float] = None) -> Dict[str, Any]:
         """Send synchronous POST request.

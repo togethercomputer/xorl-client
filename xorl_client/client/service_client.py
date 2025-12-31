@@ -37,6 +37,7 @@ class ServiceClient:
         ...     rank=32
         ... )
         >>> sampling_client = service_client.create_sampling_client(
+        ...     base_url="http://localhost:30000",
         ...     model_path="xorl://model-123/step-100"
         ... )
     """
@@ -97,6 +98,15 @@ class ServiceClient:
         """
         from xorl_client.client.training_client import TrainingClient
 
+        # Warn about LoRA parameters that can't be adjusted from user side
+        if rank != 32 or alpha is not None or dropout != 0.0 or target_modules is not None:
+            logger.warning(
+                "Note: LoRA parameters (rank, alpha, dropout, target_modules) are currently "
+                "configured on the server side and cannot be adjusted from the client. "
+                "The values provided here will be sent to the server but may be ignored "
+                "if the server is already configured with different LoRA settings."
+            )
+
         # Use default model ID - xorl server always uses "default" for single-model setup
         model_id = "default"
 
@@ -130,28 +140,71 @@ class ServiceClient:
 
     def create_sampling_client(
         self,
+        base_url: str,
         model_path: str,
+        api_key: Optional[str] = None,
+        timeout: float = 120.0,
     ) -> "SamplingClient":
-        """Create a sampling client for a specific model.
+        """Create a sampling client for inference.
 
-        The model_path is an opaque identifier (e.g., "xorl://model-123/step-100")
-        that the service uses to route requests to the correct inference workers.
+        This method:
+        1. Calls /api/v1/create_sampling_session on the training server to load
+           the LoRA adapter on all inference workers
+        2. Creates and returns a SamplingClient that connects to the inference engine
+
+        The SamplingClient connects directly to the inference engine using
+        base_url and api_key.
 
         Args:
-            model_path: Model path identifier
+            base_url: Base URL for the inference engine (required)
+            model_path: Path to saved model weights (required, e.g., "xorl://default/sampler_weights/step-100"
+                       or "sampler_weights/step-100")
+            api_key: API key for authentication (default: XORL_INFERENCE_API_KEY env var)
+            timeout: Request timeout in seconds (default: 120.0)
 
         Returns:
             SamplingClient instance
 
+        Raises:
+            RuntimeError: If the model_path doesn't exist or LoRA loading fails
+
         Example:
             >>> sampling_client = service_client.create_sampling_client(
-            ...     model_path="xorl://model-123/step-100"
+            ...     base_url="http://localhost:30000",
+            ...     model_path="xorl://default/sampler_weights/step-100"
             ... )
         """
         from xorl_client.client.sampling_client import SamplingClient
 
-        logger.info(f"Creating sampling client for model_path: {model_path}")
-        return SamplingClient(holder=self.holder, model_path=model_path)
+        logger.info(f"Creating sampling session: model_path={model_path}")
+
+        # Call training server to create sampling session (loads LoRA on inference workers)
+        try:
+            response = self.holder.post(
+                "/api/v1/create_sampling_session",
+                {"model_path": model_path},
+                timeout=60.0,  # LoRA loading can take some time
+            )
+
+            if not response.get("success", False):
+                error_msg = response.get("message", "Unknown error")
+                raise RuntimeError(f"Failed to create sampling session: {error_msg}")
+
+            lora_name = response.get("lora_name", "")
+            logger.info(f"Sampling session created: lora_name={lora_name}, model_path={model_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to create sampling session for {model_path}: {e}")
+            raise
+
+        # Create SamplingClient that connects to inference engine
+        logger.info(f"Creating sampling client: base_url={base_url}, model_path={model_path}")
+        return SamplingClient(
+            base_url=base_url,
+            model_path=model_path,
+            api_key=api_key,
+            timeout=timeout,
+        )
 
     def create_rest_client(
         self,

@@ -36,8 +36,16 @@ from .exceptions import (
 
 # Import commonly used types for convenience
 from .types import (
-    Datum,
+    # Base classes
+    StrictBase,
+    # Model input types (matching tinker)
+    EncodedTextChunk,
+    ImageChunk,
+    ImageAssetPointerChunk,
+    ModelInputChunk,
     ModelInput,
+    # Training types
+    Datum,
     TensorData,
     AdamParams,
     SamplingParams,
@@ -72,9 +80,16 @@ __all__ = [
     "AuthenticationError",
     "NotFoundError",
     "InternalServerError",
-    # Commonly used types
-    "Datum",
+    # Base classes
+    "StrictBase",
+    # Model input types (matching tinker)
+    "EncodedTextChunk",
+    "ImageChunk",
+    "ImageAssetPointerChunk",
+    "ModelInputChunk",
     "ModelInput",
+    # Training types
+    "Datum",
     "TensorData",
     "AdamParams",
     "SamplingParams",

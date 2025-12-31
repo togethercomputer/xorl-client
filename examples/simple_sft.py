@@ -6,7 +6,7 @@ This script demonstrates how to use the xorl_client client library to train a mo
 on a XoRL training server. It trains a simple English to Pig Latin translation task.
 
 Usage:
-    python simple_sft.py --server-url http://localhost:5000 --base-model Qwen/Qwen3-4B-Instruct-2507
+    python simple_sft.py --server-url http://localhost:5001 --base-model Qwen/Qwen3-4B-Instruct-2507
 """
 
 import argparse
