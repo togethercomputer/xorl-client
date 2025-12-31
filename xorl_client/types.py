@@ -28,6 +28,18 @@ class TensorData:
     dtype: TensorDtype = "float32"
     shape: Optional[List[int]] = None
 
+    def __post_init__(self):
+        """Validate shape matches data length."""
+        if self.shape is not None:
+            expected_size = 1
+            for dim in self.shape:
+                expected_size *= dim
+            if expected_size != len(self.data):
+                raise ValueError(
+                    f"TensorData shape {self.shape} (size {expected_size}) "
+                    f"doesn't match data length {len(self.data)}"
+                )
+
     @classmethod
     def from_torch(cls, tensor: Any) -> TensorData:
         """Create TensorData from a PyTorch tensor.

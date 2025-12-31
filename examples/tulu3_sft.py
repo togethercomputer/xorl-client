@@ -21,7 +21,7 @@ logging.getLogger("httpx").setLevel(logging.WARN)
 
 @chz.chz
 class Config:
-    base_url: str = "http://research-common-21:5000"
+    base_url: str = "http://research-secure-20:5000"
     log_path: str = "outputs/xorl_client-tulu3-sft"
     model_name: str = "Qwen/Qwen3-4B-Instruct-2507"
     batch_size: int = 128
@@ -85,8 +85,8 @@ def main(config: Config):
         step = batch_idx
         metrics = {}
 
-        # Save checkpoint
-        if config.save_every > 0 and step % config.save_every == 0 and step > 0:
+        # Save checkpoint (skip if this is the step we just resumed from)
+        if config.save_every > 0 and step % config.save_every == 0 and step > start_batch:
             checkpoint_utils.save_checkpoint(
                 training_client=training_client,
                 name=f"{step:06d}",
