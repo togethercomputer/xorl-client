@@ -6,8 +6,10 @@ Provides factory methods to create TrainingClient and SamplingClient instances.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from concurrent.futures import Future
 from typing import Any, Dict, Optional
 
 from xorl_client import types
@@ -65,37 +67,15 @@ class ServiceClient:
         self.holder = ClientHolder(base_url=base_url, api_key=api_key, timeout=timeout, **kwargs)
         logger.info(f"ServiceClient initialized: base_url={base_url}")
 
-    def create_lora_training_client(
+    def _create_lora_training_client_submit(
         self,
         base_model: str,
         rank: int = 32,
         alpha: Optional[int] = None,
         dropout: float = 0.0,
         target_modules: Optional[list[str]] = None,
-    ) -> "TrainingClient":
-        """Create a LoRA training client.
-
-        This method:
-        1. Sends a request to create a new model on the training server
-        2. Initializes LoRA training setup
-        3. Returns a TrainingClient ready for training
-
-        Args:
-            base_model: Base model name (e.g., "Qwen/Qwen2.5-3B-Instruct")
-            rank: LoRA rank (default: 32)
-            alpha: LoRA alpha parameter (default: None, uses rank)
-            dropout: LoRA dropout (default: 0.0)
-            target_modules: Which modules to apply LoRA to (default: None, uses model default)
-
-        Returns:
-            TrainingClient instance
-
-        Example:
-            >>> training_client = service_client.create_lora_training_client(
-            ...     base_model="Qwen/Qwen2.5-3B-Instruct",
-            ...     rank=32
-            ... )
-        """
+    ) -> Future["TrainingClient"]:
+        """Helper function that submits the create_lora_training_client request."""
         from xorl_client.client.training_client import TrainingClient
 
         # Warn about LoRA parameters that can't be adjusted from user side
@@ -136,7 +116,61 @@ class ServiceClient:
             raise
 
         # Create and return TrainingClient
-        return TrainingClient(holder=self.holder, model_id=model_id, base_model=base_model)
+        training_client = TrainingClient(holder=self.holder, model_id=model_id, base_model=base_model)
+
+        # Return a completed future
+        future: Future[TrainingClient] = Future()
+        future.set_result(training_client)
+        return future
+
+    def create_lora_training_client(
+        self,
+        base_model: str,
+        rank: int = 32,
+        alpha: Optional[int] = None,
+        dropout: float = 0.0,
+        target_modules: Optional[list[str]] = None,
+    ) -> "TrainingClient":
+        """Create a LoRA training client.
+
+        This method:
+        1. Sends a request to create a new model on the training server
+        2. Initializes LoRA training setup
+        3. Returns a TrainingClient ready for training
+
+        Args:
+            base_model: Base model name (e.g., "Qwen/Qwen2.5-3B-Instruct")
+            rank: LoRA rank (default: 32)
+            alpha: LoRA alpha parameter (default: None, uses rank)
+            dropout: LoRA dropout (default: 0.0)
+            target_modules: Which modules to apply LoRA to (default: None, uses model default)
+
+        Returns:
+            TrainingClient instance
+
+        Example:
+            >>> training_client = service_client.create_lora_training_client(
+            ...     base_model="Qwen/Qwen2.5-3B-Instruct",
+            ...     rank=32
+            ... )
+        """
+        return self._create_lora_training_client_submit(
+            base_model, rank, alpha, dropout, target_modules
+        ).result()
+
+    async def create_lora_training_client_async(
+        self,
+        base_model: str,
+        rank: int = 32,
+        alpha: Optional[int] = None,
+        dropout: float = 0.0,
+        target_modules: Optional[list[str]] = None,
+    ) -> "TrainingClient":
+        """Async version of create_lora_training_client."""
+        future = self._create_lora_training_client_submit(
+            base_model, rank, alpha, dropout, target_modules
+        )
+        return await asyncio.wrap_future(future)
 
     def create_sampling_client(
         self,
