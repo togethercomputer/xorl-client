@@ -17,6 +17,7 @@ class SamplingParams:
     top_p: float = 1.0
     top_k: int = -1
     stop: Optional[List[str]] = None
+    stop_token_ids: Optional[List[int]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -32,4 +33,6 @@ class SamplingParams:
             valid_stops = [s for s in self.stop if isinstance(s, str) and s]
             if valid_stops:
                 result["stop"] = valid_stops
+        if self.stop_token_ids is not None:
+            result["stop_token_ids"] = self.stop_token_ids
         return result

@@ -408,6 +408,7 @@ class TrainingClient:
     def save_weights_and_get_sampling_client(
         self,
         name: Optional[str] = None,
+        inference_base_url: str = "http://localhost:30000",
     ) -> "SamplingClient":
         """Atomic operation: save weights and create sampling client.
 
@@ -416,6 +417,7 @@ class TrainingClient:
 
         Args:
             name: Optional name for checkpoint (default: auto-generated)
+            inference_base_url: Base URL for inference server (default: http://localhost:30000)
 
         Returns:
             SamplingClient ready to use
@@ -436,12 +438,38 @@ class TrainingClient:
         save_result = self.save_weights_for_sampler(name).result()
         model_path = save_result.path
 
-        # Create sampling client
-        return SamplingClient(holder=self.holder, model_path=model_path)
+        # Call training server to create sampling session (loads LoRA on inference workers)
+        logger.info(f"Creating sampling session: model_path={model_path}")
+        try:
+            response = self.holder.post(
+                "/api/v1/create_sampling_session",
+                {"model_path": model_path},
+                timeout=60.0,  # LoRA loading can take some time
+            )
+
+            if not response.get("success", False):
+                error_msg = response.get("message", "Unknown error")
+                raise RuntimeError(f"Failed to create sampling session: {error_msg}")
+
+            lora_name = response.get("lora_name", "")
+            logger.info(f"Sampling session created: lora_name={lora_name}, model_path={model_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to create sampling session for {model_path}: {e}")
+            raise
+
+        # Create sampling client with new API
+        return SamplingClient(
+            base_url=inference_base_url,
+            model_path=model_path,
+            api_key=self.holder.api_key,
+            timeout=self.holder.timeout,
+        )
 
     async def save_weights_and_get_sampling_client_async(
         self,
         name: Optional[str] = None,
+        inference_base_url: str = "http://localhost:30000",
     ) -> "SamplingClient":
         """Async version of save_weights_and_get_sampling_client.
 
@@ -450,6 +478,7 @@ class TrainingClient:
 
         Args:
             name: Optional name for checkpoint (default: auto-generated)
+            inference_base_url: Base URL for inference server (default: http://localhost:30000)
 
         Returns:
             SamplingClient ready to use
@@ -471,8 +500,33 @@ class TrainingClient:
         save_result = await save_future.result_async()
         model_path = save_result.path
 
-        # Create sampling client
-        return SamplingClient(holder=self.holder, model_path=model_path)
+        # Call training server to create sampling session (loads LoRA on inference workers)
+        logger.info(f"Creating sampling session: model_path={model_path}")
+        try:
+            response = self.holder.post(
+                "/api/v1/create_sampling_session",
+                {"model_path": model_path},
+                timeout=60.0,  # LoRA loading can take some time
+            )
+
+            if not response.get("success", False):
+                error_msg = response.get("message", "Unknown error")
+                raise RuntimeError(f"Failed to create sampling session: {error_msg}")
+
+            lora_name = response.get("lora_name", "")
+            logger.info(f"Sampling session created: lora_name={lora_name}, model_path={model_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to create sampling session for {model_path}: {e}")
+            raise
+
+        # Create sampling client with new API
+        return SamplingClient(
+            base_url=inference_base_url,
+            model_path=model_path,
+            api_key=self.holder.api_key,
+            timeout=self.holder.timeout,
+        )
 
     def save_state(
         self,
