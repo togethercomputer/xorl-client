@@ -74,6 +74,7 @@ class ServiceClient:
         alpha: Optional[int] = None,
         dropout: float = 0.0,
         target_modules: Optional[list[str]] = None,
+        model_id: Optional[str] = None,
     ) -> Future["TrainingClient"]:
         """Helper function that submits the create_lora_training_client request."""
         from xorl_client.client.training_client import TrainingClient
@@ -87,8 +88,9 @@ class ServiceClient:
                 "if the server is already configured with different LoRA settings."
             )
 
-        # Use default model ID - xorl server always uses "default" for single-model setup
-        model_id = "default"
+        # Use provided model_id or default to "default"
+        if model_id is None:
+            model_id = "default"
 
         # Create LoRA config
         lora_config = types.LoraConfig(
@@ -102,7 +104,7 @@ class ServiceClient:
         logger.info(f"Creating LoRA training client: model_id={model_id}, base_model={base_model}, rank={rank}")
 
         try:
-            response = self.holder.post(
+            response = self.holder.post_sync(
                 "/api/v1/create_model",
                 {
                     "model_id": model_id,
@@ -130,6 +132,7 @@ class ServiceClient:
         alpha: Optional[int] = None,
         dropout: float = 0.0,
         target_modules: Optional[list[str]] = None,
+        model_id: Optional[str] = None,
     ) -> "TrainingClient":
         """Create a LoRA training client.
 
@@ -144,6 +147,8 @@ class ServiceClient:
             alpha: LoRA alpha parameter (default: None, uses rank)
             dropout: LoRA dropout (default: 0.0)
             target_modules: Which modules to apply LoRA to (default: None, uses model default)
+            model_id: Optional model ID (default: "default"). Use different IDs for multiple tests
+                     to avoid "adapter already loaded" errors without restarting inference worker
 
         Returns:
             TrainingClient instance
@@ -153,9 +158,14 @@ class ServiceClient:
             ...     base_model="Qwen/Qwen2.5-3B-Instruct",
             ...     rank=32
             ... )
+            >>> # For testing with unique model per run:
+            >>> training_client = service_client.create_lora_training_client(
+            ...     base_model="Qwen/Qwen2.5-3B-Instruct",
+            ...     model_id="test-run-001"
+            ... )
         """
         return self._create_lora_training_client_submit(
-            base_model, rank, alpha, dropout, target_modules
+            base_model, rank, alpha, dropout, target_modules, model_id
         ).result()
 
     async def create_lora_training_client_async(
@@ -165,10 +175,11 @@ class ServiceClient:
         alpha: Optional[int] = None,
         dropout: float = 0.0,
         target_modules: Optional[list[str]] = None,
+        model_id: Optional[str] = None,
     ) -> "TrainingClient":
         """Async version of create_lora_training_client."""
         future = self._create_lora_training_client_submit(
-            base_model, rank, alpha, dropout, target_modules
+            base_model, rank, alpha, dropout, target_modules, model_id
         )
         return await asyncio.wrap_future(future)
 
@@ -214,7 +225,7 @@ class ServiceClient:
 
         # Call training server to create sampling session (loads LoRA on inference workers)
         try:
-            response = self.holder.post(
+            response = self.holder.post_sync(
                 "/api/v1/create_sampling_session",
                 {"model_path": model_path},
                 timeout=60.0,  # LoRA loading can take some time
@@ -516,7 +527,7 @@ class ServiceClient:
             Dictionary with checkpoint metadata (base_model, lora_rank, etc.)
         """
         try:
-            return self.holder.post(
+            return self.holder.post_sync(
                 "/api/v1/weights_info",
                 {"xorl_path": checkpoint_path},
                 timeout=30,

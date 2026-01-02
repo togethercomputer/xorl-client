@@ -14,8 +14,10 @@ This prevents race conditions like optim_step executing before forward_backward.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
+from contextlib import asynccontextmanager
 from typing import List, Dict, Any, Optional, Union
 
 from xorl_client import types
@@ -77,10 +79,12 @@ class TrainingClient:
         self._tokenizer = None  # Lazy-loaded tokenizer
 
         # Request ordering mechanism (similar to Tinker)
-        # seq_id is sent to server which enforces execution order via SeqIdAwareFIFOPolicy
-        # Client dispatches immediately (non-blocking), server handles ordering
+        # _take_turn ensures HTTP requests are dispatched in seq_id order
+        # This prevents race conditions where optim_step arrives before forward_backward
         self._request_id_lock = threading.Lock()
         self._request_id_counter = 0
+        self._turn_counter = 0
+        self._turn_waiters: Dict[int, asyncio.Event] = {}
 
         logger.info(f"TrainingClient initialized: model_id={model_id}, base_model={base_model}")
 
@@ -94,6 +98,42 @@ class TrainingClient:
             request_id = self._request_id_counter
             self._request_id_counter += 1
             return request_id
+
+    @asynccontextmanager
+    async def _take_turn(self, request_id: int):
+        """Wait for turn to dispatch HTTP request in seq_id order.
+
+        This ensures that even if multiple requests are made concurrently,
+        they are dispatched to the server in the correct order.
+
+        Args:
+            request_id: The request ID to wait for
+
+        Example:
+            async with self._take_turn(request_id):
+                # HTTP request is dispatched here
+                future = self.holder.post_async("/api/v1/forward_backward", data)
+        """
+        assert self._turn_counter <= request_id, f"Same request id cannot be taken twice: turn_counter={self._turn_counter}, request_id={request_id}"
+
+        # Wait if it's not our turn yet
+        if self._turn_counter < request_id:
+            try:
+                event = asyncio.Event()
+                self._turn_waiters[request_id] = event
+                await event.wait()
+            finally:
+                del self._turn_waiters[request_id]
+
+        assert self._turn_counter == request_id
+
+        try:
+            yield
+        finally:
+            # Release turn and wake up next waiter
+            self._turn_counter += 1
+            if self._turn_counter in self._turn_waiters:
+                self._turn_waiters[self._turn_counter].set()
 
     def _convert_tinker_datum(self, datum_dict: Dict[str, Any]) -> Dict[str, Any]:
         """Convert tinker.Datum format to xorl_client format.
@@ -215,12 +255,21 @@ class TrainingClient:
             }
         }
 
-        # Submit async request immediately (non-blocking)
-        # Server enforces execution order via seq_id in SeqIdAwareFIFOPolicy
-        future = self.holder.post_async("/api/v1/forward_backward", request_data)
+        # Use _take_turn to ensure sequential HTTP dispatch (exactly like Tinker)
+        async def _forward_backward_async():
+            # Define HTTP sender (like Tinker's _send_request pattern)
+            async def _send_request():
+                # Use async HTTP directly (like Tinker) - no asyncio.to_thread!
+                return await self.holder.post(
+                    "/api/v1/forward_backward",
+                    request_data
+                )
 
-        # Wrap in APIFuture and parse response
-        def parse_response(result: Dict[str, Any]) -> types.ForwardBackwardOutput:
+            # Execute inside _take_turn to ensure ordering
+            async with self._take_turn(request_id):
+                result = await _send_request()
+
+            # Turn released here - now parse and return (like Tinker)
             raw_outputs = result.get("loss_fn_outputs", [])
             metrics = result.get("metrics", {})
             logger.info(
@@ -229,7 +278,6 @@ class TrainingClient:
             )
 
             # Convert loss_fn_outputs dict values to TensorData objects
-            raw_outputs = result.get("loss_fn_outputs", [])
             converted_outputs = []
             for output in raw_outputs:
                 converted_output = {}
@@ -244,22 +292,11 @@ class TrainingClient:
 
             return types.ForwardBackwardOutput(
                 loss_fn_outputs=converted_outputs,
-                metrics=result.get("metrics", {}),
+                metrics=metrics,
             )
 
-        # Chain parsing onto the future
-        from concurrent.futures import Future
-        parsed_future: Future[types.ForwardBackwardOutput] = Future()
-
-        def callback(f: Future):
-            try:
-                result = f.result()
-                parsed_future.set_result(parse_response(result))
-            except Exception as e:
-                parsed_future.set_exception(e)
-
-        future.add_done_callback(callback)
-        return wrap_future(parsed_future)
+        # Schedule to event loop and return directly (like Tinker)
+        return wrap_future(self.holder.run_coroutine_threadsafe(_forward_backward_async()))
 
     def optim_step(
         self,
@@ -295,12 +332,21 @@ class TrainingClient:
             "adam_params": adam_params_dict,
         }
 
-        # Submit async request immediately (non-blocking)
-        # Server enforces execution order via seq_id in SeqIdAwareFIFOPolicy
-        future = self.holder.post_async("/api/v1/optim_step", request_data)
+        # Use _take_turn to ensure sequential HTTP dispatch (exactly like Tinker)
+        async def _optim_step_async():
+            # Define HTTP sender (like Tinker's _send_request pattern)
+            async def _send_request():
+                # Use async HTTP directly (like Tinker) - no asyncio.to_thread!
+                return await self.holder.post(
+                    "/api/v1/optim_step",
+                    request_data
+                )
 
-        # Wrap and parse
-        def parse_response(result: Dict[str, Any]) -> types.OptimStepResponse:
+            # Execute inside _take_turn to ensure ordering
+            async with self._take_turn(request_id):
+                result = await _send_request()
+
+            # Turn released here - now parse and return (like Tinker)
             metrics = result.get("metrics", {})
             logger.info(
                 f"Optimizer step completed: "
@@ -310,18 +356,8 @@ class TrainingClient:
                 metrics=metrics,
             )
 
-        from concurrent.futures import Future
-        parsed_future: Future[types.OptimStepResponse] = Future()
-
-        def callback(f: Future):
-            try:
-                result = f.result()
-                parsed_future.set_result(parse_response(result))
-            except Exception as e:
-                parsed_future.set_exception(e)
-
-        future.add_done_callback(callback)
-        return wrap_future(parsed_future)
+        # Schedule to event loop and return directly (like Tinker)
+        return wrap_future(self.holder.run_coroutine_threadsafe(_optim_step_async()))
 
     def save_weights_for_sampler(
         self,
@@ -355,28 +391,27 @@ class TrainingClient:
             "name": name,
         }
 
-        # Submit async request immediately (non-blocking)
-        future = self.holder.post_async("/api/v1/save_weights_for_sampler", request_data)
+        # Use _take_turn to ensure sequential HTTP dispatch (like Tinker)
+        async def _save_weights_for_sampler_async():
+            async def _send_request():
+                return await self.holder.post(
+                    "/api/v1/save_weights_for_sampler",
+                    request_data
+                )
 
-        def parse_response(result: Dict[str, Any]) -> types.SaveWeightsForSamplerResponse:
+            # Execute inside _take_turn to ensure ordering
+            async with self._take_turn(request_id):
+                result = await _send_request()
+
+            # Parse and return (like Tinker)
             model_path = result.get("model_path")
             if not model_path:
                 raise RuntimeError("No model_path returned from save_weights_for_sampler")
             logger.info(f"Weights saved for sampler: {model_path}")
             return types.SaveWeightsForSamplerResponse(path=model_path)
 
-        from concurrent.futures import Future
-        parsed_future: Future[types.SaveWeightsForSamplerResponse] = Future()
-
-        def callback(f: Future):
-            try:
-                result = f.result()
-                parsed_future.set_result(parse_response(result))
-            except Exception as e:
-                parsed_future.set_exception(e)
-
-        future.add_done_callback(callback)
-        return wrap_future(parsed_future)
+        # Schedule to event loop and return directly (like Tinker)
+        return wrap_future(self.holder.run_coroutine_threadsafe(_save_weights_for_sampler_async()))
 
     async def save_weights_for_sampler_async(
         self,
@@ -441,7 +476,7 @@ class TrainingClient:
         # Call training server to create sampling session (loads LoRA on inference workers)
         logger.info(f"Creating sampling session: model_path={model_path}")
         try:
-            response = self.holder.post(
+            response = self.holder.post_sync(
                 "/api/v1/create_sampling_session",
                 {"model_path": model_path},
                 timeout=60.0,  # LoRA loading can take some time
@@ -503,7 +538,7 @@ class TrainingClient:
         # Call training server to create sampling session (loads LoRA on inference workers)
         logger.info(f"Creating sampling session: model_path={model_path}")
         try:
-            response = self.holder.post(
+            response = self.holder.post_sync(
                 "/api/v1/create_sampling_session",
                 {"model_path": model_path},
                 timeout=60.0,  # LoRA loading can take some time
@@ -557,28 +592,27 @@ class TrainingClient:
             "path": name,
         }
 
-        # Submit async request immediately (non-blocking)
-        future = self.holder.post_async("/api/v1/save_weights", request_data)
+        # Use _take_turn to ensure sequential HTTP dispatch (like Tinker)
+        async def _save_state_async():
+            async def _send_request():
+                return await self.holder.post(
+                    "/api/v1/save_weights",
+                    request_data
+                )
 
-        def parse_response(result: Dict[str, Any]) -> types.SaveWeightsResponse:
+            # Execute inside _take_turn to ensure ordering
+            async with self._take_turn(request_id):
+                result = await _send_request()
+
+            # Parse and return (like Tinker)
             path = result.get("path")
             if not path:
                 raise RuntimeError("No path returned from save_weights")
             logger.info(f"Checkpoint saved: {path}")
             return types.SaveWeightsResponse(path=path)
 
-        from concurrent.futures import Future
-        parsed_future: Future[types.SaveWeightsResponse] = Future()
-
-        def callback(f: Future):
-            try:
-                result = f.result()
-                parsed_future.set_result(parse_response(result))
-            except Exception as e:
-                parsed_future.set_exception(e)
-
-        future.add_done_callback(callback)
-        return wrap_future(parsed_future)
+        # Schedule to event loop and return directly (like Tinker)
+        return wrap_future(self.holder.run_coroutine_threadsafe(_save_state_async()))
 
     async def save_state_async(
         self,
@@ -631,28 +665,27 @@ class TrainingClient:
             "optimizer": optimizer,
         }
 
-        # Submit async request immediately (non-blocking)
-        future = self.holder.post_async("/api/v1/load_weights", request_data)
+        # Use _take_turn to ensure sequential HTTP dispatch (like Tinker)
+        async def _load_weights_async():
+            async def _send_request():
+                return await self.holder.post(
+                    "/api/v1/load_weights",
+                    request_data
+                )
 
-        def parse_response(result: Dict[str, Any]) -> types.LoadWeightsResponse:
+            # Execute inside _take_turn to ensure ordering
+            async with self._take_turn(request_id):
+                result = await _send_request()
+
+            # Parse and return (like Tinker)
             loaded_path = result.get("path")
             if not loaded_path:
                 raise RuntimeError(f"Failed to load checkpoint: {path}")
             logger.info(f"Checkpoint loaded: {loaded_path} (optimizer={optimizer})")
             return types.LoadWeightsResponse(path=loaded_path)
 
-        from concurrent.futures import Future
-        parsed_future: Future[types.LoadWeightsResponse] = Future()
-
-        def callback(f: Future):
-            try:
-                result = f.result()
-                parsed_future.set_result(parse_response(result))
-            except Exception as e:
-                parsed_future.set_exception(e)
-
-        future.add_done_callback(callback)
-        return wrap_future(parsed_future)
+        # Schedule to event loop and return directly (like Tinker)
+        return wrap_future(self.holder.run_coroutine_threadsafe(_load_weights_async()))
 
     def load_state(
         self,
@@ -752,7 +785,7 @@ class TrainingClient:
         Returns:
             Health check response
         """
-        return self.holder.get("/health", timeout=10)
+        return self.holder.get_sync("/health", timeout=10)
 
     def update_dedicated_endpoint(
         self,
@@ -817,15 +850,20 @@ class TrainingClient:
             "provider_model_id": provider_model_id,
         }
 
-        # Submit async request immediately (non-blocking)
-        # Use longer timeout for this operation (can take 30-60+ seconds)
-        future = self.holder.post_async(
-            "/api/v1/update_dedicated_endpoint",
-            request_data,
-            timeout=300,  # 5 minute timeout
-        )
+        # Use _take_turn to ensure sequential HTTP dispatch
+        async def _update_dedicated_endpoint_async():
+            async def _send_request():
+                return await self.holder.post(
+                    "/api/v1/update_dedicated_endpoint",
+                    request_data,
+                    timeout=300,  # 5 minute timeout
+                )
 
-        def parse_response(result: Dict[str, Any]) -> types.UpdateDedicatedEndpointResponse:
+            # Execute inside _take_turn to ensure ordering
+            async with self._take_turn(request_id):
+                result = await _send_request()
+
+            # Parse and return
             success = result.get("success", False)
             provider_model_id = result.get("provider_model_id", "")
             if success:
@@ -848,18 +886,8 @@ class TrainingClient:
                 error=result.get("error"),
             )
 
-        from concurrent.futures import Future
-        parsed_future: Future[types.UpdateDedicatedEndpointResponse] = Future()
-
-        def callback(f: Future):
-            try:
-                result = f.result()
-                parsed_future.set_result(parse_response(result))
-            except Exception as e:
-                parsed_future.set_exception(e)
-
-        future.add_done_callback(callback)
-        return wrap_future(parsed_future)
+        # Schedule to event loop and return directly
+        return wrap_future(self.holder.run_coroutine_threadsafe(_update_dedicated_endpoint_async()))
 
     def update_serverless_weights(
         self,
@@ -921,15 +949,20 @@ class TrainingClient:
             "wait_for_completion": wait_for_completion,
         }
 
-        # Submit async request immediately (non-blocking)
-        # Use longer timeout for serverless weights (HF + provider upload can take time)
-        future = self.holder.post_async(
-            "/api/v1/update_serverless_weights",
-            request_data,
-            timeout=600.0,  # 10 minute timeout
-        )
+        # Use _take_turn to ensure sequential HTTP dispatch
+        async def _update_serverless_weights_async():
+            async def _send_request():
+                return await self.holder.post(
+                    "/api/v1/update_serverless_weights",
+                    request_data,
+                    timeout=600.0,  # 10 minute timeout
+                )
 
-        def parse_response(result: Dict[str, Any]) -> types.UpdateServerlessWeightsResponse:
+            # Execute inside _take_turn to ensure ordering
+            async with self._take_turn(request_id):
+                result = await _send_request()
+
+            # Parse and return
             provider_model_id = result.get("provider_model_id", "")
             hf_repo_url = result.get("hf_repo_url", "")
             checkpoint_path = result.get("checkpoint_path", "")
@@ -946,18 +979,8 @@ class TrainingClient:
                 status=status,
             )
 
-        from concurrent.futures import Future
-        parsed_future: Future[types.UpdateServerlessWeightsResponse] = Future()
-
-        def callback(f: Future):
-            try:
-                result = f.result()
-                parsed_future.set_result(parse_response(result))
-            except Exception as e:
-                parsed_future.set_exception(e)
-
-        future.add_done_callback(callback)
-        return wrap_future(parsed_future)
+        # Schedule to event loop and return directly
+        return wrap_future(self.holder.run_coroutine_threadsafe(_update_serverless_weights_async()))
 
     def list_checkpoints(self) -> APIFuture[types.CheckpointsListResponse]:
         """List all available checkpoints.

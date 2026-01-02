@@ -349,8 +349,16 @@ class SamplingClient:
             return sequences
 
         except httpx.HTTPStatusError as e:
-            logger.error(f"Sampling failed from {self.base_url}: HTTP {e.response.status_code} - {e.response.text}")
-            raise RuntimeError(f"Sampling failed: HTTP {e.response.status_code} - {e.response.text}") from e
+            # Check if this is a transient error (ReadError, ConnectError, TimeoutError)
+            error_text = e.response.text
+            is_transient = any(err in error_text for err in ["ReadError", "ConnectError", "TimeoutError"])
+
+            if is_transient:
+                logger.warning(f"Sampling failed with transient error from {self.base_url}: HTTP {e.response.status_code}")
+            else:
+                logger.error(f"Sampling failed from {self.base_url}: HTTP {e.response.status_code} - {error_text}")
+
+            raise RuntimeError(f"Sampling failed: HTTP {e.response.status_code} - {error_text}") from e
         except httpx.RequestError as e:
             # Server disconnected - likely crashed due to LoRA bug
             error_msg = str(e)

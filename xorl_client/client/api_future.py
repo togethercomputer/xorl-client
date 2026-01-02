@@ -304,7 +304,15 @@ class AsyncAPIFuture(Generic[T]):
             logger.error(f"AsyncAPIFuture.result_async() timed out after {timeout}s")
             raise TimeoutError(f"Operation timed out after {timeout}s") from e
         except Exception as e:
-            logger.error(f"AsyncAPIFuture.result_async() failed: {e}")
+            # Check if this is a transient error (ReadError, ConnectError, TimeoutError)
+            error_str = str(e)
+            is_transient = any(err in error_str for err in ["ReadError", "ConnectError", "TimeoutError"])
+
+            if is_transient:
+                logger.warning(f"AsyncAPIFuture.result_async() failed with transient error")
+            else:
+                logger.error(f"AsyncAPIFuture.result_async() failed: {e}")
+
             raise
 
     def done(self) -> bool:

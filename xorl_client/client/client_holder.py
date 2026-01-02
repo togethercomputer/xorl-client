@@ -7,13 +7,14 @@ model IDs, and async execution. ServiceClient and clients use this internally.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TypeVar, Coroutine
 
-import requests
+import httpx
 
 from xorl_client.exceptions import (
     APIConnectionError,
@@ -26,6 +27,44 @@ from xorl_client.exceptions import (
 )
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar('T')
+
+
+class _ClientHolderEventLoopSingleton:
+    """Global singleton event loop for all ClientHolder instances (like Tinker)."""
+
+    def __init__(self):
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+        self._started: bool = False
+        self._lifecycle_lock: threading.Lock = threading.Lock()
+
+    def _ensure_started(self):
+        if self._started:
+            return
+
+        with self._lifecycle_lock:
+            if self._started:
+                return
+            self._loop = asyncio.new_event_loop()
+            self._thread = threading.Thread(target=self._background_thread_func, daemon=True)
+            self._thread.start()
+            self._started = True
+
+    def _background_thread_func(self):
+        assert self._loop is not None, "Loop must not be None"
+        logger.info("Global event loop thread started")
+        self._loop.run_forever()
+        logger.info("Global event loop thread stopped")
+
+    def get_loop(self) -> asyncio.AbstractEventLoop:
+        self._ensure_started()
+        assert self._loop is not None, "Loop must not be None"
+        return self._loop
+
+
+_event_loop_singleton = _ClientHolderEventLoopSingleton()
 
 
 class ClientHolder:
@@ -62,10 +101,17 @@ class ClientHolder:
         # Thread pool for async operations
         self._executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="xorl_client-client")
 
-        # HTTP session
-        self._http_session = requests.Session()
+        # Use global singleton event loop (like Tinker)
+        # This allows _take_turn to work correctly across ALL client instances
+        self._loop: asyncio.AbstractEventLoop = _event_loop_singleton.get_loop()
+
+        # HTTP client (async like Tinker)
+        headers = {}
         if self.api_key:
-            self._http_session.headers["Authorization"] = f"Bearer {self.api_key}"
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        self._http_client: Optional[httpx.AsyncClient] = None
+        self._http_client_headers = headers
 
         logger.info(f"ClientHolder initialized: session_id={self._session_id}, base_url={self.base_url}")
 
@@ -86,8 +132,17 @@ class ClientHolder:
         logger.info(f"Generated model_id: {model_id}")
         return model_id
 
-    def post(self, endpoint: str, data: Dict[str, Any], timeout: Optional[float] = None) -> Dict[str, Any]:
-        """Send synchronous POST request.
+    def _get_http_client(self) -> httpx.AsyncClient:
+        """Get or create the HTTP client (must be called from event loop thread)."""
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(
+                headers=self._http_client_headers,
+                timeout=httpx.Timeout(self.timeout),
+            )
+        return self._http_client
+
+    async def post(self, endpoint: str, data: Dict[str, Any], timeout: Optional[float] = None) -> Dict[str, Any]:
+        """Send async POST request (like Tinker).
 
         Args:
             endpoint: API endpoint (e.g., "/api/v1/forward_backward")
@@ -108,31 +163,31 @@ class ClientHolder:
         """
         url = f"{self.base_url}{endpoint}"
         timeout_val = timeout if timeout is not None else self.timeout
+        client = self._get_http_client()
 
         try:
-            response = self._http_session.post(url, json=data, timeout=timeout_val)
+            response = await client.post(url, json=data, timeout=timeout_val)
             response.raise_for_status()
             return response.json()
-        except requests.exceptions.ConnectTimeout as e:
+        except httpx.ConnectTimeout as e:
             logger.error(f"POST {url} connection timed out")
             raise APITimeoutError(url, timeout_val, e) from e
-        except requests.exceptions.ReadTimeout as e:
+        except httpx.ReadTimeout as e:
             logger.error(f"POST {url} read timed out")
             raise APITimeoutError(url, timeout_val, e) from e
-        except requests.exceptions.ConnectionError as e:
+        except httpx.ConnectError as e:
             logger.error(f"POST {url} connection failed: {e}")
             raise APIConnectionError(url, e) from e
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             # Extract error detail if available
             error_detail = None
             response_body = None
-            status_code = e.response.status_code if e.response is not None else 500
+            status_code = e.response.status_code
             try:
-                if e.response is not None:
-                    response_body = e.response.text
-                    error_json = e.response.json()
-                    if "detail" in error_json:
-                        error_detail = error_json["detail"]
+                response_body = e.response.text
+                error_json = e.response.json()
+                if "detail" in error_json:
+                    error_detail = error_json["detail"]
             except Exception:
                 pass
 
@@ -154,32 +209,33 @@ class ClientHolder:
                     status_code,
                     response_body,
                 ) from e
-        except requests.exceptions.RequestException as e:
+        except httpx.TimeoutException as e:
+            logger.error(f"POST {url} timed out")
+            raise APITimeoutError(url, timeout_val, e) from e
+        except httpx.RequestError as e:
             # Catch-all for other request exceptions
             logger.error(f"POST {url} failed: {e}")
             raise APIConnectionError(url, e) from e
 
+    def post_sync(self, endpoint: str, data: Dict[str, Any], timeout: Optional[float] = None) -> Dict[str, Any]:
+        """Synchronous wrapper for post (schedules async post on event loop).
+
+        Used for legacy code that needs sync interface.
+        """
+        future = self.run_coroutine_threadsafe(self.post(endpoint, data, timeout))
+        return future.result()
+
     def post_async(
         self, endpoint: str, data: Dict[str, Any], timeout: Optional[float] = None
     ) -> Future[Dict[str, Any]]:
-        """Send asynchronous POST request.
+        """Legacy async wrapper (schedules async post on event loop).
 
-        Args:
-            endpoint: API endpoint
-            data: JSON data to send
-            timeout: Optional timeout override
-
-        Returns:
-            Future that will contain the response JSON
+        Returns concurrent.futures.Future for backward compatibility.
         """
+        return self.run_coroutine_threadsafe(self.post(endpoint, data, timeout))
 
-        def _post():
-            return self.post(endpoint, data, timeout)
-
-        return self._executor.submit(_post)
-
-    def get(self, endpoint: str, timeout: Optional[float] = None) -> Dict[str, Any]:
-        """Send synchronous GET request.
+    async def get(self, endpoint: str, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """Send async GET request (like Tinker).
 
         Args:
             endpoint: API endpoint
@@ -195,28 +251,28 @@ class ClientHolder:
         """
         url = f"{self.base_url}{endpoint}"
         timeout_val = timeout if timeout is not None else self.timeout
+        client = self._get_http_client()
 
         try:
-            response = self._http_session.get(url, timeout=timeout_val)
+            response = await client.get(url, timeout=timeout_val)
             response.raise_for_status()
             return response.json()
-        except requests.exceptions.ConnectTimeout as e:
+        except httpx.ConnectTimeout as e:
             logger.error(f"GET {url} connection timed out")
             raise APITimeoutError(url, timeout_val, e) from e
-        except requests.exceptions.ReadTimeout as e:
+        except httpx.ReadTimeout as e:
             logger.error(f"GET {url} read timed out")
             raise APITimeoutError(url, timeout_val, e) from e
-        except requests.exceptions.ConnectionError as e:
+        except httpx.ConnectError as e:
             logger.error(f"GET {url} connection failed: {e}")
             raise APIConnectionError(url, e) from e
-        except requests.exceptions.HTTPError as e:
-            status_code = e.response.status_code if e.response is not None else 500
+        except httpx.HTTPStatusError as e:
+            status_code = e.response.status_code
             error_detail = None
             try:
-                if e.response is not None:
-                    error_json = e.response.json()
-                    if "detail" in error_json:
-                        error_detail = error_json["detail"]
+                error_json = e.response.json()
+                if "detail" in error_json:
+                    error_detail = error_json["detail"]
             except Exception:
                 pass
             logger.error(f"GET {url} failed with HTTP {status_code}")
@@ -225,9 +281,20 @@ class ClientHolder:
                 url,
                 status_code,
             ) from e
-        except requests.exceptions.RequestException as e:
+        except httpx.TimeoutException as e:
+            logger.error(f"GET {url} timed out")
+            raise APITimeoutError(url, timeout_val, e) from e
+        except httpx.RequestError as e:
             logger.error(f"GET {url} failed: {e}")
             raise APIConnectionError(url, e) from e
+
+    def get_sync(self, endpoint: str, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """Synchronous wrapper for get (schedules async get on event loop).
+
+        Used for legacy code that needs sync interface.
+        """
+        future = self.run_coroutine_threadsafe(self.get(endpoint, timeout))
+        return future.result()
 
     def get_async(
         self,
@@ -235,15 +302,9 @@ class ClientHolder:
         params: Optional[Dict[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> Future[Dict[str, Any]]:
-        """Send asynchronous GET request.
+        """Legacy async wrapper (schedules async get on event loop).
 
-        Args:
-            endpoint: API endpoint
-            params: Optional query parameters
-            timeout: Optional timeout override
-
-        Returns:
-            Future that will contain the response JSON
+        Returns concurrent.futures.Future for backward compatibility.
         """
         # Build URL with query params
         if params:
@@ -252,16 +313,45 @@ class ClientHolder:
         else:
             full_endpoint = endpoint
 
-        def _get():
-            return self.get(full_endpoint, timeout)
+        return self.run_coroutine_threadsafe(self.get(full_endpoint, timeout))
 
-        return self._executor.submit(_get)
+    def get_loop(self) -> asyncio.AbstractEventLoop:
+        """Get the global singleton event loop.
+
+        Returns:
+            The shared asyncio event loop running in background thread
+        """
+        return self._loop
+
+    def run_coroutine_threadsafe(self, coro: Coroutine[Any, Any, T]) -> Future[T]:
+        """Schedule a coroutine to run in the shared event loop.
+
+        This is thread-safe and can be called from any thread.
+        Returns a concurrent.futures.Future that will contain the result.
+
+        Args:
+            coro: Coroutine to run in the event loop
+
+        Returns:
+            Future that will be completed when the coroutine finishes
+        """
+        return asyncio.run_coroutine_threadsafe(coro, self.get_loop())
 
     def shutdown(self):
         """Shutdown the client holder and cleanup resources."""
         logger.info("Shutting down ClientHolder")
+
+        # Close HTTP client
+        if self._http_client is not None:
+            # Schedule close on event loop
+            future = asyncio.run_coroutine_threadsafe(self._http_client.aclose(), self._loop)
+            try:
+                future.result(timeout=5.0)
+            except Exception:
+                pass
+
+        # Note: We don't stop the global event loop (it's shared across all holders)
         self._executor.shutdown(wait=True)
-        self._http_session.close()
 
     def __enter__(self):
         """Context manager entry."""
