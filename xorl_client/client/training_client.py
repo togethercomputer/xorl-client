@@ -23,6 +23,7 @@ from typing import List, Dict, Any, Optional, Union
 from xorl_client import types
 from xorl_client.client.api_future import APIFuture, wrap_future
 from xorl_client.client.client_holder import ClientHolder
+from xorl_client.exceptions import InternalServerError, BadRequestError
 
 logger = logging.getLogger(__name__)
 
@@ -401,7 +402,18 @@ class TrainingClient:
 
             # Execute inside _take_turn to ensure ordering
             async with self._take_turn(request_id):
-                result = await _send_request()
+                try:
+                    result = await _send_request()
+                except (InternalServerError, BadRequestError) as e:
+                    # Check if this is a "LoRA already loaded" error - not fatal, just warn
+                    error_msg = str(e)
+                    if "already loaded" in error_msg.lower():
+                        logger.warning(f"LoRA adapter '{name}' is already loaded on inference worker, skipping reload")
+                        # Construct the expected model path since the weights are already there
+                        model_path = f"xorl://{self.model_id}/sampler_weights/{name}"
+                        return types.SaveWeightsForSamplerResponse(path=model_path)
+                    # Re-raise other errors
+                    raise
 
             # Parse and return (like Tinker)
             model_path = result.get("model_path")
@@ -489,6 +501,14 @@ class TrainingClient:
             lora_name = response.get("lora_name", "")
             logger.info(f"Sampling session created: lora_name={lora_name}, model_path={model_path}")
 
+        except (InternalServerError, BadRequestError) as e:
+            # Check if this is a "LoRA already loaded" error - not fatal, just warn
+            error_msg = str(e)
+            if "already loaded" in error_msg.lower():
+                logger.warning(f"LoRA adapter is already loaded on inference worker, continuing: {error_msg}")
+            else:
+                logger.error(f"Failed to create sampling session for {model_path}: {e}")
+                raise
         except Exception as e:
             logger.error(f"Failed to create sampling session for {model_path}: {e}")
             raise
@@ -551,6 +571,14 @@ class TrainingClient:
             lora_name = response.get("lora_name", "")
             logger.info(f"Sampling session created: lora_name={lora_name}, model_path={model_path}")
 
+        except (InternalServerError, BadRequestError) as e:
+            # Check if this is a "LoRA already loaded" error - not fatal, just warn
+            error_msg = str(e)
+            if "already loaded" in error_msg.lower():
+                logger.warning(f"LoRA adapter is already loaded on inference worker, continuing: {error_msg}")
+            else:
+                logger.error(f"Failed to create sampling session for {model_path}: {e}")
+                raise
         except Exception as e:
             logger.error(f"Failed to create sampling session for {model_path}: {e}")
             raise

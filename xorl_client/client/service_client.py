@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional
 
 from xorl_client import types
 from xorl_client.client.client_holder import ClientHolder
+from xorl_client.exceptions import InternalServerError, BadRequestError
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +239,14 @@ class ServiceClient:
             lora_name = response.get("lora_name", "")
             logger.info(f"Sampling session created: lora_name={lora_name}, model_path={model_path}")
 
+        except (InternalServerError, BadRequestError) as e:
+            # Check if this is a "LoRA already loaded" error - not fatal, just warn
+            error_msg = str(e)
+            if "already loaded" in error_msg.lower():
+                logger.warning(f"LoRA adapter is already loaded on inference worker, continuing: {error_msg}")
+            else:
+                logger.error(f"Failed to create sampling session for {model_path}: {e}")
+                raise
         except Exception as e:
             logger.error(f"Failed to create sampling session for {model_path}: {e}")
             raise

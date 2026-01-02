@@ -191,7 +191,12 @@ class ClientHolder:
             except Exception:
                 pass
 
-            logger.error(f"POST {url} failed with HTTP {status_code}: {error_detail or response_body}")
+            # Use warning level for "already loaded" errors (not fatal)
+            error_msg = error_detail or response_body or ""
+            if "already loaded" in str(error_msg).lower():
+                logger.warning(f"POST {url} returned HTTP {status_code}: {error_msg}")
+            else:
+                logger.error(f"POST {url} failed with HTTP {status_code}: {error_msg}")
 
             # Raise appropriate exception based on status code
             if status_code == 400:
