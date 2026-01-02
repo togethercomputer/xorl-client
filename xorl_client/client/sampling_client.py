@@ -48,16 +48,18 @@ class SamplingClient:
 
     def __init__(
         self,
-        base_url: str,
-        model_path: str,
+        base_url: str = "http://localhost:6000",
+        model_path: str = "",
+        model: Optional[str] = None,
         api_key: Optional[str] = None,
         timeout: float = 120.0,
     ):
         """Initialize SamplingClient.
 
         Args:
-            base_url: Base URL for the inference engine (required)
-            model_path: Path to saved model weights (required, e.g., "xorl://model-123/step-100")
+            base_url: Base URL for the API endpoint (e.g., "http://localhost:6000")
+            model_path: Path to saved model weights (e.g., "xorl://model-123/step-100")
+            model: Model identifier for API routing (e.g., "sbharti/Qwen/Qwen3-32B-af4738d6")
             api_key: API key for authentication (default: XORL_INFERENCE_API_KEY env var)
             timeout: Request timeout in seconds (default: 120.0)
         """
@@ -65,6 +67,7 @@ class SamplingClient:
             api_key = os.environ.get("XORL_INFERENCE_API_KEY")
 
         self.base_url = base_url.rstrip("/")
+        self._model = model
         self.api_key = api_key
         self.model_path = model_path
         self.timeout = timeout
@@ -78,7 +81,7 @@ class SamplingClient:
         # xorl://model_id/sampler_weights/checkpoint_name -> checkpoint_name
         self._lora_name = self._extract_lora_name(model_path)
 
-        logger.info(f"SamplingClient initialized: base_url={self.base_url}, model_path={self.model_path}, lora_name={self._lora_name}")
+        logger.info(f"SamplingClient initialized: base_url={self.base_url}, model={self._model}, model_path={self.model_path}, lora_name={self._lora_name}")
 
     @staticmethod
     def _extract_lora_name(model_path: str) -> Optional[str]:
@@ -201,7 +204,8 @@ class SamplingClient:
         # Workaround for SGLang bug: n > 1 crashes the server when using LoRA adapters.
         # Additionally, concurrent requests to LoRA endpoints can also crash the server.
         # As a workaround, we make multiple sequential requests instead.
-        if num_samples > 1 and self._lora_name:
+        #if num_samples > 1 and self._lora_name:
+        if False:
             logger.debug(f"Using sequential requests workaround for num_samples={num_samples} with LoRA")
             sequences: List[types.SampledSequence] = []
             for i in range(num_samples):
@@ -319,6 +323,10 @@ class SamplingClient:
             "return_logprob": return_logprobs,
         }
 
+        # Add model for API routing (if set)
+        if self._model:
+            payload["model"] = self._model
+
         # Add LoRA adapter name for routing (SGLang expects the registered adapter name, not the full path)
         if self._lora_name:
             payload["lora_path"] = self._lora_name
@@ -373,39 +381,11 @@ class SamplingClient:
             raise RuntimeError(f"Sampling failed: {e}") from e
 
     def _parse_sample_response(self, data: dict, return_logprobs: bool) -> types.SampledSequence:
-        """Parse a single sample response from SGLang."""
-        text = data.get("text", "")
-        meta_info = data.get("meta_info", {})
-
-        # Extract tokens and logprobs (handle both direct SGLang and router formats)
-        tokens = data.get("tokens")  # Direct SGLang format
-        if tokens is None:
-            tokens = data.get("output_ids")  # Router format
-        if tokens is None and "output_token_ids" in meta_info:
-            tokens = meta_info["output_token_ids"]
-
-        logprobs = data.get("logprobs")
-        if logprobs is None and "output_token_logprobs" in meta_info:
-            output_logprobs = meta_info["output_token_logprobs"]
-            if isinstance(output_logprobs, list) and output_logprobs:
-                if isinstance(output_logprobs[0], (list, tuple)) and len(output_logprobs[0]) >= 1:
-                    logprobs = [item[0] for item in output_logprobs]
-                else:
-                    logprobs = output_logprobs
-
-        # Warn if logprobs missing
-        if return_logprobs and (tokens is None or logprobs is None):
-            logger.warning(
-                f"Logprobs requested but not fully returned. "
-                f"Got tokens={tokens is not None}, logprobs={logprobs is not None}"
-            )
-            tokens = tokens or []
-            logprobs = logprobs or []
-
+        """Parse a single sample response - just pass through the fields directly."""
         return types.SampledSequence(
-            tokens=tokens or [],
-            logprobs=logprobs or [],
-            text=text,
+            tokens=data.get("output_ids", []),
+            logprobs=data.get("output_token_logprobs", []),
+            text=data.get("text", ""),
         )
 
     async def sample_async(

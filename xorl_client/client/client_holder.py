@@ -84,12 +84,14 @@ class ClientHolder:
 
     def __init__(
         self,
-        base_url: str = "http://localhost:5555",
+        base_url: str = "http://localhost:6000",
+        model: Optional[str] = None,
         api_key: Optional[str] = None,
         timeout: float = 300.0,
         **kwargs: Any,
     ):
         self.base_url = base_url.rstrip("/")
+        self._model = model
         self.api_key = api_key
         self.timeout = timeout
 
@@ -164,6 +166,10 @@ class ClientHolder:
         url = f"{self.base_url}{endpoint}"
         timeout_val = timeout if timeout is not None else self.timeout
         client = self._get_http_client()
+
+        # Add model to request payload for API routing (if set)
+        if self._model:
+            data = {**data, "model": self._model}
 
         try:
             response = await client.post(url, json=data, timeout=timeout_val)

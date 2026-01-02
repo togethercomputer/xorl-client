@@ -48,6 +48,7 @@ class ServiceClient:
     def __init__(
         self,
         base_url: Optional[str] = None,
+        model: Optional[str] = None,
         api_key: Optional[str] = None,
         timeout: float = 300.0,
         **kwargs: Any,
@@ -56,6 +57,7 @@ class ServiceClient:
 
         Args:
             base_url: Base URL for the training API (default: XORL_BASE_URL env var or "http://localhost:5555")
+            model: Model identifier for API routing (optional)
             api_key: API key for authentication (default: XORL_API_KEY env var)
             timeout: Default timeout for requests
             **kwargs: Additional arguments
@@ -65,8 +67,8 @@ class ServiceClient:
         if api_key is None:
             api_key = os.environ.get("XORL_API_KEY")
 
-        self.holder = ClientHolder(base_url=base_url, api_key=api_key, timeout=timeout, **kwargs)
-        logger.info(f"ServiceClient initialized: base_url={base_url}")
+        self.holder = ClientHolder(base_url=base_url, model=model, api_key=api_key, timeout=timeout, **kwargs)
+        logger.info(f"ServiceClient initialized: base_url={base_url}, model={model}")
 
     def _create_lora_training_client_submit(
         self,
@@ -188,6 +190,7 @@ class ServiceClient:
         self,
         base_url: str,
         model_path: str,
+        model: Optional[str] = None,
         api_key: Optional[str] = None,
         timeout: float = 120.0,
     ) -> "SamplingClient":
@@ -205,6 +208,7 @@ class ServiceClient:
             base_url: Base URL for the inference engine (required)
             model_path: Path to saved model weights (required, e.g., "xorl://default/sampler_weights/step-100"
                        or "sampler_weights/step-100")
+            model: Model identifier for API routing (optional)
             api_key: API key for authentication (default: XORL_INFERENCE_API_KEY env var)
             timeout: Request timeout in seconds (default: 120.0)
 
@@ -252,10 +256,11 @@ class ServiceClient:
             raise
 
         # Create SamplingClient that connects to inference engine
-        logger.info(f"Creating sampling client: base_url={base_url}, model_path={model_path}")
+        logger.info(f"Creating sampling client: base_url={base_url}, model={model}, model_path={model_path}")
         return SamplingClient(
             base_url=base_url,
             model_path=model_path,
+            model=model,
             api_key=api_key,
             timeout=timeout,
         )
