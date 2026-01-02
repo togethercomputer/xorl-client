@@ -382,9 +382,15 @@ class SamplingClient:
 
     def _parse_sample_response(self, data: dict, return_logprobs: bool) -> types.SampledSequence:
         """Parse a single sample response - just pass through the fields directly."""
+        raw_logprobs = data["meta_info"].get("output_token_logprobs")
+        # output_token_logprobs is a list of [logprob, token_id, ???] tuples
+        # Extract just the logprob (first element) from each tuple
+        output_logprobs = None
+        if raw_logprobs is not None:
+            output_logprobs = [item[0] if item[0] is not None else 0.0 for item in raw_logprobs]
         return types.SampledSequence(
             tokens=data.get("output_ids", []),
-            logprobs=data.get("output_token_logprobs", []),
+            logprobs=output_logprobs,
             text=data.get("text", ""),
         )
 

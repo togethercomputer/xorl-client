@@ -58,8 +58,8 @@ logging.getLogger("httpx").setLevel(logging.WARN)
 class Config:
     # API routing
     base_url: str = "http://localhost:6000"
-    training_model: str = "sbharti/Qwen/Qwen3-32B-bfd4c892"
-    inference_model: str = "sbharti/Qwen/Qwen3-32B-af4738d6"
+    training_model: str = "sbharti/Qwen/Qwen3-32B-c7249570"
+    inference_model: str = "sbharti/Qwen/Qwen3-32B-9ff2716a"
     api_key: str | None = None  # API key (or set XORL_API_KEY env var)
     log_path: str = "/scratch/outputs/checkpoints/qwen3-32b-gsm8k"
     ml_log_path: str = "./log_outputs/ml-logs/qwen3-32-gsm8k"
