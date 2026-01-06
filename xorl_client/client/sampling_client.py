@@ -343,9 +343,20 @@ class SamplingClient:
                 response.raise_for_status()
                 data = response.json()
 
-            # SGLang returns a list when n>1, single dict when n=1
+            # SGLang returns different formats:
+            # - Single response (n=1): dict with 'text', 'output_ids', 'meta_info' keys
+            # - Batched response (n>1): dict with string keys '0', '1', etc., each containing a response dict
+            # - Or sometimes a list of response dicts
             if isinstance(data, list):
                 response_list = data
+            elif isinstance(data, dict):
+                # Check if this is a batched response (keys are numeric strings) or single response
+                if "meta_info" in data or "output_ids" in data or "text" in data:
+                    # Single response format
+                    response_list = [data]
+                else:
+                    # Batched response format - dict with '0', '1', etc. keys
+                    response_list = [data[str(i)] for i in range(len(data))]
             else:
                 response_list = [data]
 
@@ -382,12 +393,15 @@ class SamplingClient:
 
     def _parse_sample_response(self, data: dict, return_logprobs: bool) -> types.SampledSequence:
         """Parse a single sample response - just pass through the fields directly."""
-        raw_logprobs = data["meta_info"].get("output_token_logprobs")
+        meta_info = data.get("meta_info", {})
+        raw_logprobs = meta_info.get("output_token_logprobs")
+
         # output_token_logprobs is a list of [logprob, token_id, ???] tuples
         # Extract just the logprob (first element) from each tuple
         output_logprobs = None
         if raw_logprobs is not None:
             output_logprobs = [item[0] if item[0] is not None else 0.0 for item in raw_logprobs]
+
         return types.SampledSequence(
             tokens=data.get("output_ids", []),
             logprobs=output_logprobs,

@@ -347,7 +347,16 @@ async def main(config: Config):
                 )
                 training_datums.append(datum)
 
-        # Training step
+        # Training step - skip if no valid datums (all groups had zero advantage or failed)
+        if len(training_datums) == 0:
+            logger.warning(f"Batch {batch_idx}: No valid training datums, skipping training step")
+            metrics["time/total"] = time.time() - t_start
+            for metric, values in batch_metrics.items():
+                if values:
+                    metrics[f"reward/{metric}/mean"] = sum(values) / len(values)
+            ml_logger.log_metrics(metrics, step=batch_idx)
+            continue
+
         fwd_bwd_future = training_client.forward_backward(training_datums, loss_fn="importance_sampling")
         optim_step_future = training_client.optim_step(adam_params)
         _fwd_bwd_result = await fwd_bwd_future

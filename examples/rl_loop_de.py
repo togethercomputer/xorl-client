@@ -52,8 +52,8 @@ logging.getLogger("httpx").setLevel(logging.WARN)
 
 # Hardcoded config
 BASE_URL = "http://localhost:6000"
-TRAINING_MODEL = "sbharti/Qwen/Qwen3-32B-bfd4c892"
-INFERENCE_MODEL = "sbharti/Qwen/Qwen3-32B-af4738d6"
+TRAINING_MODEL = "sbharti/Qwen/Qwen3-32B-c7249570"
+INFERENCE_MODEL = "sbharti/Qwen/Qwen3-32B-9ff2716a"
 MODEL_NAME = "Qwen/Qwen3-32B"
 LOG_PATH = "outputs/xorl_client-rl-de"
 BATCH_SIZE = 8
@@ -61,7 +61,7 @@ GROUP_SIZE = 4
 LEARNING_RATE = 4e-5
 LORA_RANK = 32
 SAVE_EVERY = 50
-MAX_TOKENS = 256
+MAX_TOKENS = 32000
 
 
 def get_reward(response: str, answer: str) -> float:
@@ -97,7 +97,7 @@ def main():
 
     # Get tokenizer and renderer
     tokenizer = get_tokenizer(MODEL_NAME)
-    renderer_name = model_info.get_recommended_renderer_name(MODEL_NAME)
+    renderer_name = "qwen3_disable_thinking"
     renderer = renderers.get_renderer(renderer_name, tokenizer)
     logger.info(f"Using renderer: {renderer_name}")
 
