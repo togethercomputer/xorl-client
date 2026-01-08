@@ -74,6 +74,40 @@ def main(config: Config):
         )
         start_batch = 0
 
+    # Initial validation step (forward-only, no gradients)
+    # Uses a small batch to test the forward() endpoint
+    logger.info("Running initial validation (forward-only)...")
+    val_batch_size = min(16, config.batch_size)
+    val_rows = train_dataset.select(range(val_batch_size))
+    val_batch = [
+        conversation_to_datum(
+            row["messages"],  # type: ignore
+            renderer,
+            config.max_length,
+            config.train_on_what,
+        )
+        for row in val_rows
+    ]
+
+    val_start_time = time.time()
+    val_result = training_client.forward(val_batch, loss_fn="cross_entropy").result()
+    val_time = time.time() - val_start_time
+
+    # Compute validation metrics
+    val_logprobs = [x["logprobs"] for x in val_result.loss_fn_outputs]
+    val_weights = [d.loss_fn_inputs["weights"] for d in val_batch]
+    val_nll = compute_mean_nll(val_logprobs, val_weights)
+
+    logger.info(
+        f"Initial validation: nll={val_nll:.4f}, "
+        f"num_sequences={len(val_batch)}, "
+        f"time={val_time:.2f}s"
+    )
+    ml_logger.log_metrics(
+        metrics={"val_mean_nll": val_nll, "val_time": val_time},
+        step=-1,  # Pre-training step
+    )
+
     # Training loop (single epoch)
     logger.info(f"Training for {n_train_batches} steps")
 

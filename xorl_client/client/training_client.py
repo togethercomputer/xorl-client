@@ -299,6 +299,135 @@ class TrainingClient:
         # Schedule to event loop and return directly (like Tinker)
         return wrap_future(self.holder.run_coroutine_threadsafe(_forward_backward_async()))
 
+    def forward(
+        self,
+        data: Union[List[types.Datum], List[Dict[str, Any]]],
+        loss_fn: str = "cross_entropy",
+    ) -> APIFuture[types.ForwardBackwardOutput]:
+        """Execute forward pass only (no backward/gradient computation).
+
+        This is useful for validation/evaluation during training where you want
+        to compute loss metrics without updating gradients. The server uses
+        torch.no_grad() for efficiency.
+
+        Args:
+            data: List of training examples (Datum objects or dicts)
+            loss_fn: Loss function name ("cross_entropy", "importance_sampling", etc.)
+
+        Returns:
+            APIFuture[ForwardBackwardOutput] that can be awaited
+
+        Example:
+            >>> # Validation pass
+            >>> fwd_future = training_client.forward(val_datums, "cross_entropy")
+            >>> result = fwd_future.result()
+            >>> print(f"Validation loss: {result.metrics['loss:mean']}")
+        """
+        # Get request ID for ordering
+        request_id = self._get_request_id()
+
+        # Convert Datum objects to dicts if needed
+        # Support both xorl_client.types.Datum and tinker.Datum (Pydantic model)
+        datums_dicts = []
+        for datum in data:
+            if isinstance(datum, types.Datum):
+                datums_dicts.append(datum.to_dict())
+            elif hasattr(datum, 'to_dict'):
+                # Support objects with to_dict() method
+                datums_dicts.append(datum.to_dict())
+            elif hasattr(datum, 'model_dump'):
+                # Support Pydantic v2 models (like tinker.Datum)
+                # Convert tinker format to xorl_client format
+                datum_dict = datum.model_dump()
+                datums_dicts.append(self._convert_tinker_datum(datum_dict))
+            elif isinstance(datum, dict):
+                datums_dicts.append(datum)
+            else:
+                raise TypeError(
+                    f"Expected Datum, dict, or Pydantic model, got {type(datum).__name__}"
+                )
+
+        request_data = {
+            "model_id": self.model_id,
+            "seq_id": request_id + 1,  # seq_id starts from 1 (like Tinker)
+            "forward_input": {
+                "data": datums_dicts,
+                "loss_fn": loss_fn,
+            }
+        }
+
+        # Use _take_turn to ensure sequential HTTP dispatch (exactly like Tinker)
+        async def _forward_async():
+            # Define HTTP sender (like Tinker's _send_request pattern)
+            async def _send_request():
+                # Use async HTTP directly (like Tinker) - no asyncio.to_thread!
+                return await self.holder.post(
+                    "/api/v1/forward",
+                    request_data
+                )
+
+            # Execute inside _take_turn to ensure ordering
+            async with self._take_turn(request_id):
+                result = await _send_request()
+
+            # Turn released here - now parse and return (like Tinker)
+            raw_outputs = result.get("loss_fn_outputs", [])
+            metrics = result.get("metrics", {})
+            logger.info(
+                f"Forward completed: num_outputs={len(raw_outputs)}, "
+                f"loss_mean={metrics.get('loss:mean', 'N/A')}"
+            )
+
+            # Convert loss_fn_outputs dict values to TensorData objects
+            converted_outputs = []
+            for output in raw_outputs:
+                converted_output = {}
+                for key, value in output.items():
+                    if isinstance(value, dict) and "data" in value:
+                        # This looks like a serialized TensorData, convert it
+                        converted_output[key] = types.TensorData.from_dict(value)
+                    else:
+                        # Pass through other values (like scalar 'loss')
+                        converted_output[key] = value
+                converted_outputs.append(converted_output)
+
+            return types.ForwardBackwardOutput(
+                loss_fn_outputs=converted_outputs,
+                metrics=metrics,
+            )
+
+        # Schedule to event loop and return directly (like Tinker)
+        return wrap_future(self.holder.run_coroutine_threadsafe(_forward_async()))
+
+    async def forward_async(
+        self,
+        data: Union[List[types.Datum], List[Dict[str, Any]]],
+        loss_fn: str = "cross_entropy",
+    ) -> APIFuture[types.ForwardBackwardOutput]:
+        """Async version of forward.
+
+        Execute forward pass only (no backward/gradient computation).
+        This is the async wrapper that allows using forward in async contexts.
+
+        Args:
+            data: List of training examples (Datum objects or dicts)
+            loss_fn: Loss function name ("cross_entropy", "importance_sampling", etc.)
+
+        Returns:
+            APIFuture[ForwardBackwardOutput] that can be awaited
+
+        Example:
+            >>> # Option 1: Await the future directly
+            >>> fwd_future = await training_client.forward_async(val_datums, "cross_entropy")
+            >>> result = await fwd_future
+            >>> print(f"Validation loss: {result.metrics['loss:mean']}")
+            >>>
+            >>> # Option 2: Use result_async
+            >>> fwd_future = await training_client.forward_async(val_datums, "cross_entropy")
+            >>> result = await fwd_future.result_async()
+        """
+        return self.forward(data, loss_fn)
+
     def optim_step(
         self,
         adam_params: Union[types.AdamParams, Dict[str, float]],
