@@ -10,9 +10,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Dict, Optional, TypeVar, Coroutine
+from typing import Any, Awaitable, Callable, Dict, Optional, TypeVar, Coroutine
 
 import httpx
 
@@ -24,6 +25,12 @@ from xorl_client.exceptions import (
     AuthenticationError,
     NotFoundError,
     InternalServerError,
+)
+from xorl_client.resources import (
+    TrainingResource,
+    ModelsResource,
+    WeightsResource,
+    FuturesResource,
 )
 
 logger = logging.getLogger(__name__)
@@ -115,7 +122,41 @@ class ClientHolder:
         self._http_client: Optional[httpx.AsyncClient] = None
         self._http_client_headers = headers
 
+        # Lazy-initialized resources (like Tinker's client.models, client.training, etc.)
+        self._training: Optional[TrainingResource] = None
+        self._models: Optional[ModelsResource] = None
+        self._weights: Optional[WeightsResource] = None
+        self._futures: Optional[FuturesResource] = None
+
         logger.info(f"ClientHolder initialized: session_id={self._session_id}, base_url={self.base_url}")
+
+    @property
+    def training(self) -> TrainingResource:
+        """Low-level training resource for forward, forward_backward, optim_step."""
+        if self._training is None:
+            self._training = TrainingResource(self)
+        return self._training
+
+    @property
+    def models(self) -> ModelsResource:
+        """Low-level models resource for create, unload, get_info."""
+        if self._models is None:
+            self._models = ModelsResource(self)
+        return self._models
+
+    @property
+    def weights(self) -> WeightsResource:
+        """Low-level weights resource for save, load, checkpoint management."""
+        if self._weights is None:
+            self._weights = WeightsResource(self)
+        return self._weights
+
+    @property
+    def futures(self) -> FuturesResource:
+        """Low-level futures resource for retrieve_future."""
+        if self._futures is None:
+            self._futures = FuturesResource(self)
+        return self._futures
 
     def get_session_id(self) -> str:
         """Get the current session ID."""
@@ -325,6 +366,130 @@ class ClientHolder:
             full_endpoint = endpoint
 
         return self.run_coroutine_threadsafe(self.get(full_endpoint, timeout))
+
+    @staticmethod
+    def _is_retryable_status_code(status_code: int) -> bool:
+        """Check if an HTTP status code indicates a retryable error.
+
+        Retryable status codes:
+        - 408: Request Timeout
+        - 429: Too Many Requests (rate limited)
+        - 5xx: Server errors
+
+        Non-retryable:
+        - 409: Conflict (resource already exists)
+        - 4xx: Client errors (except 408, 429)
+
+        Args:
+            status_code: HTTP status code
+
+        Returns:
+            True if the error is retryable
+        """
+        return status_code in (408, 429) or (500 <= status_code < 600)
+
+    @staticmethod
+    def _is_retryable_exception(exception: Exception) -> bool:
+        """Check if an exception indicates a retryable error.
+
+        Retryable exceptions:
+        - asyncio.TimeoutError
+        - APIConnectionError (includes APITimeoutError)
+        - httpx.TimeoutException
+        - APIStatusError with retryable status code (408, 429, 5xx)
+
+        Args:
+            exception: The exception to check
+
+        Returns:
+            True if the error is retryable
+        """
+        RETRYABLE_EXCEPTIONS = (
+            asyncio.TimeoutError,
+            APIConnectionError,  # Includes APITimeoutError
+            httpx.TimeoutException,
+        )
+        if isinstance(exception, RETRYABLE_EXCEPTIONS):
+            return True
+        if isinstance(exception, APIStatusError):
+            return ClientHolder._is_retryable_status_code(exception.status_code)
+        return False
+
+    async def execute_with_retries(
+        self, func: Callable[..., Awaitable[T]], *args: Any, **kwargs: Any
+    ) -> T:
+        """Execute an async function with automatic retries on transient errors.
+
+        This method implements exponential backoff retry logic for transient errors
+        like connection issues, timeouts, and server errors. It matches Tinker's
+        retry behavior for consistency.
+
+        Retry behavior:
+        - Max total wait time: 5 minutes
+        - Exponential backoff: 2^attempt seconds (capped at 30 seconds)
+        - Retries on: timeouts, connection errors, HTTP 408/429/5xx
+        - Does NOT retry: HTTP 400, 401, 404, 409 (client errors)
+
+        Args:
+            func: Async function to execute
+            *args: Positional arguments to pass to func
+            **kwargs: Keyword arguments to pass to func
+
+        Returns:
+            The result of func(*args, **kwargs)
+
+        Raises:
+            Exception: Re-raises the last exception if all retries fail or
+                      if the exception is not retryable
+
+        Example:
+            >>> async def make_request():
+            ...     return await self.post("/api/v1/forward", data)
+            >>> result = await holder.execute_with_retries(make_request)
+        """
+        MAX_WAIT_TIME = 60 * 5  # 5 minutes
+        start_time = time.time()
+        attempt_count = 0
+
+        while True:
+            try:
+                return await func(*args, **kwargs)
+            except Exception as e:
+                is_retryable = self._is_retryable_exception(e)
+                current_time = time.time()
+                elapsed_time = current_time - start_time
+
+                # Log the error
+                func_name = getattr(func, "__qualname__", getattr(func, "__name__", type(func).__name__))
+                status_code = getattr(e, "status_code", None)
+
+                if is_retryable and elapsed_time < MAX_WAIT_TIME:
+                    # Apply exponential backoff
+                    time_to_wait = min(2 ** attempt_count, 30)
+                    attempt_count += 1
+                    # Don't wait too long if we're almost at the max wait time
+                    time_to_wait = min(time_to_wait, start_time + MAX_WAIT_TIME - current_time)
+
+                    logger.warning(
+                        f"Retryable error in {func_name} (attempt {attempt_count}, "
+                        f"status_code={status_code}, elapsed={elapsed_time:.1f}s): {e}. "
+                        f"Retrying in {time_to_wait:.1f}s..."
+                    )
+                    await asyncio.sleep(time_to_wait)
+                    continue
+
+                # Not retryable or max wait time exceeded
+                if is_retryable:
+                    logger.error(
+                        f"Max retry time exceeded for {func_name} after {elapsed_time:.1f}s "
+                        f"and {attempt_count} attempts: {e}"
+                    )
+                else:
+                    logger.error(
+                        f"Non-retryable error in {func_name} (status_code={status_code}): {e}"
+                    )
+
+                raise e
 
     def get_loop(self) -> asyncio.AbstractEventLoop:
         """Get the global singleton event loop.

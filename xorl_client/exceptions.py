@@ -19,6 +19,8 @@ __all__ = [
     "AuthenticationError",
     "NotFoundError",
     "InternalServerError",
+    "RequestFailedError",
+    "RetryableException",
 ]
 
 
@@ -150,3 +152,46 @@ class InternalServerError(APIStatusError):
         if detail:
             message += f": {detail}"
         super().__init__(message, url, status_code)
+
+
+class RequestFailedError(XorlClientError):
+    """Raised when an async request fails on the server.
+
+    This exception is raised when polling /api/v1/retrieve_future returns
+    a RequestFailedResponse, indicating the server processed the request
+    but encountered an error.
+
+    Attributes:
+        message: Error message from the server.
+        request_id: The request ID that failed.
+        category: Error category (Unknown, Server, or User).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        request_id: str,
+        category: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.request_id = request_id
+        self.category = category or "unknown"
+
+    def __str__(self) -> str:
+        return f"Request {self.request_id} failed ({self.category}): {self.message}"
+
+
+class RetryableException(XorlClientError):
+    """Raised when an operation failed but may succeed on retry.
+
+    This is typically raised when:
+    - A promise/future expires (HTTP 410 Gone)
+    - The server indicates a transient error
+
+    The caller should retry the entire operation from the beginning.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message

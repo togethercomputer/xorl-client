@@ -13,10 +13,34 @@ from concurrent.futures import Future
 from typing import Any, Dict, Optional
 
 from xorl_client import types
+from xorl_client.client.api_future_impl import _APIFuture
 from xorl_client.client.client_holder import ClientHolder
 from xorl_client.exceptions import InternalServerError, BadRequestError
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_model_id_from_xorl_uri(checkpoint_path: str) -> Optional[str]:
+    """Extract model_id from a xorl:// URI.
+
+    Args:
+        checkpoint_path: XoRL URI (e.g., "xorl://rl-abc123/weights/000010")
+
+    Returns:
+        The model_id (e.g., "rl-abc123") or None if not a valid xorl:// URI
+    """
+    if not checkpoint_path.startswith("xorl://"):
+        return None
+
+    # Remove the "xorl://" prefix
+    path_without_prefix = checkpoint_path[7:]  # len("xorl://") == 7
+
+    # Split by "/" and get the first component (model_id)
+    parts = path_without_prefix.split("/")
+    if parts and parts[0]:
+        return parts[0]
+
+    return None
 
 
 class ServiceClient:
@@ -79,7 +103,8 @@ class ServiceClient:
         target_modules: Optional[list[str]] = None,
         model_id: Optional[str] = None,
     ) -> Future["TrainingClient"]:
-        """Helper function that submits the create_lora_training_client request."""
+        """Helper function that submits the create_lora_training_client request (two-phase pattern)."""
+        import time
         from xorl_client.client.training_client import TrainingClient
 
         # Warn about LoRA parameters that can't be adjusted from user side
@@ -103,10 +128,12 @@ class ServiceClient:
             target_modules=target_modules,
         )
 
-        # Send create model request to server
+        # Send create model request to server (two-phase pattern)
         logger.info(f"Creating LoRA training client: model_id={model_id}, base_model={base_model}, rank={rank}")
+        request_start_time = time.time()
 
         try:
+            # Phase 1: Submit request, get UntypedAPIFuture
             response = self.holder.post_sync(
                 "/api/v1/create_model",
                 {
@@ -115,7 +142,23 @@ class ServiceClient:
                     "lora_config": lora_config.to_dict(),
                 },
             )
-            logger.info(f"Model created: {response}")
+
+            # Parse UntypedAPIFuture response
+            untyped_future = types.UntypedAPIFuture.from_dict(response)
+
+            # Phase 2: Poll for result using _APIFuture
+            api_future = _APIFuture(
+                model_cls=types.CreateModelResponse,
+                holder=self.holder,
+                untyped_future=untyped_future,
+                request_start_time=request_start_time,
+                request_type="CreateModel",
+            )
+
+            # Wait for the create_model to complete
+            create_result = api_future.result()
+            logger.info(f"Model created: model_id={create_result.model_id}")
+
         except RuntimeError as e:
             logger.error(f"Failed to create model: {e}")
             raise
@@ -339,6 +382,11 @@ class ServiceClient:
         if base_model is None:
             raise ValueError("base_model is required to create training client from state")
 
+        # Extract model_id from checkpoint path to preserve the original model_id
+        model_id = _extract_model_id_from_xorl_uri(checkpoint_path)
+        if model_id:
+            logger.info(f"Using model_id from checkpoint path: {model_id}")
+
         # Create training client with the checkpoint's config
         training_client = self.create_lora_training_client(
             base_model=base_model,
@@ -346,6 +394,7 @@ class ServiceClient:
             alpha=alpha,
             dropout=dropout,
             target_modules=target_modules,
+            model_id=model_id,
         )
 
         # Load weights (without optimizer state)
@@ -402,6 +451,11 @@ class ServiceClient:
         if base_model is None:
             raise ValueError("base_model is required to create training client from state")
 
+        # Extract model_id from checkpoint path to preserve the original model_id
+        model_id = _extract_model_id_from_xorl_uri(checkpoint_path)
+        if model_id:
+            logger.info(f"Using model_id from checkpoint path: {model_id}")
+
         # Create training client with the checkpoint's config
         training_client = self.create_lora_training_client(
             base_model=base_model,
@@ -409,6 +463,7 @@ class ServiceClient:
             alpha=alpha,
             dropout=dropout,
             target_modules=target_modules,
+            model_id=model_id,
         )
 
         # Load weights WITH optimizer state
@@ -457,6 +512,11 @@ class ServiceClient:
         if base_model is None:
             raise ValueError("base_model is required to create training client from state")
 
+        # Extract model_id from checkpoint path to preserve the original model_id
+        model_id = _extract_model_id_from_xorl_uri(checkpoint_path)
+        if model_id:
+            logger.info(f"Using model_id from checkpoint path: {model_id}")
+
         # Create training client with the checkpoint's config
         training_client = self.create_lora_training_client(
             base_model=base_model,
@@ -464,6 +524,7 @@ class ServiceClient:
             alpha=alpha,
             dropout=dropout,
             target_modules=target_modules,
+            model_id=model_id,
         )
 
         # Load weights (without optimizer state)
@@ -513,6 +574,11 @@ class ServiceClient:
         if base_model is None:
             raise ValueError("base_model is required to create training client from state")
 
+        # Extract model_id from checkpoint path to preserve the original model_id
+        model_id = _extract_model_id_from_xorl_uri(checkpoint_path)
+        if model_id:
+            logger.info(f"Using model_id from checkpoint path: {model_id}")
+
         # Create training client with the checkpoint's config
         training_client = self.create_lora_training_client(
             base_model=base_model,
@@ -520,6 +586,7 @@ class ServiceClient:
             alpha=alpha,
             dropout=dropout,
             target_modules=target_modules,
+            model_id=model_id,
         )
 
         # Load weights WITH optimizer state

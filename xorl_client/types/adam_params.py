@@ -30,7 +30,7 @@ class AdamParams:
     weight_decay: float = 0.0
     """Weight decay for the optimizer. Uses decoupled weight decay."""
 
-    grad_clip_norm: float = 0.0
+    grad_clip_norm: float = 5.0
     """Gradient clip norm for the optimizer. 0.0 means no clipping."""
 
     def to_dict(self) -> Dict[str, Any]:

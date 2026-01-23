@@ -22,6 +22,7 @@ from typing import List, Dict, Any, Optional, Union
 
 from xorl_client import types
 from xorl_client.client.api_future import APIFuture, wrap_future
+from xorl_client.client.api_future_impl import _APIFuture
 from xorl_client.client.client_holder import ClientHolder
 from xorl_client.exceptions import InternalServerError, BadRequestError
 
@@ -209,7 +210,7 @@ class TrainingClient:
         data: Union[List[types.Datum], List[Dict[str, Any]]],
         loss_fn: str = "cross_entropy",
     ) -> APIFuture[types.ForwardBackwardOutput]:
-        """Execute forward and backward pass.
+        """Execute forward and backward pass (two-phase pattern).
 
         Args:
             data: List of training examples (Datum objects or dicts)
@@ -223,6 +224,8 @@ class TrainingClient:
             >>> result = fwd_bwd_future.result()  # Block and wait
             >>> print(result.loss_fn_outputs[0]["loss"])
         """
+        import time
+
         # Get request ID for ordering
         request_id = self._get_request_id()
 
@@ -256,47 +259,29 @@ class TrainingClient:
             }
         }
 
-        # Use _take_turn to ensure sequential HTTP dispatch (exactly like Tinker)
+        # Async function that handles both phases (like Tinker)
         async def _forward_backward_async():
-            # Define HTTP sender (like Tinker's _send_request pattern)
-            async def _send_request():
-                # Use async HTTP directly (like Tinker) - no asyncio.to_thread!
-                return await self.holder.post(
-                    "/api/v1/forward_backward",
-                    request_data
-                )
+            start_time = time.time()
 
-            # Execute inside _take_turn to ensure ordering
+            # Phase 1: Submit request inside _take_turn to ensure ordering
             async with self._take_turn(request_id):
-                result = await _send_request()
+                async def _send_request():
+                    return await self.holder.post("/api/v1/forward_backward", request_data)
+                result = await self.holder.execute_with_retries(_send_request)
 
-            # Turn released here - now parse and return (like Tinker)
-            raw_outputs = result.get("loss_fn_outputs", [])
-            metrics = result.get("metrics", {})
-            logger.info(
-                f"Forward-backward completed: num_outputs={len(raw_outputs)}, "
-                f"loss_mean={metrics.get('loss:mean', 'N/A')}"
+            # Parse UntypedAPIFuture response
+            untyped_future = types.UntypedAPIFuture.from_dict(result)
+
+            # Phase 2: Create _APIFuture and await for the result
+            return await _APIFuture(
+                model_cls=types.ForwardBackwardOutput,
+                holder=self.holder,
+                untyped_future=untyped_future,
+                request_start_time=start_time,
+                request_type="ForwardBackward",
             )
 
-            # Convert loss_fn_outputs dict values to TensorData objects
-            converted_outputs = []
-            for output in raw_outputs:
-                converted_output = {}
-                for key, value in output.items():
-                    if isinstance(value, dict) and "data" in value:
-                        # This looks like a serialized TensorData, convert it
-                        converted_output[key] = types.TensorData.from_dict(value)
-                    else:
-                        # Pass through other values (like scalar 'loss')
-                        converted_output[key] = value
-                converted_outputs.append(converted_output)
-
-            return types.ForwardBackwardOutput(
-                loss_fn_outputs=converted_outputs,
-                metrics=metrics,
-            )
-
-        # Schedule to event loop and return directly (like Tinker)
+        # Schedule to event loop and return (like Tinker)
         return wrap_future(self.holder.run_coroutine_threadsafe(_forward_backward_async()))
 
     def forward(
@@ -304,7 +289,7 @@ class TrainingClient:
         data: Union[List[types.Datum], List[Dict[str, Any]]],
         loss_fn: str = "cross_entropy",
     ) -> APIFuture[types.ForwardBackwardOutput]:
-        """Execute forward pass only (no backward/gradient computation).
+        """Execute forward pass only (no backward/gradient computation, two-phase pattern).
 
         This is useful for validation/evaluation during training where you want
         to compute loss metrics without updating gradients. The server uses
@@ -323,6 +308,8 @@ class TrainingClient:
             >>> result = fwd_future.result()
             >>> print(f"Validation loss: {result.metrics['loss:mean']}")
         """
+        import time
+
         # Get request ID for ordering
         request_id = self._get_request_id()
 
@@ -356,47 +343,29 @@ class TrainingClient:
             }
         }
 
-        # Use _take_turn to ensure sequential HTTP dispatch (exactly like Tinker)
+        # Async function that handles both phases (like Tinker)
         async def _forward_async():
-            # Define HTTP sender (like Tinker's _send_request pattern)
-            async def _send_request():
-                # Use async HTTP directly (like Tinker) - no asyncio.to_thread!
-                return await self.holder.post(
-                    "/api/v1/forward",
-                    request_data
-                )
+            start_time = time.time()
 
-            # Execute inside _take_turn to ensure ordering
+            # Phase 1: Submit request inside _take_turn to ensure ordering
             async with self._take_turn(request_id):
-                result = await _send_request()
+                async def _send_request():
+                    return await self.holder.post("/api/v1/forward", request_data)
+                result = await self.holder.execute_with_retries(_send_request)
 
-            # Turn released here - now parse and return (like Tinker)
-            raw_outputs = result.get("loss_fn_outputs", [])
-            metrics = result.get("metrics", {})
-            logger.info(
-                f"Forward completed: num_outputs={len(raw_outputs)}, "
-                f"loss_mean={metrics.get('loss:mean', 'N/A')}"
+            # Parse UntypedAPIFuture response
+            untyped_future = types.UntypedAPIFuture.from_dict(result)
+
+            # Phase 2: Create _APIFuture and await for the result
+            return await _APIFuture(
+                model_cls=types.ForwardBackwardOutput,
+                holder=self.holder,
+                untyped_future=untyped_future,
+                request_start_time=start_time,
+                request_type="Forward",
             )
 
-            # Convert loss_fn_outputs dict values to TensorData objects
-            converted_outputs = []
-            for output in raw_outputs:
-                converted_output = {}
-                for key, value in output.items():
-                    if isinstance(value, dict) and "data" in value:
-                        # This looks like a serialized TensorData, convert it
-                        converted_output[key] = types.TensorData.from_dict(value)
-                    else:
-                        # Pass through other values (like scalar 'loss')
-                        converted_output[key] = value
-                converted_outputs.append(converted_output)
-
-            return types.ForwardBackwardOutput(
-                loss_fn_outputs=converted_outputs,
-                metrics=metrics,
-            )
-
-        # Schedule to event loop and return directly (like Tinker)
+        # Schedule to event loop and return (like Tinker)
         return wrap_future(self.holder.run_coroutine_threadsafe(_forward_async()))
 
     async def forward_async(
@@ -432,7 +401,7 @@ class TrainingClient:
         self,
         adam_params: Union[types.AdamParams, Dict[str, float]],
     ) -> APIFuture[types.OptimStepResponse]:
-        """Perform optimizer step.
+        """Perform optimizer step (two-phase pattern).
 
         Args:
             adam_params: Adam parameters (AdamParams object or dict with learning_rate, etc.)
@@ -447,6 +416,8 @@ class TrainingClient:
             >>> result = optim_future.result()
             >>> print(result.metrics["grad_norm"])
         """
+        import time
+
         # Get request ID for ordering
         request_id = self._get_request_id()
 
@@ -462,38 +433,36 @@ class TrainingClient:
             "adam_params": adam_params_dict,
         }
 
-        # Use _take_turn to ensure sequential HTTP dispatch (exactly like Tinker)
+        # Async function that handles both phases (like Tinker)
         async def _optim_step_async():
-            # Define HTTP sender (like Tinker's _send_request pattern)
-            async def _send_request():
-                # Use async HTTP directly (like Tinker) - no asyncio.to_thread!
-                return await self.holder.post(
-                    "/api/v1/optim_step",
-                    request_data
-                )
+            start_time = time.time()
 
-            # Execute inside _take_turn to ensure ordering
+            # Phase 1: Submit request inside _take_turn to ensure ordering
             async with self._take_turn(request_id):
-                result = await _send_request()
+                async def _send_request():
+                    return await self.holder.post("/api/v1/optim_step", request_data)
+                result = await self.holder.execute_with_retries(_send_request)
 
-            # Turn released here - now parse and return (like Tinker)
-            metrics = result.get("metrics", {})
-            logger.info(
-                f"Optimizer step completed: "
-                f"grad_norm={metrics.get('grad_norm', 'N/A')}"
-            )
-            return types.OptimStepResponse(
-                metrics=metrics,
+            # Parse UntypedAPIFuture response
+            untyped_future = types.UntypedAPIFuture.from_dict(result)
+
+            # Phase 2: Create _APIFuture and await for the result
+            return await _APIFuture(
+                model_cls=types.OptimStepResponse,
+                holder=self.holder,
+                untyped_future=untyped_future,
+                request_start_time=start_time,
+                request_type="OptimStep",
             )
 
-        # Schedule to event loop and return directly (like Tinker)
+        # Schedule to event loop and return (like Tinker)
         return wrap_future(self.holder.run_coroutine_threadsafe(_optim_step_async()))
 
     def save_weights_for_sampler(
         self,
         name: str,
     ) -> APIFuture[types.SaveWeightsForSamplerResponse]:
-        """Save weights specifically for sampling/inference.
+        """Save weights specifically for sampling/inference (two-phase pattern).
 
         This is called frequently (e.g., every batch in RL training) to make
         the latest policy weights available for sampling. It's separate from
@@ -512,6 +481,8 @@ class TrainingClient:
             >>> response = save_future.result()
             >>> print(response.path)  # e.g., "xorl://model-123/step-100"
         """
+        import time
+
         # Get request ID for ordering
         request_id = self._get_request_id()
 
@@ -521,37 +492,29 @@ class TrainingClient:
             "name": name,
         }
 
-        # Use _take_turn to ensure sequential HTTP dispatch (like Tinker)
+        # Async function that handles both phases (like Tinker)
         async def _save_weights_for_sampler_async():
-            async def _send_request():
-                return await self.holder.post(
-                    "/api/v1/save_weights_for_sampler",
-                    request_data
-                )
+            start_time = time.time()
 
-            # Execute inside _take_turn to ensure ordering
+            # Phase 1: Submit request inside _take_turn to ensure ordering
             async with self._take_turn(request_id):
-                try:
-                    result = await _send_request()
-                except (InternalServerError, BadRequestError) as e:
-                    # Check if this is a "LoRA already loaded" error - not fatal, just warn
-                    error_msg = str(e)
-                    if "already loaded" in error_msg.lower():
-                        logger.warning(f"LoRA adapter '{name}' is already loaded on inference worker, skipping reload")
-                        # Construct the expected model path since the weights are already there
-                        model_path = f"xorl://{self.model_id}/sampler_weights/{name}"
-                        return types.SaveWeightsForSamplerResponse(path=model_path)
-                    # Re-raise other errors
-                    raise
+                async def _send_request():
+                    return await self.holder.post("/api/v1/save_weights_for_sampler", request_data)
+                result = await self.holder.execute_with_retries(_send_request)
 
-            # Parse and return (like Tinker)
-            model_path = result.get("model_path")
-            if not model_path:
-                raise RuntimeError("No model_path returned from save_weights_for_sampler")
-            logger.info(f"Weights saved for sampler: {model_path}")
-            return types.SaveWeightsForSamplerResponse(path=model_path)
+            # Parse UntypedAPIFuture response
+            untyped_future = types.UntypedAPIFuture.from_dict(result)
 
-        # Schedule to event loop and return directly (like Tinker)
+            # Phase 2: Create _APIFuture and await for the result
+            return await _APIFuture(
+                model_cls=types.SaveWeightsForSamplerResponse,
+                holder=self.holder,
+                untyped_future=untyped_future,
+                request_start_time=start_time,
+                request_type="SaveWeightsForSampler",
+            )
+
+        # Schedule to event loop and return (like Tinker)
         return wrap_future(self.holder.run_coroutine_threadsafe(_save_weights_for_sampler_async()))
 
     async def save_weights_for_sampler_async(
@@ -740,6 +703,8 @@ class TrainingClient:
             >>> response = save_future.result()
             >>> print(response.path)  # xorl://default/weights/checkpoint-001
         """
+        import time
+
         # Get request ID for ordering
         request_id = self._get_request_id()
 
@@ -749,26 +714,29 @@ class TrainingClient:
             "path": name,
         }
 
-        # Use _take_turn to ensure sequential HTTP dispatch (like Tinker)
+        # Async function that handles both phases (like Tinker)
         async def _save_state_async():
-            async def _send_request():
-                return await self.holder.post(
-                    "/api/v1/save_weights",
-                    request_data
-                )
+            start_time = time.time()
 
-            # Execute inside _take_turn to ensure ordering
+            # Phase 1: Submit request inside _take_turn to ensure ordering
             async with self._take_turn(request_id):
-                result = await _send_request()
+                async def _send_request():
+                    return await self.holder.post("/api/v1/save_weights", request_data)
+                result = await self.holder.execute_with_retries(_send_request)
 
-            # Parse and return (like Tinker)
-            path = result.get("path")
-            if not path:
-                raise RuntimeError("No path returned from save_weights")
-            logger.info(f"Checkpoint saved: {path}")
-            return types.SaveWeightsResponse(path=path)
+            # Parse UntypedAPIFuture response
+            untyped_future = types.UntypedAPIFuture.from_dict(result)
 
-        # Schedule to event loop and return directly (like Tinker)
+            # Phase 2: Create _APIFuture and await for the result
+            return await _APIFuture(
+                model_cls=types.SaveWeightsResponse,
+                holder=self.holder,
+                untyped_future=untyped_future,
+                request_start_time=start_time,
+                request_type="SaveWeights",
+            )
+
+        # Schedule to event loop and return (like Tinker)
         return wrap_future(self.holder.run_coroutine_threadsafe(_save_state_async()))
 
     async def save_state_async(
@@ -803,7 +771,7 @@ class TrainingClient:
         path: str,
         optimizer: bool,
     ) -> APIFuture[types.LoadWeightsResponse]:
-        """Internal implementation for loading weights.
+        """Internal implementation for loading weights (two-phase pattern).
 
         Args:
             path: XoRL URI to load from (e.g., "xorl://default/weights/checkpoint-001")
@@ -812,6 +780,8 @@ class TrainingClient:
         Returns:
             APIFuture[LoadWeightsResponse]
         """
+        import time
+
         # Get request ID for ordering
         request_id = self._get_request_id()
 
@@ -822,26 +792,29 @@ class TrainingClient:
             "optimizer": optimizer,
         }
 
-        # Use _take_turn to ensure sequential HTTP dispatch (like Tinker)
+        # Async function that handles both phases (like Tinker)
         async def _load_weights_async():
-            async def _send_request():
-                return await self.holder.post(
-                    "/api/v1/load_weights",
-                    request_data
-                )
+            start_time = time.time()
 
-            # Execute inside _take_turn to ensure ordering
+            # Phase 1: Submit request inside _take_turn to ensure ordering
             async with self._take_turn(request_id):
-                result = await _send_request()
+                async def _send_request():
+                    return await self.holder.post("/api/v1/load_weights", request_data)
+                result = await self.holder.execute_with_retries(_send_request)
 
-            # Parse and return (like Tinker)
-            loaded_path = result.get("path")
-            if not loaded_path:
-                raise RuntimeError(f"Failed to load checkpoint: {path}")
-            logger.info(f"Checkpoint loaded: {loaded_path} (optimizer={optimizer})")
-            return types.LoadWeightsResponse(path=loaded_path)
+            # Parse UntypedAPIFuture response
+            untyped_future = types.UntypedAPIFuture.from_dict(result)
 
-        # Schedule to event loop and return directly (like Tinker)
+            # Phase 2: Create _APIFuture and await for the result
+            return await _APIFuture(
+                model_cls=types.LoadWeightsResponse,
+                holder=self.holder,
+                untyped_future=untyped_future,
+                request_start_time=start_time,
+                request_type="LoadWeights",
+            )
+
+        # Schedule to event loop and return (like Tinker)
         return wrap_future(self.holder.run_coroutine_threadsafe(_load_weights_async()))
 
     def load_state(
@@ -1018,7 +991,7 @@ class TrainingClient:
 
             # Execute inside _take_turn to ensure ordering
             async with self._take_turn(request_id):
-                result = await _send_request()
+                result = await self.holder.execute_with_retries(_send_request)
 
             # Parse and return
             success = result.get("success", False)
@@ -1117,7 +1090,7 @@ class TrainingClient:
 
             # Execute inside _take_turn to ensure ordering
             async with self._take_turn(request_id):
-                result = await _send_request()
+                result = await self.holder.execute_with_retries(_send_request)
 
             # Parse and return
             provider_model_id = result.get("provider_model_id", "")
@@ -1288,3 +1261,66 @@ class TrainingClient:
             APIFuture[DeleteCheckpointResponse] with success status
         """
         return self.delete_checkpoint_from_xorl_path(xorl_path)
+
+    def unload(self) -> APIFuture[types.UnloadModelResponse]:
+        """Unload the model and release all resources (two-phase pattern).
+
+        This ends the training session and releases:
+        - Server-side state (registered model IDs, session tracking)
+        - Worker resources (training adapter, GPU memory)
+
+        After calling unload(), this TrainingClient should not be used anymore.
+
+        Returns:
+            APIFuture[UnloadModelResponse] with success status
+
+        Example:
+            >>> # End training session
+            >>> unload_future = training_client.unload()
+            >>> result = unload_future.result()
+            >>> print(f"Model unloaded: {result.success}")
+        """
+        import time
+
+        # Get request ID for ordering
+        request_id = self._get_request_id()
+
+        # Async function that handles both phases (like Tinker)
+        async def _unload_async():
+            start_time = time.time()
+
+            # Phase 1: Submit request inside _take_turn to ensure ordering
+            async with self._take_turn(request_id):
+                async def _send_request():
+                    return await self.holder.models.unload(self.model_id)
+                result = await self.holder.execute_with_retries(_send_request)
+
+            # Parse UntypedAPIFuture response
+            untyped_future = types.UntypedAPIFuture.from_dict(result)
+
+            # Phase 2: Create _APIFuture and await for the result
+            return await _APIFuture(
+                model_cls=types.UnloadModelResponse,
+                holder=self.holder,
+                untyped_future=untyped_future,
+                request_start_time=start_time,
+                request_type="UnloadModel",
+            )
+
+        # Schedule to event loop and return (like Tinker)
+        return wrap_future(self.holder.run_coroutine_threadsafe(_unload_async()))
+
+    async def unload_async(self) -> APIFuture[types.UnloadModelResponse]:
+        """Async version of unload.
+
+        Unload the model and release all resources.
+
+        Returns:
+            APIFuture[UnloadModelResponse] with success status
+
+        Example:
+            >>> unload_future = await training_client.unload_async()
+            >>> result = await unload_future
+            >>> print(f"Model unloaded: {result.success}")
+        """
+        return self.unload()

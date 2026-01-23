@@ -13,11 +13,25 @@ class SamplingParams:
     """Sampling parameters for text generation."""
 
     max_tokens: int = 128
+    """Maximum number of tokens to generate."""
+
     temperature: float = 1.0
+    """Sampling temperature."""
+
     top_p: float = 1.0
+    """Nucleus sampling probability."""
+
     top_k: int = -1
+    """Top-k sampling parameter (-1 for no limit)."""
+
     stop: Optional[List[str]] = None
+    """Stop sequences for generation."""
+
     stop_token_ids: Optional[List[int]] = None
+    """Stop token IDs for generation."""
+
+    seed: Optional[int] = None
+    """Random seed for reproducible generation."""
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -35,4 +49,6 @@ class SamplingParams:
                 result["stop"] = valid_stops
         if self.stop_token_ids is not None:
             result["stop_token_ids"] = self.stop_token_ids
+        if self.seed is not None:
+            result["seed"] = self.seed
         return result

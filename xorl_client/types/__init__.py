@@ -41,10 +41,12 @@ from .adam_params import AdamParams as AdamParams
 # Sampling types
 from .sampling_params import SamplingParams as SamplingParams
 from .sampled_sequence import SampledSequence as SampledSequence
+from .sampled_sequence import StopReason as StopReason
 from .sample_response import SampleResponse as SampleResponse
 
 # Training response types
 from .forward_backward_output import ForwardBackwardOutput as ForwardBackwardOutput
+from .forward_backward_output import LossFnOutput as LossFnOutput
 from .optim_step_response import OptimStepResponse as OptimStepResponse
 from .save_weights_response import SaveWeightsResponse as SaveWeightsResponse
 from .save_weights_for_sampler_response import (
@@ -90,3 +92,15 @@ from .training_run import TrainingRunsResponse as TrainingRunsResponse
 # Type aliases
 from .model_id import ModelID as ModelID
 from .model_id import LossFnType as LossFnType
+from .request_id import RequestID as RequestID
+
+# Two-phase request pattern types
+from .untyped_api_future import UntypedAPIFuture as UntypedAPIFuture
+from .try_again_response import TryAgainResponse as TryAgainResponse
+from .request_error_category import RequestErrorCategory as RequestErrorCategory
+from .request_failed_response import RequestFailedResponse as RequestFailedResponse
+from .future_retrieve_request import FutureRetrieveRequest as FutureRetrieveRequest
+from .future_retrieve_response import FutureRetrieveResponse as FutureRetrieveResponse
+from .future_retrieve_response import parse_future_retrieve_response as parse_future_retrieve_response
+from .create_model_response import CreateModelResponse as CreateModelResponse
+from .unload_model_response import UnloadModelResponse as UnloadModelResponse
