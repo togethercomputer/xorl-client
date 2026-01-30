@@ -165,19 +165,27 @@ class _APIFuture(Generic[T]):
 
             try:
                 # Poll the retrieve_future endpoint
+                # Use 60s client timeout > 45s server long-poll timeout to avoid race condition
                 response = await self.holder.post(
                     "/api/v1/retrieve_future",
                     retrieve_request.to_dict(),
-                    timeout=45,  # Per-request timeout
+                    timeout=60,  # Must be > server's 45s long-poll timeout
                 )
                 connection_error_retries = 0  # Reset on successful connection
 
             except Exception as e:
                 # Handle connection errors with exponential backoff
                 error_str = str(e)
-                is_connection_error = any(
-                    err in error_str
-                    for err in ["ConnectError", "ReadError", "TimeoutError", "ConnectionError"]
+                error_type = type(e).__name__
+
+                # Check for timeout/connection errors by type name or string content
+                is_connection_error = (
+                    "Timeout" in error_type
+                    or "Connection" in error_type
+                    or any(
+                        err in error_str
+                        for err in ["ConnectError", "ReadError", "timed out", "ConnectionError"]
+                    )
                 )
 
                 if is_connection_error:
