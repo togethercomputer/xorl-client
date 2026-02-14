@@ -94,7 +94,7 @@ class ClientHolder:
         base_url: str = "http://localhost:6000",
         model: Optional[str] = None,
         api_key: Optional[str] = None,
-        timeout: float = 300.0,
+        timeout: float = 1800.0,
         **kwargs: Any,
     ):
         self.base_url = base_url.rstrip("/")

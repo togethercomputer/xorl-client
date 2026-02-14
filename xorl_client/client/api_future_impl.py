@@ -18,7 +18,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Generic, List, Type, TypeVar, cast
 
 from xorl_client import types
-from xorl_client.exceptions import RequestFailedError, RetryableException
+from xorl_client.exceptions import APIConnectionError, RequestFailedError, RetryableException
 
 if TYPE_CHECKING:
     from xorl_client.client.client_holder import ClientHolder
@@ -169,24 +169,16 @@ class _APIFuture(Generic[T]):
                 response = await self.holder.post(
                     "/api/v1/retrieve_future",
                     retrieve_request.to_dict(),
-                    timeout=60,  # Must be > server's 45s long-poll timeout
+                    timeout=600,  # Per-request timeout
                 )
                 connection_error_retries = 0  # Reset on successful connection
 
             except Exception as e:
-                # Handle connection errors with exponential backoff
-                error_str = str(e)
-                error_type = type(e).__name__
-
-                # Check for timeout/connection errors by type name or string content
-                is_connection_error = (
-                    "Timeout" in error_type
-                    or "Connection" in error_type
-                    or any(
-                        err in error_str
-                        for err in ["ConnectError", "ReadError", "timed out", "ConnectionError"]
-                    )
-                )
+                # Handle connection errors with exponential backoff.
+                # post() wraps all transport-level errors (ConnectError, ReadError,
+                # RemoteProtocolError, TimeoutError, etc.) as APIConnectionError,
+                # so an isinstance check catches them all.
+                is_connection_error = isinstance(e, APIConnectionError)
 
                 if is_connection_error:
                     wait_time = min(2**connection_error_retries, 30)
@@ -230,8 +222,8 @@ class _APIFuture(Generic[T]):
                 return result
 
             # If _parse_response returns None, it means TryAgainResponse - continue polling
-            # Small delay as a safety measure (server uses 45s long polling, so this rarely triggers)
-            await asyncio.sleep(0.01)
+            # Wait 1 second between polls to avoid overwhelming the server
+            await asyncio.sleep(1.0)
 
     def _handle_try_again_status(self, error: Exception) -> None:
         """Handle HTTP 408 response and extract queue state."""

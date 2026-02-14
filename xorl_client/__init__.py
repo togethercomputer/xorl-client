@@ -14,7 +14,7 @@ from . import types
 from .client.service_client import ServiceClient
 from .client.api_future import APIFuture
 from .client.training_client import TrainingClient
-from .client.sampling_client import SamplingClient
+from .client.sampling_client import SamplingClient, BatchSampleResult
 from .client.rest_client import RestClient
 
 # Import exceptions
@@ -66,6 +66,7 @@ __all__ = [
     "ServiceClient",
     "TrainingClient",
     "SamplingClient",
+    "BatchSampleResult",
     "RestClient",
     "APIFuture",
     # Types module

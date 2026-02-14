@@ -30,8 +30,14 @@ class SamplingParams:
     stop_token_ids: Optional[List[int]] = None
     """Stop token IDs for generation."""
 
+    return_routed_experts: bool = False
+    """For R3 (Rollout Routing Replay) in MoE models."""
+
     seed: Optional[int] = None
     """Random seed for reproducible generation."""
+
+    sampling_seed: Optional[int] = None
+    """Per-request sampling seed for diverse generation across requests."""
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -51,4 +57,6 @@ class SamplingParams:
             result["stop_token_ids"] = self.stop_token_ids
         if self.seed is not None:
             result["seed"] = self.seed
+        if self.sampling_seed is not None:
+            result["sampling_seed"] = self.sampling_seed
         return result

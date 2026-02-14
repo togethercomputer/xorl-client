@@ -22,7 +22,13 @@ from typing import List, Dict, Any, Optional, Union
 
 from xorl_client import types
 from xorl_client.client.api_future import APIFuture, wrap_future
-from xorl_client.client.api_future_impl import _APIFuture
+from xorl_client.client.api_future_impl import _APIFuture, _CombinedAPIFuture
+from xorl_client.client.chunked_helpers import (
+    MAX_CHUNK_LEN,
+    MAX_CHUNK_BYTES_COUNT,
+    estimate_datum_bytes,
+    combine_fwd_bwd_output_results,
+)
 from xorl_client.client.client_holder import ClientHolder
 from xorl_client.exceptions import InternalServerError, BadRequestError
 
@@ -88,7 +94,9 @@ class TrainingClient:
         self._turn_counter = 0
         self._turn_waiters: Dict[int, asyncio.Event] = {}
 
-        logger.info(f"TrainingClient initialized: model_id={model_id}, base_model={base_model}")
+        logger.info(
+            f"TrainingClient initialized: model_id={model_id}, base_model={base_model}"
+        )
 
     def _get_request_id(self) -> int:
         """Get the next request ID (thread-safe).
@@ -116,7 +124,9 @@ class TrainingClient:
                 # HTTP request is dispatched here
                 future = self.holder.post_async("/api/v1/forward_backward", data)
         """
-        assert self._turn_counter <= request_id, f"Same request id cannot be taken twice: turn_counter={self._turn_counter}, request_id={request_id}"
+        assert (
+            self._turn_counter <= request_id
+        ), f"Same request id cannot be taken twice: turn_counter={self._turn_counter}, request_id={request_id}"
 
         # Wait if it's not our turn yet
         if self._turn_counter < request_id:
@@ -171,6 +181,121 @@ class TrainingClient:
 
         return result
 
+    def _chunked_datums(
+        self, data: Union[List[types.Datum], List[Dict[str, Any]]]
+    ) -> List[tuple]:
+        """Split data into chunks respecting count and byte limits.
+
+        Each chunk gets its own request_id allocated from _get_request_id().
+
+        Args:
+            data: List of datums (Datum objects or dicts)
+
+        Returns:
+            List of (request_id, chunk) tuples where chunk is a list of datums
+        """
+        if not data:
+            # Even empty data gets one chunk so a request is made
+            return [(self._get_request_id(), [])]
+
+        chunks = []
+        current_chunk = []
+        current_bytes = 0
+
+        for datum in data:
+            datum_bytes = estimate_datum_bytes(datum)
+
+            # Start new chunk if adding this datum would exceed limits
+            if current_chunk and (
+                len(current_chunk) >= MAX_CHUNK_LEN
+                or current_bytes + datum_bytes > MAX_CHUNK_BYTES_COUNT
+            ):
+                chunks.append(current_chunk)
+                current_chunk = []
+                current_bytes = 0
+
+            current_chunk.append(datum)
+            current_bytes += datum_bytes
+
+        # Don't forget the last chunk
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        # Allocate request_ids for all chunks
+        return [(self._get_request_id(), chunk) for chunk in chunks]
+
+    def _convert_datums(self, data: List) -> tuple:
+        """Convert a list of datums to dicts, extracting routed_experts.
+
+        Args:
+            data: List of Datum objects or dicts
+
+        Returns:
+            Tuple of (datums_dicts, all_routed_experts)
+        """
+        datums_dicts = []
+        all_routed_experts = []
+
+        for datum in data:
+            if isinstance(datum, types.Datum):
+                datum_dict = datum.to_dict()
+                datum_dict.pop("routed_experts", None)
+                datums_dicts.append(datum_dict)
+                if datum.routed_experts is not None:
+                    all_routed_experts.append(datum.routed_experts)
+            elif hasattr(datum, "to_dict"):
+                datum_dict = datum.to_dict()
+                datum_dict.pop("routed_experts", None)
+                datums_dicts.append(datum_dict)
+                if (
+                    hasattr(datum, "routed_experts")
+                    and datum.routed_experts is not None
+                ):
+                    all_routed_experts.append(datum.routed_experts)
+            elif hasattr(datum, "model_dump"):
+                datum_dict = datum.model_dump()
+                datums_dicts.append(self._convert_tinker_datum(datum_dict))
+            elif isinstance(datum, dict):
+                datum_dict = dict(datum)
+                routed = datum_dict.pop("routed_experts", None)
+                datums_dicts.append(datum_dict)
+                if routed is not None:
+                    all_routed_experts.append(routed)
+            else:
+                raise TypeError(
+                    f"Expected Datum, dict, or Pydantic model, got {type(datum).__name__}"
+                )
+
+        return datums_dicts, all_routed_experts
+
+    def _convert_datums_simple(self, data: List) -> List[Dict[str, Any]]:
+        """Convert a list of datums to dicts (no routed_experts extraction).
+
+        Args:
+            data: List of Datum objects or dicts
+
+        Returns:
+            List of datum dicts
+        """
+        datums_dicts = []
+
+        for datum in data:
+            if isinstance(datum, types.Datum):
+                datums_dicts.append(datum.to_dict())
+            elif hasattr(datum, "to_dict"):
+                datums_dicts.append(datum.to_dict())
+            elif hasattr(datum, "model_dump"):
+                datum_dict = datum.model_dump()
+                datums_dicts.append(self._convert_tinker_datum(datum_dict))
+            elif isinstance(datum, dict):
+                datums_dicts.append(datum)
+            else:
+                raise TypeError(
+                    f"Expected Datum, dict, or Pydantic model, got {type(datum).__name__}"
+                )
+
+        return datums_dicts
+
     def get_tokenizer(self):
         """Get the tokenizer for the base model.
 
@@ -201,7 +326,9 @@ class TrainingClient:
                 kwargs["trust_remote_code"] = True
                 kwargs["revision"] = "612681931a8c906ddb349f8ad0f582cb552189cd"
 
-            self._tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True, **kwargs)
+            self._tokenizer = AutoTokenizer.from_pretrained(
+                model_name, use_fast=True, **kwargs
+            )
             logger.info(f"Tokenizer loaded for base_model={self.base_model}")
         return self._tokenizer
 
@@ -209,12 +336,18 @@ class TrainingClient:
         self,
         data: Union[List[types.Datum], List[Dict[str, Any]]],
         loss_fn: str = "cross_entropy",
+        loss_fn_params: Optional[Dict[str, Any]] = None,
     ) -> APIFuture[types.ForwardBackwardOutput]:
         """Execute forward and backward pass (two-phase pattern).
 
+        Large batches are transparently chunked into multiple HTTP requests
+        (max 1024 datums or 5MB per chunk). Results are combined into a single
+        ForwardBackwardOutput.
+
         Args:
             data: List of training examples (Datum objects or dicts)
-            loss_fn: Loss function name ("cross_entropy", "importance_sampling", etc.)
+            loss_fn: Loss function name ("cross_entropy", "importance_sampling", "miles_policy_loss", etc.)
+            loss_fn_params: Optional parameters for the loss function (e.g., {"eps_clip": 0.2} for PPO clipping)
 
         Returns:
             APIFuture[ForwardBackwardOutput] that can be awaited
@@ -226,68 +359,116 @@ class TrainingClient:
         """
         import time
 
-        # Get request ID for ordering
-        request_id = self._get_request_id()
+        # Split data into chunks, each with its own request_id
+        chunked = self._chunked_datums(data)
 
-        # Convert Datum objects to dicts if needed
-        # Support both xorl_client.types.Datum and tinker.Datum (Pydantic model)
-        datums_dicts = []
-        for datum in data:
-            if isinstance(datum, types.Datum):
-                datums_dicts.append(datum.to_dict())
-            elif hasattr(datum, 'to_dict'):
-                # Support objects with to_dict() method
-                datums_dicts.append(datum.to_dict())
-            elif hasattr(datum, 'model_dump'):
-                # Support Pydantic v2 models (like tinker.Datum)
-                # Convert tinker format to xorl_client format
-                datum_dict = datum.model_dump()
-                datums_dicts.append(self._convert_tinker_datum(datum_dict))
-            elif isinstance(datum, dict):
-                datums_dicts.append(datum)
-            else:
-                raise TypeError(
-                    f"Expected Datum, dict, or Pydantic model, got {type(datum).__name__}"
+        # Single chunk: use simple path (no _CombinedAPIFuture overhead)
+        if len(chunked) == 1:
+            request_id, chunk_data = chunked[0]
+            datums_dicts, all_routed_experts = self._convert_datums(chunk_data)
+
+            request_data = {
+                "model_id": self.model_id,
+                "seq_id": request_id + 1,
+                "forward_backward_input": {
+                    "data": datums_dicts,
+                    "loss_fn": loss_fn,
+                },
+            }
+            if loss_fn_params:
+                request_data["forward_backward_input"][
+                    "loss_fn_params"
+                ] = loss_fn_params
+            if all_routed_experts and len(all_routed_experts) == len(datums_dicts):
+                request_data["forward_backward_input"][
+                    "routed_experts"
+                ] = all_routed_experts
+
+            async def _forward_backward_async():
+                start_time = time.time()
+                async with self._take_turn(request_id):
+
+                    async def _send_request():
+                        return await self.holder.post(
+                            "/api/v1/forward_backward", request_data
+                        )
+
+                    result = await self.holder.execute_with_retries(_send_request)
+                untyped_future = types.UntypedAPIFuture.from_dict(result)
+                return await _APIFuture(
+                    model_cls=types.ForwardBackwardOutput,
+                    holder=self.holder,
+                    untyped_future=untyped_future,
+                    request_start_time=start_time,
+                    request_type="ForwardBackward",
                 )
 
-        request_data = {
-            "model_id": self.model_id,
-            "seq_id": request_id + 1,  # seq_id starts from 1 (like Tinker)
-            "forward_backward_input": {
-                "data": datums_dicts,
-                "loss_fn": loss_fn,
-            }
-        }
-
-        # Async function that handles both phases (like Tinker)
-        async def _forward_backward_async():
-            start_time = time.time()
-
-            # Phase 1: Submit request inside _take_turn to ensure ordering
-            async with self._take_turn(request_id):
-                async def _send_request():
-                    return await self.holder.post("/api/v1/forward_backward", request_data)
-                result = await self.holder.execute_with_retries(_send_request)
-
-            # Parse UntypedAPIFuture response
-            untyped_future = types.UntypedAPIFuture.from_dict(result)
-
-            # Phase 2: Create _APIFuture and await for the result
-            return await _APIFuture(
-                model_cls=types.ForwardBackwardOutput,
-                holder=self.holder,
-                untyped_future=untyped_future,
-                request_start_time=start_time,
-                request_type="ForwardBackward",
+            return wrap_future(
+                self.holder.run_coroutine_threadsafe(_forward_backward_async())
             )
 
-        # Schedule to event loop and return (like Tinker)
-        return wrap_future(self.holder.run_coroutine_threadsafe(_forward_backward_async()))
+        # Multiple chunks: dispatch each sequentially, poll in parallel, combine
+        logger.info(
+            f"Chunking forward_backward into {len(chunked)} chunks "
+            f"({sum(len(c) for _, c in chunked)} total datums)"
+        )
+
+        # Pre-convert all chunks and build request data
+        chunk_requests = []
+        for request_id, chunk_data in chunked:
+            datums_dicts, all_routed_experts = self._convert_datums(chunk_data)
+            rd = {
+                "model_id": self.model_id,
+                "seq_id": request_id + 1,
+                "forward_backward_input": {
+                    "data": datums_dicts,
+                    "loss_fn": loss_fn,
+                },
+            }
+            if loss_fn_params:
+                rd["forward_backward_input"]["loss_fn_params"] = loss_fn_params
+            if all_routed_experts and len(all_routed_experts) == len(datums_dicts):
+                rd["forward_backward_input"]["routed_experts"] = all_routed_experts
+            chunk_requests.append((request_id, rd))
+
+        async def _chunked_forward_backward_async():
+            futures = []
+            # Dispatch chunks sequentially (ordering via _take_turn)
+            for req_id, rd in chunk_requests:
+                start_time = time.time()
+                async with self._take_turn(req_id):
+                    # Use default arg to capture rd by value
+                    async def _send_request(request_data=rd):
+                        return await self.holder.post(
+                            "/api/v1/forward_backward", request_data
+                        )
+
+                    result = await self.holder.execute_with_retries(_send_request)
+                untyped_future = types.UntypedAPIFuture.from_dict(result)
+                # _APIFuture starts polling immediately on construction
+                futures.append(
+                    _APIFuture(
+                        model_cls=types.ForwardBackwardOutput,
+                        holder=self.holder,
+                        untyped_future=untyped_future,
+                        request_start_time=start_time,
+                        request_type="ForwardBackward",
+                    )
+                )
+
+            # Wait for all polls in parallel and combine results
+            results = await asyncio.gather(*[f.result_async() for f in futures])
+            return combine_fwd_bwd_output_results(results)
+
+        return wrap_future(
+            self.holder.run_coroutine_threadsafe(_chunked_forward_backward_async())
+        )
 
     def forward(
         self,
         data: Union[List[types.Datum], List[Dict[str, Any]]],
         loss_fn: str = "cross_entropy",
+        loss_fn_params: Optional[Dict[str, Any]] = None,
     ) -> APIFuture[types.ForwardBackwardOutput]:
         """Execute forward pass only (no backward/gradient computation, two-phase pattern).
 
@@ -295,9 +476,14 @@ class TrainingClient:
         to compute loss metrics without updating gradients. The server uses
         torch.no_grad() for efficiency.
 
+        Large batches are transparently chunked into multiple HTTP requests
+        (max 1024 datums or 5MB per chunk). Results are combined into a single
+        ForwardBackwardOutput.
+
         Args:
             data: List of training examples (Datum objects or dicts)
             loss_fn: Loss function name ("cross_entropy", "importance_sampling", etc.)
+            loss_fn_params: Optional parameters for the loss function (e.g., {"compute_kl_stats": True})
 
         Returns:
             APIFuture[ForwardBackwardOutput] that can be awaited
@@ -310,68 +496,102 @@ class TrainingClient:
         """
         import time
 
-        # Get request ID for ordering
-        request_id = self._get_request_id()
+        # Split data into chunks, each with its own request_id
+        chunked = self._chunked_datums(data)
 
-        # Convert Datum objects to dicts if needed
-        # Support both xorl_client.types.Datum and tinker.Datum (Pydantic model)
-        datums_dicts = []
-        for datum in data:
-            if isinstance(datum, types.Datum):
-                datums_dicts.append(datum.to_dict())
-            elif hasattr(datum, 'to_dict'):
-                # Support objects with to_dict() method
-                datums_dicts.append(datum.to_dict())
-            elif hasattr(datum, 'model_dump'):
-                # Support Pydantic v2 models (like tinker.Datum)
-                # Convert tinker format to xorl_client format
-                datum_dict = datum.model_dump()
-                datums_dicts.append(self._convert_tinker_datum(datum_dict))
-            elif isinstance(datum, dict):
-                datums_dicts.append(datum)
-            else:
-                raise TypeError(
-                    f"Expected Datum, dict, or Pydantic model, got {type(datum).__name__}"
+        # Single chunk: use simple path
+        if len(chunked) == 1:
+            request_id, chunk_data = chunked[0]
+            datums_dicts, all_routed_experts = self._convert_datums(chunk_data)
+
+            request_data = {
+                "model_id": self.model_id,
+                "seq_id": request_id + 1,
+                "forward_input": {
+                    "data": datums_dicts,
+                    "loss_fn": loss_fn,
+                },
+            }
+            if loss_fn_params:
+                request_data["forward_input"]["loss_fn_params"] = loss_fn_params
+            if all_routed_experts and len(all_routed_experts) == len(datums_dicts):
+                request_data["forward_input"]["routed_experts"] = all_routed_experts
+
+            async def _forward_async():
+                start_time = time.time()
+                async with self._take_turn(request_id):
+
+                    async def _send_request():
+                        return await self.holder.post("/api/v1/forward", request_data)
+
+                    result = await self.holder.execute_with_retries(_send_request)
+                untyped_future = types.UntypedAPIFuture.from_dict(result)
+                return await _APIFuture(
+                    model_cls=types.ForwardBackwardOutput,
+                    holder=self.holder,
+                    untyped_future=untyped_future,
+                    request_start_time=start_time,
+                    request_type="Forward",
                 )
 
-        request_data = {
-            "model_id": self.model_id,
-            "seq_id": request_id + 1,  # seq_id starts from 1 (like Tinker)
-            "forward_input": {
-                "data": datums_dicts,
-                "loss_fn": loss_fn,
+            return wrap_future(self.holder.run_coroutine_threadsafe(_forward_async()))
+
+        # Multiple chunks: dispatch each sequentially, poll in parallel, combine
+        logger.info(
+            f"Chunking forward into {len(chunked)} chunks "
+            f"({sum(len(c) for _, c in chunked)} total datums)"
+        )
+
+        chunk_requests = []
+        for request_id, chunk_data in chunked:
+            datums_dicts, all_routed_experts = self._convert_datums(chunk_data)
+            rd = {
+                "model_id": self.model_id,
+                "seq_id": request_id + 1,
+                "forward_input": {
+                    "data": datums_dicts,
+                    "loss_fn": loss_fn,
+                },
             }
-        }
+            if loss_fn_params:
+                rd["forward_input"]["loss_fn_params"] = loss_fn_params
+            if all_routed_experts and len(all_routed_experts) == len(datums_dicts):
+                rd["forward_input"]["routed_experts"] = all_routed_experts
+            chunk_requests.append((request_id, rd))
 
-        # Async function that handles both phases (like Tinker)
-        async def _forward_async():
-            start_time = time.time()
+        async def _chunked_forward_async():
+            futures = []
+            for req_id, rd in chunk_requests:
+                start_time = time.time()
+                async with self._take_turn(req_id):
 
-            # Phase 1: Submit request inside _take_turn to ensure ordering
-            async with self._take_turn(request_id):
-                async def _send_request():
-                    return await self.holder.post("/api/v1/forward", request_data)
-                result = await self.holder.execute_with_retries(_send_request)
+                    async def _send_request(request_data=rd):
+                        return await self.holder.post("/api/v1/forward", request_data)
 
-            # Parse UntypedAPIFuture response
-            untyped_future = types.UntypedAPIFuture.from_dict(result)
+                    result = await self.holder.execute_with_retries(_send_request)
+                untyped_future = types.UntypedAPIFuture.from_dict(result)
+                futures.append(
+                    _APIFuture(
+                        model_cls=types.ForwardBackwardOutput,
+                        holder=self.holder,
+                        untyped_future=untyped_future,
+                        request_start_time=start_time,
+                        request_type="Forward",
+                    )
+                )
 
-            # Phase 2: Create _APIFuture and await for the result
-            return await _APIFuture(
-                model_cls=types.ForwardBackwardOutput,
-                holder=self.holder,
-                untyped_future=untyped_future,
-                request_start_time=start_time,
-                request_type="Forward",
-            )
+            results = await asyncio.gather(*[f.result_async() for f in futures])
+            return combine_fwd_bwd_output_results(results)
 
-        # Schedule to event loop and return (like Tinker)
-        return wrap_future(self.holder.run_coroutine_threadsafe(_forward_async()))
+        return wrap_future(
+            self.holder.run_coroutine_threadsafe(_chunked_forward_async())
+        )
 
     async def forward_async(
         self,
         data: Union[List[types.Datum], List[Dict[str, Any]]],
         loss_fn: str = "cross_entropy",
+        loss_fn_params: Optional[Dict[str, Any]] = None,
     ) -> APIFuture[types.ForwardBackwardOutput]:
         """Async version of forward.
 
@@ -381,6 +601,7 @@ class TrainingClient:
         Args:
             data: List of training examples (Datum objects or dicts)
             loss_fn: Loss function name ("cross_entropy", "importance_sampling", etc.)
+            loss_fn_params: Optional parameters for the loss function
 
         Returns:
             APIFuture[ForwardBackwardOutput] that can be awaited
@@ -395,7 +616,7 @@ class TrainingClient:
             >>> fwd_future = await training_client.forward_async(val_datums, "cross_entropy")
             >>> result = await fwd_future.result_async()
         """
-        return self.forward(data, loss_fn)
+        return self.forward(data, loss_fn, loss_fn_params=loss_fn_params)
 
     def optim_step(
         self,
@@ -433,17 +654,19 @@ class TrainingClient:
             "adam_params": adam_params_dict,
         }
 
-        # Async function that handles both phases (like Tinker)
+        # Async function that handles both phases
         async def _optim_step_async():
             start_time = time.time()
 
             # Phase 1: Submit request inside _take_turn to ensure ordering
             async with self._take_turn(request_id):
+
                 async def _send_request():
                     return await self.holder.post("/api/v1/optim_step", request_data)
+
                 result = await self.holder.execute_with_retries(_send_request)
 
-            # Parse UntypedAPIFuture response
+            # Two-phase pattern: parse UntypedAPIFuture and poll for result
             untyped_future = types.UntypedAPIFuture.from_dict(result)
 
             # Phase 2: Create _APIFuture and await for the result
@@ -455,7 +678,7 @@ class TrainingClient:
                 request_type="OptimStep",
             )
 
-        # Schedule to event loop and return (like Tinker)
+        # Schedule to event loop and return
         return wrap_future(self.holder.run_coroutine_threadsafe(_optim_step_async()))
 
     def save_weights_for_sampler(
@@ -492,20 +715,22 @@ class TrainingClient:
             "name": name,
         }
 
-        # Async function that handles both phases (like Tinker)
+        # Async function that handles both phases
         async def _save_weights_for_sampler_async():
             start_time = time.time()
 
             # Phase 1: Submit request inside _take_turn to ensure ordering
             async with self._take_turn(request_id):
+
                 async def _send_request():
-                    return await self.holder.post("/api/v1/save_weights_for_sampler", request_data)
+                    return await self.holder.post(
+                        "/api/v1/save_weights_for_sampler", request_data
+                    )
+
                 result = await self.holder.execute_with_retries(_send_request)
 
-            # Parse UntypedAPIFuture response
+            # Two-phase pattern: poll for result
             untyped_future = types.UntypedAPIFuture.from_dict(result)
-
-            # Phase 2: Create _APIFuture and await for the result
             return await _APIFuture(
                 model_cls=types.SaveWeightsForSamplerResponse,
                 holder=self.holder,
@@ -514,8 +739,10 @@ class TrainingClient:
                 request_type="SaveWeightsForSampler",
             )
 
-        # Schedule to event loop and return (like Tinker)
-        return wrap_future(self.holder.run_coroutine_threadsafe(_save_weights_for_sampler_async()))
+        # Schedule to event loop and return
+        return wrap_future(
+            self.holder.run_coroutine_threadsafe(_save_weights_for_sampler_async())
+        )
 
     async def save_weights_for_sampler_async(
         self,
@@ -571,6 +798,7 @@ class TrainingClient:
         # Generate name if not provided
         if name is None:
             import time
+
             name = f"step-{int(time.time())}"
 
         # Save weights
@@ -583,7 +811,7 @@ class TrainingClient:
             response = self.holder.post_sync(
                 "/api/v1/create_sampling_session",
                 {"model_path": model_path},
-                timeout=60.0,  # LoRA loading can take some time
+                timeout=300.0,  # LoRA loading can take some time
             )
 
             if not response.get("success", False):
@@ -591,13 +819,17 @@ class TrainingClient:
                 raise RuntimeError(f"Failed to create sampling session: {error_msg}")
 
             lora_name = response.get("lora_name", "")
-            logger.info(f"Sampling session created: lora_name={lora_name}, model_path={model_path}")
+            logger.info(
+                f"Sampling session created: lora_name={lora_name}, model_path={model_path}"
+            )
 
         except (InternalServerError, BadRequestError) as e:
             # Check if this is a "LoRA already loaded" error - not fatal, just warn
             error_msg = str(e)
             if "already loaded" in error_msg.lower():
-                logger.warning(f"LoRA adapter is already loaded on inference worker, continuing: {error_msg}")
+                logger.warning(
+                    f"LoRA adapter is already loaded on inference worker, continuing: {error_msg}"
+                )
             else:
                 logger.error(f"Failed to create sampling session for {model_path}: {e}")
                 raise
@@ -609,6 +841,7 @@ class TrainingClient:
         return SamplingClient(
             base_url=inference_base_url,
             model_path=model_path,
+            model=self.holder._model,
             api_key=self.holder.api_key,
             timeout=self.holder.timeout,
         )
@@ -640,6 +873,7 @@ class TrainingClient:
         # Generate name if not provided
         if name is None:
             import time
+
             name = f"step-{int(time.time())}"
 
         # Save weights - await the async version and then get the result
@@ -653,7 +887,7 @@ class TrainingClient:
             response = self.holder.post_sync(
                 "/api/v1/create_sampling_session",
                 {"model_path": model_path},
-                timeout=60.0,  # LoRA loading can take some time
+                timeout=300.0,  # LoRA loading can take some time
             )
 
             if not response.get("success", False):
@@ -661,13 +895,17 @@ class TrainingClient:
                 raise RuntimeError(f"Failed to create sampling session: {error_msg}")
 
             lora_name = response.get("lora_name", "")
-            logger.info(f"Sampling session created: lora_name={lora_name}, model_path={model_path}")
+            logger.info(
+                f"Sampling session created: lora_name={lora_name}, model_path={model_path}"
+            )
 
         except (InternalServerError, BadRequestError) as e:
             # Check if this is a "LoRA already loaded" error - not fatal, just warn
             error_msg = str(e)
             if "already loaded" in error_msg.lower():
-                logger.warning(f"LoRA adapter is already loaded on inference worker, continuing: {error_msg}")
+                logger.warning(
+                    f"LoRA adapter is already loaded on inference worker, continuing: {error_msg}"
+                )
             else:
                 logger.error(f"Failed to create sampling session for {model_path}: {e}")
                 raise
@@ -679,6 +917,7 @@ class TrainingClient:
         return SamplingClient(
             base_url=inference_base_url,
             model_path=model_path,
+            model=self.holder._model,
             api_key=self.holder.api_key,
             timeout=self.holder.timeout,
         )
@@ -720,8 +959,10 @@ class TrainingClient:
 
             # Phase 1: Submit request inside _take_turn to ensure ordering
             async with self._take_turn(request_id):
+
                 async def _send_request():
                     return await self.holder.post("/api/v1/save_weights", request_data)
+
                 result = await self.holder.execute_with_retries(_send_request)
 
             # Parse UntypedAPIFuture response
@@ -766,6 +1007,86 @@ class TrainingClient:
         """
         return self.save_state(name)
 
+    def save_full_weights_safetensors(
+        self,
+        name: str,
+        dtype: str = "bfloat16",
+        base_model_path: Optional[str] = None,
+    ) -> APIFuture[types.SaveFullWeightsSafetensorsResponse]:
+        """Save full model weights as safetensors for direct SGLang/HuggingFace loading.
+
+        This saves the complete model weights (not just LoRA) in safetensors format
+        with config files, allowing direct loading by SGLang or other inference engines.
+
+        For full-weights RL training, this is the recommended way to save checkpoints
+        since there are no LoRA adapters to save separately.
+
+        Args:
+            name: Checkpoint name (e.g., "checkpoint-001"). Will be saved to
+                  output_dir/safetensors/{name}/
+            dtype: Target dtype for weights ("bfloat16", "float16", "float32")
+            base_model_path: Path to base model for config files. If None, uses
+                           server's configured model_path.
+
+        Returns:
+            APIFuture[SaveFullWeightsSafetensorsResponse] with:
+                - path: Filesystem path to saved safetensors directory
+                - dtype: Dtype used for saving
+                - num_shards: Number of safetensor shards created
+
+        Example:
+            >>> # Save checkpoint during training
+            >>> save_future = training_client.save_full_weights_safetensors("step-1000")
+            >>> result = save_future.result()
+            >>> print(f"Saved to: {result.path} ({result.num_shards} shards)")
+        """
+        request_data = {
+            "model_id": self.model_id,
+            "name": name,
+            "dtype": dtype,
+        }
+        if base_model_path is not None:
+            request_data["base_model_path"] = base_model_path
+
+        # This is a direct response endpoint (not two-phase pattern)
+        async def _save_full_weights_async():
+            async def _send_request():
+                return await self.holder.post(
+                    "/api/v1/save_full_weights_safetensors", request_data
+                )
+
+            result = await self.holder.execute_with_retries(_send_request)
+            return types.SaveFullWeightsSafetensorsResponse.from_dict(result)
+
+        return wrap_future(
+            self.holder.run_coroutine_threadsafe(_save_full_weights_async())
+        )
+
+    async def save_full_weights_safetensors_async(
+        self,
+        name: str,
+        dtype: str = "bfloat16",
+        base_model_path: Optional[str] = None,
+    ) -> APIFuture[types.SaveFullWeightsSafetensorsResponse]:
+        """Async version of save_full_weights_safetensors.
+
+        Save full model weights as safetensors for direct SGLang/HuggingFace loading.
+
+        Args:
+            name: Checkpoint name (e.g., "checkpoint-001")
+            dtype: Target dtype for weights ("bfloat16", "float16", "float32")
+            base_model_path: Path to base model for config files
+
+        Returns:
+            APIFuture[SaveFullWeightsSafetensorsResponse]
+
+        Example:
+            >>> save_future = await training_client.save_full_weights_safetensors_async("step-1000")
+            >>> result = await save_future
+            >>> print(f"Saved to: {result.path}")
+        """
+        return self.save_full_weights_safetensors(name, dtype, base_model_path)
+
     def _load_weights_impl(
         self,
         path: str,
@@ -798,8 +1119,10 @@ class TrainingClient:
 
             # Phase 1: Submit request inside _take_turn to ensure ordering
             async with self._take_turn(request_id):
+
                 async def _send_request():
                     return await self.holder.post("/api/v1/load_weights", request_data)
+
                 result = await self.holder.execute_with_retries(_send_request)
 
             # Parse UntypedAPIFuture response
@@ -915,7 +1238,7 @@ class TrainingClient:
         Returns:
             Health check response
         """
-        return self.holder.get_sync("/health", timeout=10)
+        return self.holder.get_sync("/health", timeout=60)
 
     def update_dedicated_endpoint(
         self,
@@ -986,7 +1309,7 @@ class TrainingClient:
                 return await self.holder.post(
                     "/api/v1/update_dedicated_endpoint",
                     request_data,
-                    timeout=300,  # 5 minute timeout
+                    timeout=900,  # 15 minute timeout
                 )
 
             # Execute inside _take_turn to ensure ordering
@@ -1004,7 +1327,9 @@ class TrainingClient:
                     f"Probe: {result.get('probe_time', 0):.1f}s)"
                 )
             else:
-                logger.error(f"Failed to update dedicated endpoint: {result.get('error')}")
+                logger.error(
+                    f"Failed to update dedicated endpoint: {result.get('error')}"
+                )
             return types.UpdateDedicatedEndpointResponse(
                 success=success,
                 checkpoint_path=result.get("checkpoint_path", ""),
@@ -1017,7 +1342,9 @@ class TrainingClient:
             )
 
         # Schedule to event loop and return directly
-        return wrap_future(self.holder.run_coroutine_threadsafe(_update_dedicated_endpoint_async()))
+        return wrap_future(
+            self.holder.run_coroutine_threadsafe(_update_dedicated_endpoint_async())
+        )
 
     def update_serverless_weights(
         self,
@@ -1085,7 +1412,7 @@ class TrainingClient:
                 return await self.holder.post(
                     "/api/v1/update_serverless_weights",
                     request_data,
-                    timeout=600.0,  # 10 minute timeout
+                    timeout=1800.0,  # 30 minute timeout
                 )
 
             # Execute inside _take_turn to ensure ordering
@@ -1110,7 +1437,9 @@ class TrainingClient:
             )
 
         # Schedule to event loop and return directly
-        return wrap_future(self.holder.run_coroutine_threadsafe(_update_serverless_weights_async()))
+        return wrap_future(
+            self.holder.run_coroutine_threadsafe(_update_serverless_weights_async())
+        )
 
     def list_checkpoints(self) -> APIFuture[types.CheckpointsListResponse]:
         """List all available checkpoints.
@@ -1134,13 +1463,13 @@ class TrainingClient:
 
         def parse_response(result: Dict[str, Any]) -> types.CheckpointsListResponse:
             checkpoints = [
-                types.Checkpoint.from_dict(c)
-                for c in result.get("checkpoints", [])
+                types.Checkpoint.from_dict(c) for c in result.get("checkpoints", [])
             ]
             logger.info(f"Listed {len(checkpoints)} checkpoints")
             return types.CheckpointsListResponse(checkpoints=checkpoints)
 
         from concurrent.futures import Future
+
         parsed_future: Future[types.CheckpointsListResponse] = Future()
 
         def callback(f: Future):
@@ -1199,6 +1528,7 @@ class TrainingClient:
             )
 
         from concurrent.futures import Future
+
         parsed_future: Future[types.DeleteCheckpointResponse] = Future()
 
         def callback(f: Future):
@@ -1262,6 +1592,446 @@ class TrainingClient:
         """
         return self.delete_checkpoint_from_xorl_path(xorl_path)
 
+    # =========================================================================
+    # Weight Sync Methods (NCCL-based weight transfer to inference endpoints)
+    # =========================================================================
+
+    def add_inference_endpoint(
+        self,
+        host: str,
+        port: int,
+        world_size: int = 1,
+        sync_weights: bool = False,
+        master_address: Optional[str] = None,
+        master_port: int = 29600,
+        group_name: str = "weight_sync_group",
+        buffer_size_mb: int = 1024,
+    ) -> APIFuture[types.AddInferenceEndpointResponse]:
+        """Register an SGLang inference endpoint for NCCL weight sync.
+
+        This endpoint:
+        1. Checks if the endpoint is healthy via /health
+        2. Fetches server info via /server_info to get model and LoRA configuration
+        3. Validates that LoRA is enabled on the inference endpoint
+        4. If sync_weights is True, syncs weights to the new endpoint
+
+        Args:
+            host: Hostname or IP address of the inference endpoint
+            port: Port number of the SGLang server
+            world_size: Number of TP workers at this endpoint (default: 1)
+            sync_weights: Whether to auto-sync weights after adding (default: False)
+            master_address: Training server hostname for NCCL rendezvous (auto-detected if None)
+            master_port: Port for NCCL rendezvous (default: 29600)
+            group_name: NCCL process group name (default: weight_sync_group)
+            buffer_size_mb: Transfer bucket size in MB (default: 1024)
+
+        Returns:
+            APIFuture[AddInferenceEndpointResponse] with endpoint info and sync status
+
+        Example:
+            >>> # Register SGLang endpoint on node 13
+            >>> result = training_client.add_inference_endpoint(
+            ...     host="research-common-13",
+            ...     port=30000,
+            ...     world_size=8,
+            ...     sync_weights=True,  # Auto-sync weights
+            ... ).result()
+            >>> print(f"Added: {result.endpoint.host}:{result.endpoint.port}")
+            >>> if result.weights_synced:
+            ...     print(f"Weights synced: {result.sync_message}")
+        """
+        request_data = {
+            "host": host,
+            "port": port,
+            "world_size": world_size,
+            "sync_weights": sync_weights,
+            "master_address": master_address or "",
+            "master_port": master_port,
+            "group_name": group_name,
+            "buffer_size_mb": buffer_size_mb,
+        }
+
+        future = self.holder.post_async("/add_inference_endpoint", request_data)
+
+        def parse_response(
+            result: Dict[str, Any],
+        ) -> types.AddInferenceEndpointResponse:
+            response = types.AddInferenceEndpointResponse.from_dict(result)
+            if response.success:
+                logger.info(
+                    f"Added inference endpoint: {host}:{port} (world_size={world_size})"
+                )
+                if response.weights_synced:
+                    logger.info(f"Weights synced: {response.sync_message}")
+            else:
+                logger.error(f"Failed to add inference endpoint: {response.message}")
+            return response
+
+        from concurrent.futures import Future
+
+        parsed_future: Future[types.AddInferenceEndpointResponse] = Future()
+
+        def callback(f: Future):
+            try:
+                result = f.result()
+                parsed_future.set_result(parse_response(result))
+            except Exception as e:
+                parsed_future.set_exception(e)
+
+        future.add_done_callback(callback)
+        return wrap_future(parsed_future)
+
+    def sync_inference_weights(
+        self,
+        master_address: Optional[str] = None,
+        master_port: int = 29600,
+        group_name: str = "weight_sync_group",
+        buffer_size_mb: int = 1024,
+    ) -> APIFuture[types.SyncWeightsResponse]:
+        """Sync weights to all registered inference endpoints via NCCL.
+
+        This triggers the training server to broadcast current model weights
+        to all registered inference endpoints using NCCL for high-performance transfer.
+
+        The process:
+        1. Training server extracts model weights (state_dict)
+        2. Initializes NCCL process group with inference endpoints
+        3. Transfers weights in buckets via NCCL broadcast (to avoid OOM)
+        4. Cleans up process groups
+
+        Args:
+            master_address: Training server hostname for NCCL rendezvous (auto-detected if None)
+            master_port: Port for NCCL rendezvous (default: 29600)
+            group_name: NCCL process group name (default: weight_sync_group)
+            buffer_size_mb: Transfer bucket size in MB (default: 1024)
+
+        Returns:
+            APIFuture[SyncWeightsResponse] with transfer stats (time, bytes, throughput)
+
+        Example:
+            >>> # Sync weights after training
+            >>> result = training_client.sync_inference_weights(
+            ...     master_port=29600,
+            ...     buffer_size_mb=1024,
+            ... ).result()
+            >>> print(f"Transfer: {result.total_bytes/1e9:.2f} GB in {result.transfer_time:.2f}s")
+            >>> print(f"Throughput: {result.throughput_gbps:.2f} GB/s")
+        """
+        request_data = {
+            "master_address": master_address or "",
+            "master_port": master_port,
+            "group_name": group_name,
+            "buffer_size_mb": buffer_size_mb,
+        }
+
+        # Use extended timeout for weight sync (can take minutes for large models)
+        future = self.holder.post_async(
+            "/sync_inference_weights",
+            request_data,
+            timeout=1800.0,  # 30 minute timeout
+        )
+
+        def parse_response(result: Dict[str, Any]) -> types.SyncWeightsResponse:
+            response = types.SyncWeightsResponse.from_dict(result)
+            if response.success:
+                logger.info(
+                    f"Weight sync complete: {response.total_bytes/1e9:.2f} GB in "
+                    f"{response.transfer_time:.2f}s ({response.throughput_gbps:.2f} GB/s)"
+                )
+            else:
+                logger.error(f"Weight sync failed: {response.message}")
+            return response
+
+        from concurrent.futures import Future
+
+        parsed_future: Future[types.SyncWeightsResponse] = Future()
+
+        def callback(f: Future):
+            try:
+                result = f.result()
+                parsed_future.set_result(parse_response(result))
+            except Exception as e:
+                parsed_future.set_exception(e)
+
+        future.add_done_callback(callback)
+        return wrap_future(parsed_future)
+
+    def list_inference_endpoints(
+        self,
+    ) -> APIFuture[types.ListInferenceEndpointsResponse]:
+        """List all registered inference endpoints.
+
+        Performs health checks on all endpoints and removes unhealthy ones.
+
+        Returns:
+            APIFuture[ListInferenceEndpointsResponse] with list of healthy endpoints
+
+        Example:
+            >>> response = training_client.list_inference_endpoints().result()
+            >>> for ep in response.endpoints:
+            ...     print(f"{ep.host}:{ep.port} (world_size={ep.world_size})")
+        """
+        future = self.holder.get_async("/list_inference_endpoints")
+
+        def parse_response(
+            result: Dict[str, Any],
+        ) -> types.ListInferenceEndpointsResponse:
+            response = types.ListInferenceEndpointsResponse.from_dict(result)
+            logger.info(f"Listed {response.count} inference endpoint(s)")
+            return response
+
+        from concurrent.futures import Future
+
+        parsed_future: Future[types.ListInferenceEndpointsResponse] = Future()
+
+        def callback(f: Future):
+            try:
+                result = f.result()
+                parsed_future.set_result(parse_response(result))
+            except Exception as e:
+                parsed_future.set_exception(e)
+
+        future.add_done_callback(callback)
+        return wrap_future(parsed_future)
+
+    def remove_inference_endpoint(
+        self,
+        host: str,
+        port: int,
+    ) -> APIFuture[types.RemoveInferenceEndpointResponse]:
+        """Remove an inference endpoint from the registry.
+
+        Args:
+            host: Hostname or IP address of the inference endpoint
+            port: Port number of the inference endpoint
+
+        Returns:
+            APIFuture[RemoveInferenceEndpointResponse] with success status
+
+        Example:
+            >>> response = training_client.remove_inference_endpoint(
+            ...     host="research-common-13",
+            ...     port=30000,
+            ... ).result()
+            >>> print(f"Removed: {response.message}")
+        """
+        request_data = {
+            "host": host,
+            "port": port,
+        }
+
+        future = self.holder.post_async("/remove_inference_endpoint", request_data)
+
+        def parse_response(
+            result: Dict[str, Any],
+        ) -> types.RemoveInferenceEndpointResponse:
+            response = types.RemoveInferenceEndpointResponse.from_dict(result)
+            if response.success:
+                logger.info(f"Removed inference endpoint: {host}:{port}")
+            else:
+                logger.warning(f"Failed to remove endpoint: {response.message}")
+            return response
+
+        from concurrent.futures import Future
+
+        parsed_future: Future[types.RemoveInferenceEndpointResponse] = Future()
+
+        def callback(f: Future):
+            try:
+                result = f.result()
+                parsed_future.set_result(parse_response(result))
+            except Exception as e:
+                parsed_future.set_exception(e)
+
+        future.add_done_callback(callback)
+        return wrap_future(parsed_future)
+
+    def connect_inference_endpoint(
+        self,
+        master_address: Optional[str] = None,
+        master_port: int = 29600,
+        group_name: str = "weight_sync_group",
+        buffer_size_mb: int = 256,
+    ) -> APIFuture[types.ConnectEndpointResponse]:
+        """Establish a persistent NCCL connection to inference endpoints.
+
+        Call this once at the start of an RL training loop to avoid
+        connection overhead during frequent weight syncs. The connection
+        persists until disconnect_inference_endpoint is called.
+
+        Prerequisites:
+        - At least one inference endpoint must be registered via add_inference_endpoint
+
+        Args:
+            master_address: Training server hostname for NCCL rendezvous (auto-detected if None)
+            master_port: Port for NCCL rendezvous (default: 29600)
+            group_name: NCCL process group name (default: weight_sync_group)
+            buffer_size_mb: Transfer buffer size in MB (default: 256)
+
+        Returns:
+            APIFuture[ConnectEndpointResponse] with connection status
+
+        Example:
+            >>> # Establish persistent connection at RL loop start
+            >>> result = training_client.connect_inference_endpoint(
+            ...     master_port=29741,
+            ... ).result()
+            >>> print(f"Connected to {len(result.connected_endpoints)} endpoint(s)")
+            >>>
+            >>> # Now sync_inference_weights will be faster
+            >>> for step in range(num_steps):
+            ...     training_client.sync_inference_weights().result()
+            ...     # ... training loop ...
+            >>>
+            >>> # Disconnect at the end
+            >>> training_client.disconnect_inference_endpoint().result()
+        """
+        request_data = {
+            "master_address": master_address or "",
+            "master_port": master_port,
+            "group_name": group_name,
+            "buffer_size_mb": buffer_size_mb,
+        }
+
+        # Use extended timeout for connection establishment
+        future = self.holder.post_async(
+            "/connect_inference_endpoint",
+            request_data,
+            timeout=300.0,  # 5 minute timeout
+        )
+
+        def parse_response(result: Dict[str, Any]) -> types.ConnectEndpointResponse:
+            response = types.ConnectEndpointResponse.from_dict(result)
+            if response.success:
+                logger.info(
+                    f"Connected to {len(response.connected_endpoints)} inference endpoint(s)"
+                )
+            else:
+                logger.error(f"Connection failed: {response.message}")
+            return response
+
+        from concurrent.futures import Future
+
+        parsed_future: Future[types.ConnectEndpointResponse] = Future()
+
+        def callback(f: Future):
+            try:
+                result = f.result()
+                parsed_future.set_result(parse_response(result))
+            except Exception as e:
+                parsed_future.set_exception(e)
+
+        future.add_done_callback(callback)
+        return wrap_future(parsed_future)
+
+    def disconnect_inference_endpoint(self) -> APIFuture[types.DisconnectResponse]:
+        """Disconnect from inference endpoints and clean up NCCL process groups.
+
+        Call this at the end of an RL training loop or when changing
+        inference endpoints. This cleans up the persistent connection
+        established by connect_inference_endpoint.
+
+        Returns:
+            APIFuture[DisconnectResponse] with disconnection status
+
+        Example:
+            >>> # At the end of RL training loop
+            >>> result = training_client.disconnect_inference_endpoint().result()
+            >>> print(f"Disconnected: {result.message}")
+        """
+        request_data = {}
+
+        future = self.holder.post_async(
+            "/disconnect_inference_endpoint",
+            request_data,
+            timeout=60.0,  # 1 minute timeout
+        )
+
+        def parse_response(result: Dict[str, Any]) -> types.DisconnectResponse:
+            response = types.DisconnectResponse.from_dict(result)
+            if response.success:
+                logger.info(f"Disconnected from inference endpoints")
+            else:
+                logger.warning(f"Disconnect failed: {response.message}")
+            return response
+
+        from concurrent.futures import Future
+
+        parsed_future: Future[types.DisconnectResponse] = Future()
+
+        def callback(f: Future):
+            try:
+                result = f.result()
+                parsed_future.set_result(parse_response(result))
+            except Exception as e:
+                parsed_future.set_exception(e)
+
+        future.add_done_callback(callback)
+        return wrap_future(parsed_future)
+
+    def sync_weights_to_inference(
+        self,
+        sync_method: str = "nccl_ep_scatter",
+    ) -> APIFuture[types.SyncWeightsResponse]:
+        """Sync current model weights to connected inference endpoint.
+
+        This is a convenience method for RL training that calls
+        sync_inference_weights with the specified sync method.
+        Assumes connect_inference_endpoint was called first.
+
+        Args:
+            sync_method: Transfer method - "nccl_ep_scatter" (default, multi-rank parallel),
+                        "nccl" (single-rank), or "rdma_direct" (RDMA push)
+
+        Returns:
+            APIFuture[SyncWeightsResponse] with transfer stats
+
+        Example:
+            >>> # In RL training loop
+            >>> training_client.sync_weights_to_inference().result()
+            >>> # Sample from inference server with updated weights
+            >>> responses = sampling_client.sample(prompts, params)
+        """
+        request_data = {
+            "sync_method": sync_method,
+        }
+
+        # Use extended timeout for weight sync
+        future = self.holder.post_async(
+            "/sync_inference_weights",
+            request_data,
+            timeout=1800.0,  # 30 minute timeout
+        )
+
+        def parse_response(result: Dict[str, Any]) -> types.SyncWeightsResponse:
+            response = types.SyncWeightsResponse.from_dict(result)
+            if response.success:
+                logger.info(
+                    f"Weight sync complete: {response.total_bytes/1e9:.2f} GB in "
+                    f"{response.transfer_time:.2f}s ({response.throughput_gbps:.2f} GB/s)"
+                )
+            else:
+                logger.error(f"Weight sync failed: {response.message}")
+            return response
+
+        from concurrent.futures import Future
+
+        parsed_future: Future[types.SyncWeightsResponse] = Future()
+
+        def callback(f: Future):
+            try:
+                result = f.result()
+                parsed_future.set_result(parse_response(result))
+            except Exception as e:
+                parsed_future.set_exception(e)
+
+        future.add_done_callback(callback)
+        return wrap_future(parsed_future)
+
+    # =========================================================================
+    # Model Lifecycle Methods
+    # =========================================================================
+
     def unload(self) -> APIFuture[types.UnloadModelResponse]:
         """Unload the model and release all resources (two-phase pattern).
 
@@ -1291,8 +2061,10 @@ class TrainingClient:
 
             # Phase 1: Submit request inside _take_turn to ensure ordering
             async with self._take_turn(request_id):
+
                 async def _send_request():
                     return await self.holder.models.unload(self.model_id)
+
                 result = await self.holder.execute_with_retries(_send_request)
 
             # Parse UntypedAPIFuture response
@@ -1324,3 +2096,68 @@ class TrainingClient:
             >>> print(f"Model unloaded: {result.success}")
         """
         return self.unload()
+
+    def kill_session(
+        self,
+        save_checkpoint: bool = True,
+    ) -> APIFuture[types.KillSessionResponse]:
+        """Kill the active full-weights training session.
+
+        In full-weights training mode (enable_lora=False), the server operates in
+        single-tenant mode. This method kills the active session, resets optimizer
+        state and step counters, and allows starting a new session.
+
+        For LoRA mode, this is a no-op since multi-tenancy is supported.
+
+        Args:
+            save_checkpoint: Whether to save checkpoint before killing (default: True)
+
+        Returns:
+            APIFuture[KillSessionResponse] with status and optional checkpoint path
+
+        Example:
+            >>> # Kill current session to start fresh
+            >>> response = training_client.kill_session(save_checkpoint=True).result()
+            >>> if response.success:
+            ...     print(f"Session killed: {response.message}")
+            ...     if response.checkpoint_path:
+            ...         print(f"Checkpoint saved to: {response.checkpoint_path}")
+        """
+        request_data = {
+            "model_id": self.model_id,
+            "save_checkpoint": save_checkpoint,
+        }
+
+        async def _kill_session_async():
+            async def _send_request():
+                return await self.holder.post(
+                    "/api/v1/kill_session",
+                    request_data,
+                    timeout=120.0,
+                )
+
+            result = await self.holder.execute_with_retries(_send_request)
+            return types.KillSessionResponse.from_dict(result)
+
+        return wrap_future(self.holder.run_coroutine_threadsafe(_kill_session_async()))
+
+    async def kill_session_async(
+        self,
+        save_checkpoint: bool = True,
+    ) -> APIFuture[types.KillSessionResponse]:
+        """Async version of kill_session.
+
+        Kill the active full-weights training session.
+
+        Args:
+            save_checkpoint: Whether to save checkpoint before killing (default: True)
+
+        Returns:
+            APIFuture[KillSessionResponse] with status and optional checkpoint path
+
+        Example:
+            >>> response = await training_client.kill_session_async(save_checkpoint=True)
+            >>> result = await response
+            >>> print(f"Session killed: {result.message}")
+        """
+        return self.kill_session(save_checkpoint=save_checkpoint)

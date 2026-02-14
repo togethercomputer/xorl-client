@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .sampled_sequence import SampledSequence
 
@@ -15,6 +15,7 @@ class SampleResponse:
     """Response from sampling operation."""
 
     sequences: List[SampledSequence]
+    meta_info: Optional[Dict[str, Any]] = field(default=None)  # For R3 routed_experts and other metadata
 
     prompt_logprobs: Optional[List[Optional[float]]] = None
     """If prompt_logprobs was set to true in the request, logprobs are computed for

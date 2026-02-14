@@ -74,7 +74,7 @@ class ServiceClient:
         base_url: Optional[str] = None,
         model: Optional[str] = None,
         api_key: Optional[str] = None,
-        timeout: float = 300.0,
+        timeout: float = 1800.0,
         **kwargs: Any,
     ):
         """Initialize ServiceClient.
@@ -128,12 +128,11 @@ class ServiceClient:
             target_modules=target_modules,
         )
 
-        # Send create model request to server (two-phase pattern)
+        # Send create model request to server
         logger.info(f"Creating LoRA training client: model_id={model_id}, base_model={base_model}, rank={rank}")
         request_start_time = time.time()
 
         try:
-            # Phase 1: Submit request, get UntypedAPIFuture
             response = self.holder.post_sync(
                 "/api/v1/create_model",
                 {
@@ -143,21 +142,27 @@ class ServiceClient:
                 },
             )
 
-            # Parse UntypedAPIFuture response
-            untyped_future = types.UntypedAPIFuture.from_dict(response)
-
-            # Phase 2: Poll for result using _APIFuture
-            api_future = _APIFuture(
-                model_cls=types.CreateModelResponse,
-                holder=self.holder,
-                untyped_future=untyped_future,
-                request_start_time=request_start_time,
-                request_type="CreateModel",
-            )
-
-            # Wait for the create_model to complete
-            create_result = api_future.result()
-            logger.info(f"Model created: model_id={create_result.model_id}")
+            # Handle both response formats:
+            # - Old format: {model_id, status} - immediate response
+            # - New format: {request_id, model_id} - two-phase pattern
+            if "request_id" in response:
+                # Two-phase pattern: poll for result
+                untyped_future = types.UntypedAPIFuture.from_dict(response)
+                api_future = _APIFuture(
+                    model_cls=types.CreateModelResponse,
+                    holder=self.holder,
+                    untyped_future=untyped_future,
+                    request_start_time=request_start_time,
+                    request_type="CreateModel",
+                )
+                create_result = api_future.result()
+                logger.info(f"Model created: model_id={create_result.model_id}")
+            else:
+                # Old format: immediate response with {model_id, status}
+                if "model_id" in response and "status" in response:
+                    logger.info(f"Model created: model_id={response['model_id']}, status={response['status']}")
+                else:
+                    raise RuntimeError(f"Unexpected response format from create_model: {response}")
 
         except RuntimeError as e:
             logger.error(f"Failed to create model: {e}")
@@ -170,6 +175,113 @@ class ServiceClient:
         future: Future[TrainingClient] = Future()
         future.set_result(training_client)
         return future
+
+    def create_training_client(
+        self,
+        base_model: str,
+        model_id: Optional[str] = None,
+    ) -> "TrainingClient":
+        """Create a training client for full-weights training (non-LoRA).
+
+        This method creates a TrainingClient for training without LoRA adapters.
+        Use this when the server is configured with enable_lora=False.
+
+        The method:
+        1. Registers the model_id with the training server
+        2. Returns a TrainingClient ready for training
+
+        Args:
+            base_model: Base model name (e.g., "Qwen/Qwen2.5-3B-Instruct")
+            model_id: Optional model ID (default: "default"). Use different IDs
+                     for multiple concurrent training sessions.
+
+        Returns:
+            TrainingClient instance
+
+        Example:
+            >>> # For full-weights training (server has enable_lora=False)
+            >>> training_client = service_client.create_training_client(
+            ...     base_model="Qwen/Qwen2.5-3B-Instruct"
+            ... )
+            >>> # With custom model_id for concurrent runs
+            >>> training_client = service_client.create_training_client(
+            ...     base_model="Qwen/Qwen2.5-3B-Instruct",
+            ...     model_id="training-run-001"
+            ... )
+        """
+        return self._create_training_client_submit(base_model, model_id).result()
+
+    def _create_training_client_submit(
+        self,
+        base_model: str,
+        model_id: Optional[str] = None,
+    ) -> Future["TrainingClient"]:
+        """Helper function that submits the create_training_client request."""
+        import time
+        from xorl_client.client.training_client import TrainingClient
+
+        # Use provided model_id or default to "default"
+        if model_id is None:
+            model_id = "default"
+
+        # Send create model request to server
+        # For full-weights mode, we still call create_model but without meaningful lora_config
+        logger.info(f"Creating training client: model_id={model_id}, base_model={base_model}")
+        request_start_time = time.time()
+
+        try:
+            response = self.holder.post_sync(
+                "/api/v1/create_model",
+                {
+                    "model_id": model_id,
+                    "base_model": base_model,
+                    # lora_config is ignored when server has enable_lora=False
+                    "lora_config": {"rank": 32},
+                },
+            )
+
+            # Handle both response formats:
+            # - Old format: {model_id, status} - immediate response
+            # - New format: {request_id, model_id} - two-phase pattern
+            if "request_id" in response:
+                # Two-phase pattern: poll for result
+                untyped_future = types.UntypedAPIFuture.from_dict(response)
+                api_future = _APIFuture(
+                    model_cls=types.CreateModelResponse,
+                    holder=self.holder,
+                    untyped_future=untyped_future,
+                    request_start_time=request_start_time,
+                    request_type="CreateModel",
+                )
+                create_result = api_future.result()
+                logger.info(f"Model created: model_id={create_result.model_id}")
+            else:
+                # Old format: immediate response with {model_id, status}
+                if "model_id" in response and "status" in response:
+                    logger.info(f"Model created: model_id={response['model_id']}, status={response['status']}")
+                else:
+                    raise RuntimeError(f"Unexpected response format from create_model: {response}")
+
+        except RuntimeError as e:
+            logger.error(f"Failed to create model: {e}")
+            raise
+
+        # Create and return TrainingClient
+        training_client = TrainingClient(holder=self.holder, model_id=model_id, base_model=base_model)
+
+        # Return a completed future
+        future: Future[TrainingClient] = Future()
+        future.set_result(training_client)
+        return future
+
+    async def create_training_client_async(
+        self,
+        base_model: str,
+        model_id: Optional[str] = None,
+    ) -> "TrainingClient":
+        """Async version of create_training_client for full-weights training."""
+        future = self._create_training_client_submit(base_model, model_id)
+        return await asyncio.wrap_future(future)
 
     def create_lora_training_client(
         self,
@@ -235,7 +347,7 @@ class ServiceClient:
         model_path: str,
         model: Optional[str] = None,
         api_key: Optional[str] = None,
-        timeout: float = 120.0,
+        timeout: float = 1800.0,
     ) -> "SamplingClient":
         """Create a sampling client for inference.
 
@@ -276,7 +388,7 @@ class ServiceClient:
             response = self.holder.post_sync(
                 "/api/v1/create_sampling_session",
                 {"model_path": model_path},
-                timeout=60.0,  # LoRA loading can take some time
+                timeout=1800.0,  # LoRA loading can take some time
             )
 
             if not response.get("success", False):
@@ -611,7 +723,7 @@ class ServiceClient:
             return self.holder.post_sync(
                 "/api/v1/weights_info",
                 {"xorl_path": checkpoint_path},
-                timeout=30,
+                timeout=120,
             )
         except Exception as e:
             logger.warning(f"Failed to get checkpoint info for {checkpoint_path}: {e}")

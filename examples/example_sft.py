@@ -4,6 +4,7 @@ Uses existing modules but with a simple, flat training loop.
 """
 
 import logging
+import os
 import time
 
 import chz
@@ -21,15 +22,26 @@ logging.getLogger("httpx").setLevel(logging.WARN)
 
 @chz.chz
 class Config:
-    base_url: str = "http://research-common-21:5000"
-    log_path: str = "outputs/xorl_client-sft"
-    model_name: str = "Qwen/Qwen3-4B-Instruct-2507"
+    # Server URLs (local deployment)
+    training_url: str = "http://localhost:8990"
+    # API routing (optional, for cloud deployment)
+    training_model: str = "test/throughput"  # Auth routing only
+    api_key: str | None = None  # API key (or set XORL_API_KEY env var)
+    # Paths
+    log_path: str = "/scratch/outputs/checkpoints/qwen3-235b-sft"
+    # Model config
+    model_name: str = "Qwen/Qwen3-235B-A22B-Instruct-2507"
+    # Training config
     batch_size: int = 128
-    learning_rate: float = 1e-4
+    learning_rate: float = 4e-5
+    lora_rank: int = 32
+    save_every: int = 50  # 0 = disabled
     max_length: int = 32768
     train_on_what: renderers.TrainOnWhat = renderers.TrainOnWhat.ALL_ASSISTANT_MESSAGES
     lora_rank: int = 32
     save_every: int = 20  # 0 = disabled
+    max_steps: int = 0  # 0 = run all steps
+    dataset_size: int = 0  # 0 = use all, otherwise limit to first N examples
 
 
 def main(config: Config):
@@ -54,11 +66,17 @@ def main(config: Config):
     assert isinstance(dataset, datasets.DatasetDict)
     train_dataset = dataset["train"]
 
+    # Limit dataset size if specified
+    if config.dataset_size > 0:
+        train_dataset = train_dataset.select(range(min(config.dataset_size, len(train_dataset))))
+        logger.info(f"Limited dataset to {len(train_dataset)} examples")
+
     n_train_batches = len(train_dataset) // config.batch_size
     logger.info(f"Train batches: {n_train_batches}")
 
     # Setup training client
-    service_client = xorl_client.ServiceClient(base_url=config.base_url)
+    api_key = config.api_key or os.environ.get("XORL_API_KEY")
+    service_client = xorl_client.ServiceClient(base_url=config.training_url, model=config.training_model, api_key=api_key)
 
     # Check for resuming
     resume_info = checkpoint_utils.get_last_checkpoint(config.log_path)
@@ -108,13 +126,14 @@ def main(config: Config):
         step=-1,  # Pre-training step
     )
 
-    # Training loop (single epoch)
-    logger.info(f"Training for {n_train_batches} steps")
+    # Training loop (single epoch, or max_steps if specified)
+    total_steps = config.max_steps if config.max_steps > 0 else n_train_batches
+    logger.info(f"Training for {total_steps} steps")
 
     # Shuffle dataset
     train_dataset = train_dataset.shuffle(seed=0)
 
-    for batch_idx in range(start_batch, n_train_batches):
+    for batch_idx in range(start_batch, total_steps):
         start_time = time.time()
         step = batch_idx
         metrics = {}
@@ -130,13 +149,14 @@ def main(config: Config):
             )
 
         # Linear learning rate schedule
-        lr_mult = max(0.0, 1.0 - step / n_train_batches)
+        lr_mult = max(0.0, 1.0 - step / total_steps)
         current_lr = config.learning_rate * lr_mult
         adam_params = xorl_client.AdamParams(learning_rate=current_lr, beta1=0.9, beta2=0.95, eps=1e-8)
 
         # Get training batch and convert to datums online
-        batch_start = batch_idx * config.batch_size
-        batch_end = min((batch_idx + 1) * config.batch_size, len(train_dataset))
+        # Use modulo to cycle through dataset if dataset_size is limited
+        batch_start = (batch_idx * config.batch_size) % len(train_dataset)
+        batch_end = min(batch_start + config.batch_size, len(train_dataset))
         batch_rows = train_dataset.select(range(batch_start, batch_end))
 
         batch = [

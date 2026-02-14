@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 Metrics = Dict[str, float]
 
 # Chunking constants
-MAX_CHUNK_LEN = 1024  # Maximum number of data items per chunk
+MAX_CHUNK_LEN = 2048 # Maximum number of data items per chunk
 MAX_CHUNK_BYTES_COUNT = 5_000_000  # Maximum bytes per chunk (5MB)
 
 
@@ -156,11 +156,34 @@ REDUCE_MAP = {
 }
 
 
+def _infer_reduction_type(key: str) -> str:
+    """Infer a reduction type for a metric key that lacks an explicit `:` suffix.
+
+    Heuristics:
+    - Keys ending with ``_min`` → ``min``
+    - Keys ending with ``_max`` → ``max``
+    - Keys that are exactly ``valid_tokens``, ``is_valid_tokens``, or ``execution_time`` → ``sum``
+    - Everything else → ``mean`` (weighted by chunk datum count)
+    """
+    if key.endswith("_min"):
+        return "min"
+    if key.endswith("_max"):
+        return "max"
+    if key in ("valid_tokens", "is_valid_tokens", "execution_time"):
+        return "sum"
+    return "mean"
+
+
 def _metrics_reduction(results: Sequence[ForwardBackwardOutput]) -> Metrics:
     """Reduce metrics from all chunks using reduction rules.
 
-    Every metric must indicate a reduction_type in its name, for example "mfu:mean".
-    Metrics are weighted by the number of loss_fn_outputs (data points) each chunk processed.
+    Metrics with an explicit reduction_type in their name (e.g. "mfu:mean") use
+    that reduction.  Metrics *without* a ``:`` suffix (e.g. IS metrics like
+    ``is_kl_sample_train_k3``) have their reduction inferred by
+    ``_infer_reduction_type``.
+
+    Metrics are weighted by the number of loss_fn_outputs (data points) each
+    chunk processed.
 
     Supported reduction types:
     - mean: Weighted average
@@ -189,15 +212,17 @@ def _metrics_reduction(results: Sequence[ForwardBackwardOutput]) -> Metrics:
     for key in keys:
         # Split metric name from reduction type (e.g., "mfu:mean")
         if ":" not in key:
-            logger.debug(f"Metric {key} missing reduction type, skipping")
-            continue
-
-        name, reduction = key.rsplit(":", 1)
+            reduction = _infer_reduction_type(key)
+            logger.debug(
+                f"Metric {key} missing reduction type, inferred '{reduction}'"
+            )
+        else:
+            _, reduction = key.rsplit(":", 1)
 
         if reduction not in REDUCE_MAP:
             # Can happen when a new reduction type is added
             logger.debug(
-                f"Invalid {reduction=} for metric {name=}. "
+                f"Invalid {reduction=} for metric {key}. "
                 f"Expecting one of {list(REDUCE_MAP.keys())}"
             )
             continue
@@ -229,30 +254,48 @@ def estimate_datum_bytes(datum) -> int:
     Used for chunking to stay under MAX_CHUNK_BYTES_COUNT.
 
     Args:
-        datum: A Datum instance
+        datum: A Datum instance or dict
 
     Returns:
         Estimated size in bytes
     """
-    # Simple estimate based on input_ids length
+    # Simple estimate based on token count
     # Each token ID is roughly 4 bytes when serialized
     total_bytes = 0
 
-    # Check model_input for input_ids
-    if hasattr(datum, "model_input"):
-        model_input = datum.model_input
-        if hasattr(model_input, "chunks"):
-            for chunk in model_input.chunks:
-                if hasattr(chunk, "input_ids"):
-                    total_bytes += len(chunk.input_ids) * 4
-
-    # Check loss_fn_inputs
-    if hasattr(datum, "loss_fn_inputs"):
-        loss_fn_inputs = datum.loss_fn_inputs
+    if isinstance(datum, dict):
+        # Handle dict datums (e.g., {"model_input": {"input_ids": [...]}, ...})
+        model_input = datum.get("model_input", {})
+        if isinstance(model_input, dict):
+            input_ids = model_input.get("input_ids", [])
+            if hasattr(input_ids, "__len__"):
+                total_bytes += len(input_ids) * 4
+        loss_fn_inputs = datum.get("loss_fn_inputs", {})
         if isinstance(loss_fn_inputs, dict):
             for key, value in loss_fn_inputs.items():
                 if hasattr(value, "__len__"):
                     total_bytes += len(value) * 4
+    else:
+        # Handle Datum objects
+        if hasattr(datum, "model_input"):
+            model_input = datum.model_input
+            if hasattr(model_input, "chunks"):
+                for chunk in model_input.chunks:
+                    # EncodedTextChunk uses 'tokens', not 'input_ids'
+                    if hasattr(chunk, "tokens"):
+                        total_bytes += len(chunk.tokens) * 4
+                    elif hasattr(chunk, "input_ids"):
+                        total_bytes += len(chunk.input_ids) * 4
+
+        if hasattr(datum, "loss_fn_inputs"):
+            loss_fn_inputs = datum.loss_fn_inputs
+            if isinstance(loss_fn_inputs, dict):
+                for key, value in loss_fn_inputs.items():
+                    # Handle TensorData objects (have .data list attribute)
+                    if hasattr(value, "data") and hasattr(value.data, "__len__"):
+                        total_bytes += len(value.data) * 4
+                    elif hasattr(value, "__len__"):
+                        total_bytes += len(value) * 4
 
     # Minimum estimate
     return max(total_bytes, 100)

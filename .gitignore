@@ -1,5 +1,6 @@
 # Python
 __pycache__/
+CLAUDE.md
 *.py[cod]
 *$py.class
 *.so
@@ -24,6 +25,7 @@ wheels/
 venv/
 ENV/
 env/
+uv.lock
 
 # IDE
 .vscode/
@@ -42,5 +44,13 @@ htmlcov/
 .dmypy.json
 dmypy.json
 
+*.jsonl
 temp/
 outputs/
+wandb/
+log_outputs/
+wandb_runs/
+
+CLAUDE.md
+generate_mixed_filler_prompt.py
+examples/filler_tokens_rl.py

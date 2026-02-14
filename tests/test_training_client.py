@@ -254,6 +254,7 @@ class TestServiceClientMocked:
             mock_holder = Mock(spec=ClientHolder)
             mock_holder.get_model_id.return_value = "test-model-id-123"
             mock_holder.post.return_value = {"model_id": "test-model-id-123", "status": "created"}
+            mock_holder.post_sync.return_value = {"model_id": "default", "status": "created"}
             mock_holder_class.return_value = mock_holder
             yield mock_holder_class
 
@@ -280,6 +281,28 @@ class TestServiceClientMocked:
         )
 
         assert training_client.base_model == "meta-llama/Llama-3-8B"
+
+    def test_create_training_client(self, mock_client_holder):
+        """Test creating a training client for full-weights mode (non-LoRA)."""
+        service_client = ServiceClient(base_url="http://localhost:6000")
+        training_client = service_client.create_training_client(
+            base_model="Qwen/Qwen2.5-3B-Instruct",
+        )
+
+        # TrainingClient uses "default" as model_id
+        assert training_client.model_id == "default"
+        assert training_client.base_model == "Qwen/Qwen2.5-3B-Instruct"
+
+    def test_create_training_client_with_custom_model_id(self, mock_client_holder):
+        """Test creating a training client with custom model_id."""
+        service_client = ServiceClient(base_url="http://localhost:6000")
+        training_client = service_client.create_training_client(
+            base_model="Qwen/Qwen2.5-3B-Instruct",
+            model_id="my-training-run-001",
+        )
+
+        assert training_client.model_id == "my-training-run-001"
+        assert training_client.base_model == "Qwen/Qwen2.5-3B-Instruct"
 
 
 class TestDatumSerialization:

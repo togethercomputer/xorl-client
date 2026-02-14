@@ -52,6 +52,9 @@ from .save_weights_response import SaveWeightsResponse as SaveWeightsResponse
 from .save_weights_for_sampler_response import (
     SaveWeightsForSamplerResponse as SaveWeightsForSamplerResponse,
 )
+from .save_full_weights_safetensors_response import (
+    SaveFullWeightsSafetensorsResponse as SaveFullWeightsSafetensorsResponse,
+)
 from .create_sampling_session_response import (
     CreateSamplingSessionResponse as CreateSamplingSessionResponse,
 )
@@ -89,6 +92,18 @@ from .cursor import Cursor as Cursor
 from .training_run import TrainingRun as TrainingRun
 from .training_run import TrainingRunsResponse as TrainingRunsResponse
 
+# Weight sync types
+from .weight_sync import InferenceEndpoint as InferenceEndpoint
+from .weight_sync import InferenceEndpointServerInfo as InferenceEndpointServerInfo
+from .weight_sync import AddInferenceEndpointResponse as AddInferenceEndpointResponse
+from .weight_sync import ListInferenceEndpointsResponse as ListInferenceEndpointsResponse
+from .weight_sync import RemoveInferenceEndpointResponse as RemoveInferenceEndpointResponse
+from .weight_sync import EndpointSyncResult as EndpointSyncResult
+from .weight_sync import SyncWeightsResponse as SyncWeightsResponse
+from .weight_sync import ConnectedEndpoint as ConnectedEndpoint
+from .weight_sync import ConnectEndpointResponse as ConnectEndpointResponse
+from .weight_sync import DisconnectResponse as DisconnectResponse
+
 # Type aliases
 from .model_id import ModelID as ModelID
 from .model_id import LossFnType as LossFnType
@@ -104,3 +119,4 @@ from .future_retrieve_response import FutureRetrieveResponse as FutureRetrieveRe
 from .future_retrieve_response import parse_future_retrieve_response as parse_future_retrieve_response
 from .create_model_response import CreateModelResponse as CreateModelResponse
 from .unload_model_response import UnloadModelResponse as UnloadModelResponse
+from .kill_session_response import KillSessionResponse as KillSessionResponse

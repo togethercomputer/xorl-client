@@ -35,7 +35,7 @@ class TrainingResource(AsyncResource):
         seq_id: int,
         data: List[Dict[str, Any]],
         loss_fn: str,
-        loss_fn_config: Optional[Dict[str, float]] = None,
+        loss_fn_params: Optional[Dict[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Execute forward pass (no gradients).
@@ -45,7 +45,7 @@ class TrainingResource(AsyncResource):
             seq_id: Sequence ID for ordering
             data: List of datum dictionaries
             loss_fn: Loss function name
-            loss_fn_config: Optional loss function configuration
+            loss_fn_params: Optional loss function parameters (e.g., eps_clip for PPO)
             timeout: Optional timeout override
 
         Returns:
@@ -59,8 +59,8 @@ class TrainingResource(AsyncResource):
                 "loss_fn": loss_fn,
             }
         }
-        if loss_fn_config:
-            request_data["forward_input"]["loss_fn_config"] = loss_fn_config
+        if loss_fn_params:
+            request_data["forward_input"]["loss_fn_params"] = loss_fn_params
 
         return await self._post("/api/v1/forward", request_data, timeout)
 
@@ -70,7 +70,7 @@ class TrainingResource(AsyncResource):
         seq_id: int,
         data: List[Dict[str, Any]],
         loss_fn: str,
-        loss_fn_config: Optional[Dict[str, float]] = None,
+        loss_fn_params: Optional[Dict[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Execute forward and backward pass (computes gradients).
@@ -80,7 +80,7 @@ class TrainingResource(AsyncResource):
             seq_id: Sequence ID for ordering
             data: List of datum dictionaries
             loss_fn: Loss function name
-            loss_fn_config: Optional loss function configuration
+            loss_fn_params: Optional loss function parameters (e.g., eps_clip for PPO)
             timeout: Optional timeout override
 
         Returns:
@@ -94,8 +94,8 @@ class TrainingResource(AsyncResource):
                 "loss_fn": loss_fn,
             }
         }
-        if loss_fn_config:
-            request_data["forward_backward_input"]["loss_fn_config"] = loss_fn_config
+        if loss_fn_params:
+            request_data["forward_backward_input"]["loss_fn_params"] = loss_fn_params
 
         return await self._post("/api/v1/forward_backward", request_data, timeout)
 
