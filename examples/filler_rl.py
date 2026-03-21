@@ -280,6 +280,7 @@ class Config:
     sync_method: str = "nccl_ep_scatter"
     return_routed_experts: bool = True
 
+    max_za_replacements: int = 320
     save_every: int = 250
     resume_model_id: str | None = None
     resume_step: int = 0
@@ -377,12 +378,13 @@ def setup_training_session(config: Config, service_client, model_id: str, elapse
 @dataclass
 class GenerationBatchResult:
     datums: list[types.Datum]
-    mean_rewards: list[float]
-    format_rates: list[float]
+    mean_rewards: list[float]  # original batch only (excludes replacements)
+    format_rates: list[float]  # original batch only
     t_sample: float
     debug_samples: list[tuple[str, str, bool, float]]
-    total_samples: int
-    correct_count: int
+    total_samples: int  # original batch only
+    correct_count: int  # original batch only
+    replacements_used: int
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +394,9 @@ class GenerationBatchResult:
 
 async def _generate_single_batch(
     batch_problems: list[dict],
+    eval_problems: list[dict],
+    batch_start: int,
+    batch_end: int,
     config: Config,
     sampling_clients: list,
     sampling_params,
@@ -401,20 +406,28 @@ async def _generate_single_batch(
     system_prompt: str,
     global_step: int,
 ) -> GenerationBatchResult:
-    """Generate samples for a batch, compute rewards/advantages, and create datums."""
+    """Generate samples for a batch, compute rewards/advantages, and create datums.
+
+    ZA replacement: when all samples for a problem have identical reward (zero
+    advantage), we draw a fresh problem from the end of eval_problems and sample
+    it, up to max_za_replacements times.  Reward metrics are reported from the
+    *original* batch only so replacements don't inflate the numbers.
+    """
     datums: list[types.Datum] = []
-    mean_rewards: list[float] = []
-    format_rates: list[float] = []
+    # Metrics tracked for original batch problems only
+    orig_mean_rewards: list[float] = []
+    orig_format_rates: list[float] = []
+    orig_total_samples = 0
+    orig_correct_count = 0
     debug_sample_contents: list[tuple[str, str, bool, float]] = []
     debug_printed = 0
-    total_samples = 0
-    correct_count = 0
 
-    # Submit all sampling requests up front
-    t_sample_start = time.time()
-    all_futures: list[tuple[list, ModelInput, str]] = []
+    # ZA replacement pool (draw from end of eval_problems, skip current batch)
+    replacement_pool_idx = len(eval_problems) - 1
+    used_indices: set[int] = set(range(batch_start, batch_end))
+    replacements_used = 0
 
-    for problem_idx, problem in enumerate(batch_problems):
+    def _submit_problem(problem, client_idx):
         prompt_messages = create_fewshot_prompt(
             fewshot_problems=fewshot_problems,
             eval_problem=problem,
@@ -424,7 +437,7 @@ async def _generate_single_batch(
             tokenizer=tokenizer,
         )
         model_input = renderer.build_generation_prompt(prompt_messages)
-        client = sampling_clients[problem_idx % len(sampling_clients)]
+        client = sampling_clients[client_idx % len(sampling_clients)]
         sample_futures = [
             client.sample(
                 prompt=model_input,
@@ -435,121 +448,154 @@ async def _generate_single_batch(
             )
             for _ in range(config.group_size)
         ]
-        all_futures.append((sample_futures, model_input, str(problem["answer"])))
+        return sample_futures, model_input, str(problem["answer"])
 
-    # Process results
-    for sample_futures, prompt, ground_truth in tqdm(
-        all_futures, desc=f"Sampling batch {global_step}"
-    ):
-        rewards_G: list[float] = []
-        sampled_tokens_G: list[list[int]] = []
-        logprobs_G: list[list[float]] = []
-        routed_experts_G: list[list[list[list[int]]] | None] = []
-        format_correct_G: list[float] = []
+    # Submit original batch
+    t_sample_start = time.time()
+    # Queue entries: (futures, prompt, ground_truth, is_replacement)
+    sampling_queue: list[tuple[list, ModelInput, str, bool]] = []
+    for problem_idx, problem in enumerate(batch_problems):
+        futures, prompt, gt = _submit_problem(problem, problem_idx)
+        sampling_queue.append((futures, prompt, gt, False))
 
-        for future in sample_futures:
-            try:
-                sample_result = await future
-                sequence = sample_result.sequences[0]
-                sampled_tokens = sequence.tokens
-                sampled_logprobs = sequence.logprobs
-                assert sampled_logprobs is not None
+    problems_processed = 0
+    with tqdm(total=len(sampling_queue), desc=f"Sampling batch {global_step}") as pbar:
+        while sampling_queue:
+            sample_futures, prompt, ground_truth, is_replacement = sampling_queue.pop(0)
+            problems_processed += 1
 
-                routed_experts = (
-                    sample_result.meta_info.get("routed_experts")
-                    if sample_result.meta_info
-                    else None
-                )
+            rewards_G: list[float] = []
+            sampled_tokens_G: list[list[int]] = []
+            logprobs_G: list[list[float]] = []
+            routed_experts_G: list[list[list[list[int]]] | None] = []
+            format_correct_G: list[float] = []
 
-                parsed_message, _ = renderer.parse_response(sampled_tokens)
-                content = parsed_message.get("content", "") if parsed_message else (sequence.text or "")
-                content = _strip_special_tokens(content)
+            for future in sample_futures:
+                try:
+                    sample_result = await future
+                    sequence = sample_result.sequences[0]
+                    sampled_tokens = sequence.tokens
+                    sampled_logprobs = sequence.logprobs
+                    assert sampled_logprobs is not None
 
-                format_valid, _ = parse_response(content)
-                reward = get_reward(content, ground_truth)
+                    routed_experts = (
+                        sample_result.meta_info.get("routed_experts")
+                        if sample_result.meta_info
+                        else None
+                    )
 
-                rewards_G.append(reward)
-                format_correct_G.append(1.0 if format_valid else 0.0)
-                sampled_tokens_G.append(sampled_tokens)
-                logprobs_G.append(sampled_logprobs)
-                routed_experts_G.append(routed_experts)
-                total_samples += 1
-                if reward >= 0.99:
-                    correct_count += 1
+                    parsed_message, _ = renderer.parse_response(sampled_tokens)
+                    content = parsed_message.get("content", "") if parsed_message else (sequence.text or "")
+                    content = _strip_special_tokens(content)
 
-                if debug_printed < config.debug_samples:
-                    debug_sample_contents.append((content, ground_truth, format_valid, reward))
-                    debug_printed += 1
-            except Exception as e:
-                logger.warning(f"Sample failed: {type(e).__name__}: {e}")
+                    format_valid, _ = parse_response(content)
+                    reward = get_reward(content, ground_truth)
 
-        if len(rewards_G) == 0:
-            continue
+                    rewards_G.append(reward)
+                    format_correct_G.append(1.0 if format_valid else 0.0)
+                    sampled_tokens_G.append(sampled_tokens)
+                    logprobs_G.append(sampled_logprobs)
+                    routed_experts_G.append(routed_experts)
 
-        mean_reward = sum(rewards_G) / len(rewards_G)
-        # maxrl normalization: (reward - mean) / (mean + eps)
-        advantages_G = [(r - mean_reward) / (mean_reward + 1e-6) for r in rewards_G]
+                    # Only count original batch for metrics
+                    if not is_replacement:
+                        orig_total_samples += 1
+                        if reward >= 0.99:
+                            orig_correct_count += 1
 
-        mean_rewards.append(mean_reward)
-        format_rates.append(sum(format_correct_G) / len(format_correct_G))
+                    if debug_printed < config.debug_samples:
+                        debug_sample_contents.append((content, ground_truth, format_valid, reward))
+                        debug_printed += 1
+                except Exception as e:
+                    logger.warning(f"Sample failed: {type(e).__name__}: {e}")
 
-        if all(a == 0.0 for a in advantages_G):
-            continue
+            pbar.update(1)
 
-        # Create datums with answer_only weighting
-        prompt_tokens = prompt.to_ints()
-        ob_len = len(prompt_tokens) - 1
-
-        for sampled_tokens, logprobs, advantage, routed_experts in zip(
-            sampled_tokens_G, logprobs_G, advantages_G, routed_experts_G
-        ):
-            if not sampled_tokens:
+            if len(rewards_G) == 0:
                 continue
 
-            all_tokens = prompt_tokens + sampled_tokens
-            input_tokens = all_tokens[:-1]
-            target_tokens = [-100] * ob_len + all_tokens[ob_len + 1 :]
-            padded_logprobs = [0.0] * ob_len + logprobs
+            mean_reward = sum(rewards_G) / len(rewards_G)
+            advantages_G = [(r - mean_reward) / (mean_reward + 1e-6) for r in rewards_G]
 
-            # answer_only weighting: 0 advantage for filler, full for answer
-            answer_idx = find_answer_token_index(sampled_tokens, tokenizer)
-            num_sampled = len(sampled_tokens)
-            if answer_idx is not None:
-                token_advantages = [
-                    advantage if i >= answer_idx else 0.0 for i in range(num_sampled)
-                ]
-            else:
-                token_advantages = [advantage] * num_sampled
-            padded_advantages = [0.0] * ob_len + token_advantages
+            # Only track reward metrics for original batch
+            if not is_replacement:
+                orig_mean_rewards.append(mean_reward)
+                orig_format_rates.append(sum(format_correct_G) / len(format_correct_G))
 
-            assert (
-                len(input_tokens)
-                == len(target_tokens)
-                == len(padded_logprobs)
-                == len(padded_advantages)
-            )
+            # Zero advantage — try ZA replacement
+            if all(a == 0.0 for a in advantages_G):
+                if (
+                    config.max_za_replacements > 0
+                    and replacements_used < config.max_za_replacements
+                    and replacement_pool_idx >= 0
+                    and replacement_pool_idx not in used_indices
+                ):
+                    new_problem = eval_problems[replacement_pool_idx]
+                    used_indices.add(replacement_pool_idx)
+                    replacement_pool_idx -= 1
+                    replacements_used += 1
+                    new_futures, new_prompt, new_gt = _submit_problem(
+                        new_problem, problems_processed + len(sampling_queue)
+                    )
+                    sampling_queue.append((new_futures, new_prompt, new_gt, True))
+                    pbar.total += 1
+                    pbar.refresh()
+                continue
 
-            datum = types.Datum(
-                model_input=types.ModelInput.from_ints(tokens=input_tokens),
-                loss_fn_inputs={
-                    "target_tokens": TensorData.from_torch(torch.tensor(target_tokens)),
-                    "logprobs": TensorData.from_torch(torch.tensor(padded_logprobs)),
-                    "advantages": TensorData.from_torch(torch.tensor(padded_advantages)),
-                },
-                routed_experts=routed_experts,
-            )
-            datums.append(datum)
+            # Create datums with answer_only weighting
+            prompt_tokens = prompt.to_ints()
+            ob_len = len(prompt_tokens) - 1
+
+            for sampled_tokens, logprobs, advantage, routed_experts in zip(
+                sampled_tokens_G, logprobs_G, advantages_G, routed_experts_G
+            ):
+                if not sampled_tokens:
+                    continue
+
+                all_tokens = prompt_tokens + sampled_tokens
+                input_tokens = all_tokens[:-1]
+                target_tokens = [-100] * ob_len + all_tokens[ob_len + 1 :]
+                padded_logprobs = [0.0] * ob_len + logprobs
+
+                answer_idx = find_answer_token_index(sampled_tokens, tokenizer)
+                num_sampled = len(sampled_tokens)
+                if answer_idx is not None:
+                    token_advantages = [
+                        advantage if i >= answer_idx else 0.0 for i in range(num_sampled)
+                    ]
+                else:
+                    token_advantages = [advantage] * num_sampled
+                padded_advantages = [0.0] * ob_len + token_advantages
+
+                assert (
+                    len(input_tokens)
+                    == len(target_tokens)
+                    == len(padded_logprobs)
+                    == len(padded_advantages)
+                )
+
+                datum = types.Datum(
+                    model_input=types.ModelInput.from_ints(tokens=input_tokens),
+                    loss_fn_inputs={
+                        "target_tokens": TensorData.from_torch(torch.tensor(target_tokens)),
+                        "logprobs": TensorData.from_torch(torch.tensor(padded_logprobs)),
+                        "advantages": TensorData.from_torch(torch.tensor(padded_advantages)),
+                    },
+                    routed_experts=routed_experts,
+                )
+                datums.append(datum)
 
     t_sample = time.time() - t_sample_start
 
     return GenerationBatchResult(
         datums=datums,
-        mean_rewards=mean_rewards,
-        format_rates=format_rates,
+        mean_rewards=orig_mean_rewards,
+        format_rates=orig_format_rates,
         t_sample=t_sample,
         debug_samples=debug_sample_contents,
-        total_samples=total_samples,
-        correct_count=correct_count,
+        total_samples=orig_total_samples,
+        correct_count=orig_correct_count,
+        replacements_used=replacements_used,
     )
 
 
@@ -589,6 +635,9 @@ def _generation_worker(
                 result = loop.run_until_complete(
                     _generate_single_batch(
                         batch_problems=batch_problems,
+                        eval_problems=eval_problems,
+                        batch_start=batch_start,
+                        batch_end=batch_end,
                         config=config,
                         sampling_clients=sampling_clients,
                         sampling_params=sampling_params,
@@ -812,6 +861,9 @@ async def main(config: Config):
 
                 gen_result = await _generate_single_batch(
                     batch_problems=batch_problems,
+                    eval_problems=eval_problems,
+                    batch_start=batch_start,
+                    batch_end=batch_end,
                     config=config,
                     sampling_clients=sampling_clients,
                     sampling_params=sampling_params,
@@ -825,8 +877,9 @@ async def main(config: Config):
             # Unpack generation results
             datums = gen_result.datums
             metrics["time/sampling"] = gen_result.t_sample
+            metrics["sampling/za_replacements"] = gen_result.replacements_used
 
-            # Log reward metrics
+            # Log reward metrics (original batch only — excludes ZA replacements)
             if gen_result.mean_rewards:
                 mean_reward = sum(gen_result.mean_rewards) / len(gen_result.mean_rewards)
                 format_rate = sum(gen_result.format_rates) / len(gen_result.format_rates)
@@ -837,7 +890,9 @@ async def main(config: Config):
                 logger.info(
                     f"Step {global_step} rewards: mean={mean_reward:.4f}, "
                     f"correct={correct_rate:.1%}, format={format_rate:.1%} "
-                    f"({gen_result.total_samples} samples)"
+                    f"({gen_result.total_samples} samples, "
+                    f"{gen_result.replacements_used} ZA replacements, "
+                    f"{len(datums)} datums)"
                 )
 
             # Training step
