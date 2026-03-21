@@ -259,7 +259,7 @@ def find_answer_token_index(tokens: list[int], tokenizer) -> int | None:
 class Config:
     training_url: str = "http://localhost:6000"
     inference_base_urls: str = ""
-    log_path: str = "/data/outputs/filler-rl"
+    log_path: str = "/data/apanda/outputs/filler-rl"
     model_name: str = "Qwen/Qwen3-235B-A22B-Instruct-2507"
 
     N: int = 2500
@@ -771,10 +771,10 @@ async def main(config: Config):
             if config.save_every > 0 and global_step % config.save_every == 0 and global_step > 0:
                 checkpoint_name = f"{model_id}-{global_step:06d}"
                 logger.info(f"Saving checkpoint: {checkpoint_name}")
-                save_result = training_client.save_full_weights_safetensors(
+                save_result = training_client.save_weights_for_sampler(
                     name=checkpoint_name
                 ).result()
-                logger.info(f"Checkpoint saved to: {save_result.path} ({save_result.num_shards} shards)")
+                logger.info(f"Checkpoint saved to: {save_result.path}")
 
             # Get batch problems
             batch_start = batch_idx * config.batch_size
@@ -973,8 +973,8 @@ async def main(config: Config):
     # Save final checkpoint
     checkpoint_name = f"{model_id}-final"
     logger.info(f"Saving final checkpoint: {checkpoint_name}")
-    save_result = training_client.save_full_weights_safetensors(name=checkpoint_name).result()
-    logger.info(f"Final checkpoint saved to: {save_result.path} ({save_result.num_shards} shards)")
+    save_result = training_client.save_weights_for_sampler(name=checkpoint_name).result()
+    logger.info(f"Final checkpoint saved to: {save_result.path}")
 
     ml_logger.close()
     logger.info("Training completed")
