@@ -276,6 +276,7 @@ class Config:
     max_tokens: int = 1024
     eps_clip: float = 0.2
     eps_clip_high: float = 0.28
+    icepop_beta: float | None = 2.0
     temperature: float = 1.0
     sync_method: str = "nccl_ep_scatter"
     return_routed_experts: bool = True
@@ -385,6 +386,9 @@ class GenerationBatchResult:
     total_samples: int  # original batch only
     correct_count: int  # original batch only
     replacements_used: int
+    za_by_reward_level: dict[str, int]  # r0 (format fail), r02 (wrong), r1 (correct)
+    total_samples_all: int  # all problems (original + replacements)
+    total_correct_all: int  # correct samples across all problems
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +425,11 @@ async def _generate_single_batch(
     orig_correct_count = 0
     debug_sample_contents: list[tuple[str, str, bool, float]] = []
     debug_printed = 0
+
+    # ZA tracking
+    za_by_reward_level = {"r0": 0, "r02": 0, "r1": 0}
+    total_samples_all = 0
+    total_correct_all = 0
 
     # ZA replacement pool (draw from end of eval_problems, skip current batch)
     replacement_pool_idx = len(eval_problems) - 1
@@ -517,13 +526,24 @@ async def _generate_single_batch(
             mean_reward = sum(rewards_G) / len(rewards_G)
             advantages_G = [(r - mean_reward) / (mean_reward + 1e-6) for r in rewards_G]
 
+            # Track across ALL problems (original + replacements)
+            total_samples_all += len(rewards_G)
+            total_correct_all += sum(1 for r in rewards_G if r >= 0.99)
+
             # Only track reward metrics for original batch
             if not is_replacement:
                 orig_mean_rewards.append(mean_reward)
                 orig_format_rates.append(sum(format_correct_G) / len(format_correct_G))
 
-            # Zero advantage — try ZA replacement
+            # Zero advantage — classify and try ZA replacement
             if all(a == 0.0 for a in advantages_G):
+                dominant_r = round(rewards_G[0], 1)
+                if dominant_r < 0.1:
+                    za_by_reward_level["r0"] += 1
+                elif dominant_r < 0.5:
+                    za_by_reward_level["r02"] += 1
+                else:
+                    za_by_reward_level["r1"] += 1
                 if (
                     config.max_za_replacements > 0
                     and replacements_used < config.max_za_replacements
@@ -596,6 +616,9 @@ async def _generate_single_batch(
         total_samples=orig_total_samples,
         correct_count=orig_correct_count,
         replacements_used=replacements_used,
+        za_by_reward_level=za_by_reward_level,
+        total_samples_all=total_samples_all,
+        total_correct_all=total_correct_all,
     )
 
 
@@ -878,20 +901,26 @@ async def main(config: Config):
             datums = gen_result.datums
             metrics["time/sampling"] = gen_result.t_sample
             metrics["sampling/za_replacements"] = gen_result.replacements_used
+            za = gen_result.za_by_reward_level
+            metrics["za/r0_count"] = za["r0"]
+            metrics["za/r02_count"] = za["r02"]
+            metrics["za/r1_count"] = za["r1"]
 
             # Log reward metrics (original batch only — excludes ZA replacements)
             if gen_result.mean_rewards:
                 mean_reward = sum(gen_result.mean_rewards) / len(gen_result.mean_rewards)
                 format_rate = sum(gen_result.format_rates) / len(gen_result.format_rates)
                 correct_rate = gen_result.correct_count / gen_result.total_samples if gen_result.total_samples > 0 else 0.0
+                effective_correct_rate = gen_result.total_correct_all / gen_result.total_samples_all if gen_result.total_samples_all > 0 else 0.0
                 metrics["reward/mean"] = mean_reward
                 metrics["reward/format_correct_rate"] = format_rate
                 metrics["reward/correct_rate"] = correct_rate
+                metrics["reward/effective_correct_rate"] = effective_correct_rate
                 logger.info(
                     f"Step {global_step} rewards: mean={mean_reward:.4f}, "
-                    f"correct={correct_rate:.1%}, format={format_rate:.1%} "
+                    f"correct={correct_rate:.1%}, effective={effective_correct_rate:.1%}, format={format_rate:.1%} "
                     f"({gen_result.total_samples} samples, "
-                    f"{gen_result.replacements_used} ZA replacements, "
+                    f"{gen_result.replacements_used} ZA [{za['r1']} correct, {za['r02']} wrong, {za['r0']} format], "
                     f"{len(datums)} datums)"
                 )
 
@@ -906,6 +935,8 @@ async def main(config: Config):
                     "eps_clip": config.eps_clip,
                     "eps_clip_high": config.eps_clip_high,
                 }
+                if config.icepop_beta is not None:
+                    loss_fn_params["icepop_beta"] = config.icepop_beta
                 fwd_bwd_future = training_client.forward_backward(
                     datums, loss_fn="policy_loss", loss_fn_params=loss_fn_params
                 )
