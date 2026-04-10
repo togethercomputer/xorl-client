@@ -34,6 +34,8 @@ from xorl_client.exceptions import InternalServerError, BadRequestError
 
 logger = logging.getLogger(__name__)
 
+_R3_ROUTING_FIELDS = ("routed_experts", "routed_expert_logits")
+
 
 class TrainingClient:
     """Client for training ML models with forward/backward passes and optimization.
@@ -179,7 +181,32 @@ class TrainingClient:
         if "loss_fn_inputs" in datum_dict:
             result["loss_fn_inputs"] = datum_dict["loss_fn_inputs"]
 
+        for field_name in _R3_ROUTING_FIELDS:
+            if field_name in datum_dict:
+                result[field_name] = datum_dict[field_name]
+
         return result
+
+    @staticmethod
+    def _extract_r3_fields(datum_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove any R3 routing replay fields from a datum dict."""
+        extracted = {}
+        for field_name in _R3_ROUTING_FIELDS:
+            value = datum_dict.pop(field_name, None)
+            if value is not None:
+                extracted[field_name] = value
+        return extracted
+
+    @staticmethod
+    def _attach_r3_fields(
+        request_input: Dict[str, Any],
+        datums_count: int,
+        routing_fields: Dict[str, List[Any]],
+    ) -> None:
+        """Attach R3 routing replay fields when every datum provides them."""
+        for field_name, values in routing_fields.items():
+            if values and len(values) == datums_count:
+                request_input[field_name] = values
 
     def _chunked_datums(
         self, data: Union[List[types.Datum], List[Dict[str, Any]]]
@@ -225,48 +252,38 @@ class TrainingClient:
         return [(self._get_request_id(), chunk) for chunk in chunks]
 
     def _convert_datums(self, data: List) -> tuple:
-        """Convert a list of datums to dicts, extracting routed_experts.
+        """Convert a list of datums to dicts, extracting R3 routing fields.
 
         Args:
             data: List of Datum objects or dicts
 
         Returns:
-            Tuple of (datums_dicts, all_routed_experts)
+            Tuple of (datums_dicts, routing_fields)
         """
         datums_dicts = []
-        all_routed_experts = []
+        routing_fields = {field_name: [] for field_name in _R3_ROUTING_FIELDS}
 
         for datum in data:
             if isinstance(datum, types.Datum):
                 datum_dict = datum.to_dict()
-                datum_dict.pop("routed_experts", None)
-                datums_dicts.append(datum_dict)
-                if datum.routed_experts is not None:
-                    all_routed_experts.append(datum.routed_experts)
             elif hasattr(datum, "to_dict"):
                 datum_dict = datum.to_dict()
-                datum_dict.pop("routed_experts", None)
-                datums_dicts.append(datum_dict)
-                if (
-                    hasattr(datum, "routed_experts")
-                    and datum.routed_experts is not None
-                ):
-                    all_routed_experts.append(datum.routed_experts)
             elif hasattr(datum, "model_dump"):
                 datum_dict = datum.model_dump()
-                datums_dicts.append(self._convert_tinker_datum(datum_dict))
+                datum_dict = self._convert_tinker_datum(datum_dict)
             elif isinstance(datum, dict):
                 datum_dict = dict(datum)
-                routed = datum_dict.pop("routed_experts", None)
-                datums_dicts.append(datum_dict)
-                if routed is not None:
-                    all_routed_experts.append(routed)
             else:
                 raise TypeError(
                     f"Expected Datum, dict, or Pydantic model, got {type(datum).__name__}"
                 )
 
-        return datums_dicts, all_routed_experts
+            extracted_fields = self._extract_r3_fields(datum_dict)
+            datums_dicts.append(datum_dict)
+            for field_name, value in extracted_fields.items():
+                routing_fields[field_name].append(value)
+
+        return datums_dicts, routing_fields
 
     def _convert_datums_simple(self, data: List) -> List[Dict[str, Any]]:
         """Convert a list of datums to dicts (no routed_experts extraction).
@@ -365,7 +382,7 @@ class TrainingClient:
         # Single chunk: use simple path (no _CombinedAPIFuture overhead)
         if len(chunked) == 1:
             request_id, chunk_data = chunked[0]
-            datums_dicts, all_routed_experts = self._convert_datums(chunk_data)
+            datums_dicts, routing_fields = self._convert_datums(chunk_data)
 
             request_data = {
                 "model_id": self.model_id,
@@ -379,10 +396,11 @@ class TrainingClient:
                 request_data["forward_backward_input"][
                     "loss_fn_params"
                 ] = loss_fn_params
-            if all_routed_experts and len(all_routed_experts) == len(datums_dicts):
-                request_data["forward_backward_input"][
-                    "routed_experts"
-                ] = all_routed_experts
+            self._attach_r3_fields(
+                request_data["forward_backward_input"],
+                len(datums_dicts),
+                routing_fields,
+            )
 
             async def _forward_backward_async():
                 start_time = time.time()
@@ -416,7 +434,7 @@ class TrainingClient:
         # Pre-convert all chunks and build request data
         chunk_requests = []
         for request_id, chunk_data in chunked:
-            datums_dicts, all_routed_experts = self._convert_datums(chunk_data)
+            datums_dicts, routing_fields = self._convert_datums(chunk_data)
             rd = {
                 "model_id": self.model_id,
                 "seq_id": request_id + 1,
@@ -427,8 +445,11 @@ class TrainingClient:
             }
             if loss_fn_params:
                 rd["forward_backward_input"]["loss_fn_params"] = loss_fn_params
-            if all_routed_experts and len(all_routed_experts) == len(datums_dicts):
-                rd["forward_backward_input"]["routed_experts"] = all_routed_experts
+            self._attach_r3_fields(
+                rd["forward_backward_input"],
+                len(datums_dicts),
+                routing_fields,
+            )
             chunk_requests.append((request_id, rd))
 
         async def _chunked_forward_backward_async():
@@ -502,7 +523,7 @@ class TrainingClient:
         # Single chunk: use simple path
         if len(chunked) == 1:
             request_id, chunk_data = chunked[0]
-            datums_dicts, all_routed_experts = self._convert_datums(chunk_data)
+            datums_dicts, routing_fields = self._convert_datums(chunk_data)
 
             request_data = {
                 "model_id": self.model_id,
@@ -514,8 +535,11 @@ class TrainingClient:
             }
             if loss_fn_params:
                 request_data["forward_input"]["loss_fn_params"] = loss_fn_params
-            if all_routed_experts and len(all_routed_experts) == len(datums_dicts):
-                request_data["forward_input"]["routed_experts"] = all_routed_experts
+            self._attach_r3_fields(
+                request_data["forward_input"],
+                len(datums_dicts),
+                routing_fields,
+            )
 
             async def _forward_async():
                 start_time = time.time()
@@ -544,7 +568,7 @@ class TrainingClient:
 
         chunk_requests = []
         for request_id, chunk_data in chunked:
-            datums_dicts, all_routed_experts = self._convert_datums(chunk_data)
+            datums_dicts, routing_fields = self._convert_datums(chunk_data)
             rd = {
                 "model_id": self.model_id,
                 "seq_id": request_id + 1,
@@ -555,8 +579,11 @@ class TrainingClient:
             }
             if loss_fn_params:
                 rd["forward_input"]["loss_fn_params"] = loss_fn_params
-            if all_routed_experts and len(all_routed_experts) == len(datums_dicts):
-                rd["forward_input"]["routed_experts"] = all_routed_experts
+            self._attach_r3_fields(
+                rd["forward_input"],
+                len(datums_dicts),
+                routing_fields,
+            )
             chunk_requests.append((request_id, rd))
 
         async def _chunked_forward_async():
