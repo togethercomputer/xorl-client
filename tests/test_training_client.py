@@ -348,3 +348,81 @@ class TestDatumSerialization:
         # Server-compatible flat input_ids format
         assert serialized[0]["model_input"]["input_ids"] == [1, 2, 3]
         assert serialized[1]["model_input"]["input_ids"] == [5, 6, 7]
+
+
+class TestInferenceEndpointRegistration:
+    """Tests for inference endpoint registration helpers."""
+
+    def _make_client(self):
+        mock_holder = Mock(spec=ClientHolder)
+        client = TrainingClient(
+            holder=mock_holder,
+            model_id="test-model-123",
+            base_model="test-model",
+        )
+        return client, mock_holder
+
+    def test_add_inference_endpoint_includes_worker_port(self):
+        """Explicit worker_port should be forwarded in the request payload."""
+        client, mock_holder = self._make_client()
+
+        future = Future()
+        future.set_result(
+            {
+                "success": True,
+                "message": "ok",
+                "endpoint": {
+                    "host": "research-common-13",
+                    "port": 30000,
+                    "worker_port": 30000,
+                    "world_size": 8,
+                },
+            }
+        )
+        mock_holder.post_async = Mock(return_value=future)
+
+        result = client.add_inference_endpoint(
+            host="research-common-13",
+            port=30000,
+            worker_port=30000,
+            world_size=8,
+        ).result()
+
+        mock_holder.post_async.assert_called_once()
+        endpoint, request_data = mock_holder.post_async.call_args.args[:2]
+        assert endpoint == "/add_inference_endpoint"
+        assert request_data["host"] == "research-common-13"
+        assert request_data["port"] == 30000
+        assert request_data["worker_port"] == 30000
+        assert result.endpoint is not None
+        assert result.endpoint.worker_port == 30000
+
+    def test_add_inference_endpoint_omits_worker_port_when_not_provided(self):
+        """Backward-compatible calls should omit worker_port entirely."""
+        client, mock_holder = self._make_client()
+
+        future = Future()
+        future.set_result(
+            {
+                "success": True,
+                "message": "ok",
+                "endpoint": {
+                    "host": "research-common-13",
+                    "port": 30000,
+                    "world_size": 8,
+                },
+            }
+        )
+        mock_holder.post_async = Mock(return_value=future)
+
+        result = client.add_inference_endpoint(
+            host="research-common-13",
+            port=30000,
+            world_size=8,
+        ).result()
+
+        mock_holder.post_async.assert_called_once()
+        _, request_data = mock_holder.post_async.call_args.args[:2]
+        assert "worker_port" not in request_data
+        assert result.endpoint is not None
+        assert result.endpoint.worker_port == 30000
