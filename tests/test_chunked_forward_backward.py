@@ -145,15 +145,16 @@ class TestChunkedDatums:
         assert len(chunk_data) == 100
 
     def test_count_limit_splits(self):
-        """2500 datums should split into 3 chunks: 1024, 1024, 452."""
+        """Data above 2x MAX_CHUNK_LEN should split into 3 chunks."""
         client = _make_training_client()
-        data = [_make_datum(num_tokens=5) for _ in range(2500)]
+        num_datums = (2 * MAX_CHUNK_LEN) + 452
+        data = [_make_datum(num_tokens=5) for _ in range(num_datums)]
         chunks = client._chunked_datums(data)
 
         assert len(chunks) == 3
-        assert len(chunks[0][1]) == MAX_CHUNK_LEN  # 1024
-        assert len(chunks[1][1]) == MAX_CHUNK_LEN  # 1024
-        assert len(chunks[2][1]) == 2500 - 2 * MAX_CHUNK_LEN  # 452
+        assert len(chunks[0][1]) == MAX_CHUNK_LEN
+        assert len(chunks[1][1]) == MAX_CHUNK_LEN
+        assert len(chunks[2][1]) == num_datums - 2 * MAX_CHUNK_LEN
 
     def test_exact_limit(self):
         """Exactly MAX_CHUNK_LEN datums should produce one chunk."""
@@ -188,7 +189,7 @@ class TestChunkedDatums:
     def test_request_id_sequencing(self):
         """Request IDs should be sequential across chunks."""
         client = _make_training_client()
-        data = [_make_datum(num_tokens=5) for _ in range(2500)]
+        data = [_make_datum(num_tokens=5) for _ in range((2 * MAX_CHUNK_LEN) + 452)]
         chunks = client._chunked_datums(data)
 
         request_ids = [rid for rid, _ in chunks]
@@ -201,7 +202,7 @@ class TestChunkedDatums:
         """After chunking, the request_id counter should have advanced by len(chunks)."""
         client = _make_training_client()
         initial_counter = client._request_id_counter
-        data = [_make_datum(num_tokens=5) for _ in range(2500)]
+        data = [_make_datum(num_tokens=5) for _ in range((2 * MAX_CHUNK_LEN) + 452)]
         chunks = client._chunked_datums(data)
         assert client._request_id_counter == initial_counter + len(chunks)
 
@@ -349,7 +350,7 @@ class TestChunkedForwardBackwardIntegration:
     """Integration test for chunked forward_backward with mocked HTTP."""
 
     def test_chunked_forward_backward_two_chunks(self):
-        """Test that 2048 datums produces 2 POST requests with correct seq_ids."""
+        """Test that data above MAX_CHUNK_LEN is split into 2 POST requests."""
         # Set up mock holder with event loop
         loop = asyncio.new_event_loop()
         mock_holder = Mock(spec=ClientHolder)
@@ -378,7 +379,7 @@ class TestChunkedForwardBackwardIntegration:
         mock_fwd_bwd_output = ForwardBackwardOutput(
             loss_fn_output_type="cross_entropy",
             loss_fn_outputs=[LossFnOutput(loss=0.5)],
-            metrics={"loss:mean": 0.5, "total_tokens:sum": 1024},
+            metrics={"loss:mean": 0.5, "total_tokens:sum": MAX_CHUNK_LEN},
         )
 
         client = TrainingClient(
@@ -387,8 +388,8 @@ class TestChunkedForwardBackwardIntegration:
             base_model="test-model",
         )
 
-        # Create 2048 datums (should split into 2 chunks of 1024)
-        data = [_make_datum(num_tokens=5) for _ in range(2048)]
+        # Create exactly two count-limited chunks.
+        data = [_make_datum(num_tokens=5) for _ in range(2 * MAX_CHUNK_LEN)]
 
         import threading
 
@@ -420,8 +421,8 @@ class TestChunkedForwardBackwardIntegration:
             assert seq_id_2 == seq_id_1 + 1
 
             # Verify chunk sizes
-            assert len(post_calls[0][1]["forward_backward_input"]["data"]) == 1024
-            assert len(post_calls[1][1]["forward_backward_input"]["data"]) == 1024
+            assert len(post_calls[0][1]["forward_backward_input"]["data"]) == MAX_CHUNK_LEN
+            assert len(post_calls[1][1]["forward_backward_input"]["data"]) == MAX_CHUNK_LEN
 
         finally:
             loop.call_soon_threadsafe(loop.stop)
@@ -567,7 +568,7 @@ class TestChunkedForwardBackwardIntegration:
             loop.close()
 
     def test_chunked_forward_two_chunks(self):
-        """Test that forward() also chunks large batches."""
+        """Test that forward() also chunks batches above MAX_CHUNK_LEN."""
         loop = asyncio.new_event_loop()
         mock_holder = Mock(spec=ClientHolder)
 
@@ -602,7 +603,7 @@ class TestChunkedForwardBackwardIntegration:
             base_model="test-model",
         )
 
-        data = [_make_datum(num_tokens=5) for _ in range(2048)]
+        data = [_make_datum(num_tokens=5) for _ in range(2 * MAX_CHUNK_LEN)]
 
         import threading
 
@@ -626,8 +627,8 @@ class TestChunkedForwardBackwardIntegration:
             assert post_calls[1][0] == "/api/v1/forward"
 
             # Verify chunk sizes
-            assert len(post_calls[0][1]["forward_input"]["data"]) == 1024
-            assert len(post_calls[1][1]["forward_input"]["data"]) == 1024
+            assert len(post_calls[0][1]["forward_input"]["data"]) == MAX_CHUNK_LEN
+            assert len(post_calls[1][1]["forward_input"]["data"]) == MAX_CHUNK_LEN
 
         finally:
             loop.call_soon_threadsafe(loop.stop)
@@ -638,8 +639,8 @@ class TestChunkedForwardBackwardIntegration:
         """Verify optim_step gets a seq_id after all chunk seq_ids."""
         client = _make_training_client()
 
-        # Simulate chunking 2500 datums (3 chunks)
-        data = [_make_datum(num_tokens=5) for _ in range(2500)]
+        # Simulate chunking into 3 chunks.
+        data = [_make_datum(num_tokens=5) for _ in range((2 * MAX_CHUNK_LEN) + 452)]
         chunks = client._chunked_datums(data)
         assert len(chunks) == 3
 
