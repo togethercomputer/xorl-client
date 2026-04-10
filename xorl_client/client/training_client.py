@@ -1627,7 +1627,6 @@ class TrainingClient:
         self,
         host: str,
         port: int,
-        worker_port: Optional[int] = None,
         world_size: int = 1,
         sync_weights: bool = False,
         master_address: Optional[str] = None,
@@ -1646,8 +1645,6 @@ class TrainingClient:
         Args:
             host: Hostname or IP address of the inference endpoint
             port: Port number of the SGLang server
-            worker_port: Optional port for the worker HTTP server. When omitted,
-                the server default is used, which is typically the same as port.
             world_size: Number of TP workers at this endpoint (default: 1)
             sync_weights: Whether to auto-sync weights after adding (default: False)
             master_address: Training server hostname for NCCL rendezvous (auto-detected if None)
@@ -1663,7 +1660,6 @@ class TrainingClient:
             >>> result = training_client.add_inference_endpoint(
             ...     host="research-common-13",
             ...     port=30000,
-            ...     worker_port=30000,
             ...     world_size=8,
             ...     sync_weights=True,  # Auto-sync weights
             ... ).result()
@@ -1681,8 +1677,6 @@ class TrainingClient:
             "group_name": group_name,
             "buffer_size_mb": buffer_size_mb,
         }
-        if worker_port is not None:
-            request_data["worker_port"] = worker_port
 
         future = self.holder.post_async("/add_inference_endpoint", request_data)
 
