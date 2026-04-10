@@ -40,12 +40,14 @@ class Datum:
         [1.0, 1.0, 1.0, 1.0]
 
     For MOE models with R3 (Rollout Routing Replay), you can pass routed_experts
-    to replay the same expert routing decisions from inference during training:
+    and routed_expert_logits to replay the same expert routing decisions and
+    routing weights from inference during training:
 
         >>> datum = Datum(
         ...     model_input=ModelInput.from_ints(tokens=[1, 2, 3, 4]),
         ...     loss_fn_inputs={...},
-        ...     routed_experts=[[0, 1], [1, 2], [0, 2]],  # Per-token expert indices
+        ...     routed_experts=[[[0, 1]], [[1, 2]], [[0, 2]]],  # [T, L, K]
+        ...     routed_expert_logits=[[[0.8, 0.2]], [[0.4, 0.6]], [[0.7, 0.3]]],
         ... )
     """
 
@@ -54,6 +56,7 @@ class Datum:
         model_input: ModelInput,
         loss_fn_inputs: Dict[str, Union[TensorData, List, Any]],
         routed_experts: Optional[List[List[List[int]]]] = None,
+        routed_expert_logits: Optional[List[List[List[float]]]] = None,
     ):
         """Initialize Datum with automatic conversion of lists to TensorData.
 
@@ -64,10 +67,15 @@ class Datum:
             routed_experts: Optional MOE routing data for R3 (Rollout Routing Replay).
                 Shape: [num_tokens, num_layers, topk]. When provided, the model
                 will replay these routing decisions instead of computing new ones.
+            routed_expert_logits: Optional MOE routing weights for R3.
+                Shape: [num_tokens, num_layers, topk]. When provided alongside
+                routed_experts, the model can replay the soft routing weights
+                from inference.
         """
         self.model_input = model_input
         self.loss_fn_inputs = self._convert_loss_fn_inputs(loss_fn_inputs)
         self.routed_experts = routed_experts
+        self.routed_expert_logits = routed_expert_logits
 
     @staticmethod
     def _convert_loss_fn_inputs(
@@ -119,15 +127,24 @@ class Datum:
         # Include routed_experts for R3 (Rollout Routing Replay) if provided
         if self.routed_experts is not None:
             result["routed_experts"] = self.routed_experts
+        if self.routed_expert_logits is not None:
+            result["routed_expert_logits"] = self.routed_expert_logits
 
         return result
 
     def __repr__(self) -> str:
         """Return a string representation matching tinker's Datum format."""
+        routing_fields = []
         if self.routed_experts is not None:
+            routing_fields.append(f"routed_experts=[{len(self.routed_experts)} tokens]")
+        if self.routed_expert_logits is not None:
+            routing_fields.append(
+                f"routed_expert_logits=[{len(self.routed_expert_logits)} tokens]"
+            )
+        if routing_fields:
             return (
                 f"Datum(loss_fn_inputs={self.loss_fn_inputs!r}, "
                 f"model_input={self.model_input!r}, "
-                f"routed_experts=[{len(self.routed_experts)} tokens])"
+                f"{', '.join(routing_fields)})"
             )
         return f"Datum(loss_fn_inputs={self.loss_fn_inputs!r}, model_input={self.model_input!r})"

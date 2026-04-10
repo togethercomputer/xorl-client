@@ -348,6 +348,24 @@ class TestDatum:
         assert datum.loss_fn_inputs["target_tokens"].tolist() == [2, 3, 4]
         assert datum.loss_fn_inputs["weights"].tolist() == [1.0, 1.0, 1.0]
 
+    def test_datum_to_dict_with_r3_routing_fields(self):
+        """Test Datum serialization with routed_experts and routed_expert_logits."""
+        datum = types.Datum(
+            model_input=types.ModelInput.from_ints([1, 2, 3]),
+            loss_fn_inputs={"target_tokens": [2, 3, 4]},
+            routed_experts=[[[0, 1]], [[1, 2]], [[0, 2]]],
+            routed_expert_logits=[[[0.7, 0.3]], [[0.4, 0.6]], [[0.8, 0.2]]],
+        )
+
+        d = datum.to_dict()
+
+        assert d["routed_experts"] == [[[0, 1]], [[1, 2]], [[0, 2]]]
+        assert d["routed_expert_logits"] == [
+            [[0.7, 0.3]],
+            [[0.4, 0.6]],
+            [[0.8, 0.2]],
+        ]
+
 
 class TestAdamParams:
     """Tests for AdamParams class."""
