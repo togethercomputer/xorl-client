@@ -2,14 +2,15 @@ import asyncio
 import json
 import logging
 import os
+import queue as queue_module
 import random
 import re
+import threading
 import time
 import traceback
 import uuid
 from collections import defaultdict
-from concurrent.futures import Future
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -17,7 +18,7 @@ import chz
 import datasets
 import xorl_client
 import torch
-from xorl_client import ModelInput, types
+from xorl_client import types
 from xorl_client.types.tensor_data import TensorData
 from tinker_cookbook import checkpoint_utils, model_info, renderers
 from tinker_cookbook.tokenizer_utils import get_tokenizer
@@ -158,6 +159,7 @@ class Config:
     master_port: int = 29741
     sync_method: str = "nccl_ep_scatter"
     return_routed_experts: bool = True
+    pipeline_rl: bool = False
 
     # Resume / init
     resume_model_id: str | None = None
@@ -324,6 +326,232 @@ def setup_training_session(config, service_client, model_id, elapsed):
     return training_client, model_id, start_step
 
 
+@dataclass
+class GenerationBatchResult:
+    datums: list[types.Datum]
+    reward_metrics: dict[str, list[float]]
+    sampling_time: float
+    debug_samples: list[tuple[str, str, bool, float]]
+    skipped_no_samples: int
+    skipped_zero_advantage: int
+    zero_adv_samples: list[dict]
+
+
+async def _generate_training_batch(
+    *,
+    questions: list[str],
+    answers: list[str],
+    config: Config,
+    sampling_clients: list,
+    sampling_params,
+    convo_prefix: list[dict[str, str]],
+    renderer,
+    step: int,
+) -> GenerationBatchResult:
+    training_datums: list[types.Datum] = []
+    batch_metrics: defaultdict[str, list[float]] = defaultdict(list)
+    debug_samples: list[tuple[str, str, bool, float]] = []
+    problems_skipped_no_samples = 0
+    problems_skipped_zero_advantage = 0
+    zero_adv_samples: list[dict] = []
+
+    batch_requests = []
+
+    t_sample_start = time.time()
+    for problem_idx, (question, answer) in enumerate(zip(questions, answers)):
+        convo = [*convo_prefix, {"role": "user", "content": question}]
+        model_input = renderer.build_generation_prompt(convo, prefill="<answer>\n")
+        client = sampling_clients[problem_idx % len(sampling_clients)]
+        sample_futures = [
+            client.sample(
+                prompt=model_input,
+                num_samples=1,
+                sampling_params=replace(
+                    sampling_params,
+                    sampling_seed=random.randint(0, 2**63 - 1),
+                ),
+            )
+            for _ in range(config.group_size)
+        ]
+        batch_requests.append((sample_futures, model_input, answer))
+
+    for problem_idx, (sample_futures, model_input, answer) in enumerate(
+        tqdm(batch_requests, total=len(batch_requests), desc=f"Sampling batch {step}")
+    ):
+        reward_tasks = []
+        group_rewards: list[float] = []
+        group_tokens: list[list[int]] = []
+        group_logprobs: list[list[float]] = []
+        group_ob_lens: list[int] = []
+        group_routed_experts: list[list[list[list[int]]] | None] = []
+        group_contents: list[dict[str, str]] = []
+        prompt_tokens = model_input.to_ints()
+
+        for future in sample_futures:
+            try:
+                sample_result = await future
+                sampled_tokens = sample_result.sequences[0].tokens
+                sampled_logprobs = sample_result.sequences[0].logprobs
+                assert sampled_logprobs is not None
+
+                all_tokens = prompt_tokens + sampled_tokens
+                group_tokens.append(all_tokens)
+                group_ob_lens.append(len(prompt_tokens) - 1)
+                group_logprobs.append(sampled_logprobs)
+                routed_experts = (
+                    sample_result.meta_info.get("routed_experts")
+                    if sample_result.meta_info
+                    else None
+                )
+                group_routed_experts.append(routed_experts)
+
+                parsed_message, _ = renderer.parse_response(sampled_tokens)
+                response_text = renderers.get_text_content(parsed_message)
+                reward_tasks.append(
+                    get_reward(prompt_tokens + sampled_tokens, response_text, answer)
+                )
+                group_contents.append({"content": response_text, "answer": answer})
+            except Exception as e:
+                logger.warning(f"Training sample failed: {type(e).__name__}: {e}")
+                logger.warning(f"Full traceback:\n{traceback.format_exc()}")
+
+        rewards = await asyncio.gather(*reward_tasks)
+        for sample_idx, reward in enumerate(rewards):
+            group_rewards.append(reward["score"])
+            for metric, value in reward.items():
+                batch_metrics[metric].append(value)
+
+            if len(debug_samples) < config.debug_samples:
+                debug_samples.append(
+                    (
+                        group_contents[sample_idx]["content"],
+                        answer,
+                        reward["format_reward"] > 0,
+                        reward["score"],
+                    )
+                )
+
+        if len(group_rewards) == 0:
+            problems_skipped_no_samples += 1
+            logger.warning("All samples failed for this group, skipping")
+            continue
+
+        mean_reward = sum(group_rewards) / len(group_rewards)
+        if config.synthetic_advantage:
+            advantages = [1.0 for _ in group_rewards]
+        else:
+            advantages = [r - mean_reward for r in group_rewards]
+
+        if not config.synthetic_advantage and all(adv == 0.0 for adv in advantages):
+            problems_skipped_zero_advantage += 1
+            if config.dump_samples:
+                zero_adv_samples.append(
+                    {
+                        "problem_idx": problem_idx,
+                        "ground_truth": answer,
+                        "mean_reward": mean_reward,
+                        "num_samples": len(group_rewards),
+                        "samples": group_contents,
+                    }
+                )
+            continue
+
+        for tokens, logprob, advantage, ob_len, routed_experts in zip(
+            group_tokens,
+            group_logprobs,
+            advantages,
+            group_ob_lens,
+            group_routed_experts,
+        ):
+            input_tokens = [int(t) for t in tokens[:-1]]
+            target_tokens = [-100] * ob_len + tokens[ob_len + 1 :]
+            all_logprobs = [0.0] * ob_len + logprob
+            all_advantages = [0.0] * ob_len + [advantage] * (
+                len(input_tokens) - ob_len
+            )
+
+            assert (
+                len(input_tokens)
+                == len(target_tokens)
+                == len(all_logprobs)
+                == len(all_advantages)
+            )
+
+            datum = types.Datum(
+                model_input=types.ModelInput.from_ints(tokens=input_tokens),
+                loss_fn_inputs={
+                    "target_tokens": TensorData.from_torch(torch.tensor(target_tokens)),
+                    "logprobs": TensorData.from_torch(torch.tensor(all_logprobs)),
+                    "advantages": TensorData.from_torch(torch.tensor(all_advantages)),
+                },
+                routed_experts=routed_experts,
+            )
+            training_datums.append(datum)
+
+    return GenerationBatchResult(
+        datums=training_datums,
+        reward_metrics=dict(batch_metrics),
+        sampling_time=time.time() - t_sample_start,
+        debug_samples=debug_samples,
+        skipped_no_samples=problems_skipped_no_samples,
+        skipped_zero_advantage=problems_skipped_zero_advantage,
+        zero_adv_samples=zero_adv_samples,
+    )
+
+
+def _generation_worker(
+    output_queue: queue_module.Queue,
+    stop_event: threading.Event,
+    train_dataset: datasets.Dataset,
+    config: Config,
+    sampling_clients: list,
+    sampling_params,
+    convo_prefix: list[dict[str, str]],
+    renderer,
+    start_batch_idx: int,
+    end_batch_idx: int,
+):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        for batch_idx in range(start_batch_idx, end_batch_idx):
+            while output_queue.full() and not stop_event.is_set():
+                time.sleep(0.05)
+            if stop_event.is_set():
+                break
+
+            batch_start = batch_idx * config.batch_size
+            batch_end = min((batch_idx + 1) * config.batch_size, len(train_dataset))
+            batch_rows = train_dataset.select(range(batch_start, batch_end))
+
+            result = loop.run_until_complete(
+                _generate_training_batch(
+                    questions=list(batch_rows["question"]),
+                    answers=list(batch_rows["answer"]),
+                    config=config,
+                    sampling_clients=sampling_clients,
+                    sampling_params=sampling_params,
+                    convo_prefix=convo_prefix,
+                    renderer=renderer,
+                    step=batch_idx,
+                )
+            )
+            if stop_event.is_set():
+                break
+
+            output_queue.put(result)
+    except Exception as e:
+        logger.error(f"Generation worker failed: {type(e).__name__}: {e}")
+        logger.error(f"Full traceback:\n{traceback.format_exc()}")
+    finally:
+        try:
+            output_queue.put_nowait(None)
+        except queue_module.Full:
+            pass
+        loop.close()
+
+
 async def main(config: Config):
     _start_time = time.time()
 
@@ -414,7 +642,6 @@ async def main(config: Config):
     convo_prefix = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     n_train_batches = len(train_dataset) // config.batch_size
-    n_val_batches = len(val_dataset) // config.batch_size
 
     # Wait for training session setup
     logger.info(
@@ -483,10 +710,37 @@ async def main(config: Config):
             f"{elapsed()} load_state complete: loaded weights from {load_result.path}"
         )
 
+    if config.pipeline_rl and not config.use_full_weights:
+        raise ValueError("pipeline_rl requires use_full_weights=True")
+
     if config.max_steps is not None:
         n_train_batches = min(n_train_batches, start_step + config.max_steps)
 
+    def sync_inference_weights(step: int, label: str):
+        logger.info(f"{elapsed()} Starting sync_weights_to_inference...")
+        t_sync_start = time.time()
+        sync_result = training_client.sync_weights_to_inference(
+            sync_method=config.sync_method
+        ).result()
+        t_sync = time.time() - t_sync_start
+
+        if sync_result.success:
+            logger.info(
+                f"{elapsed()} Step {step}: {label} {sync_result.total_bytes/1e9:.2f} GB in "
+                f"{t_sync:.2f}s ({sync_result.throughput_gbps:.2f} GB/s)"
+            )
+        else:
+            logger.warning(
+                f"{elapsed()} Step {step}: {label} failed: {sync_result.message}"
+            )
+
+        return t_sync, sync_result
+
     logger.info(f"{elapsed()} Training for {n_train_batches - start_step} batches")
+
+    generation_queue: queue_module.Queue | None = None
+    generation_stop_event: threading.Event | None = None
+    generation_thread: threading.Thread | None = None
 
     # Main training loop
     for batch_idx in range(start_step, n_train_batches):
@@ -545,45 +799,33 @@ async def main(config: Config):
         batch_start = batch_idx * config.batch_size
         batch_end = min((batch_idx + 1) * config.batch_size, len(train_dataset))
         batch_rows = train_dataset.select(range(batch_start, batch_end))
+        batch_questions = list(batch_rows["question"])
+        batch_answers = list(batch_rows["answer"])
 
-        # Sync weights for sampling
-        t_sync = 0
-        if config.use_full_weights:
-            # Full-weights mode: NCCL weight sync
-            logger.info(f"{elapsed()} Starting sync_weights_to_inference...")
-            t_sync_start = time.time()
-            sync_result = training_client.sync_weights_to_inference(
-                sync_method=config.sync_method
-            ).result()
-            t_sync = time.time() - t_sync_start
-
-            if sync_result.success:
+        t_sync = 0.0
+        prepared_sampling = False
+        if generation_queue is None:
+            if config.use_full_weights:
+                sync_time, sync_result = sync_inference_weights(step, "Weight sync")
+                t_sync += sync_time
                 metrics["time/weight_sync"] = t_sync
-                metrics["sync/bytes_gb"] = sync_result.total_bytes / 1e9
-                metrics["sync/throughput_gbps"] = sync_result.throughput_gbps
-                logger.info(
-                    f"{elapsed()} Step {step}: Weight sync {sync_result.total_bytes/1e9:.2f} GB in "
-                    f"{t_sync:.2f}s ({sync_result.throughput_gbps:.2f} GB/s)"
-                )
+                if sync_result.success:
+                    metrics["sync/bytes_gb"] = sync_result.total_bytes / 1e9
+                    metrics["sync/throughput_gbps"] = sync_result.throughput_gbps
             else:
-                logger.warning(
-                    f"{elapsed()} Step {step}: Weight sync failed: {sync_result.message}"
+                save_response = await training_client.save_weights_for_sampler(
+                    name=f"{model_id}-{step:06d}"
                 )
-            # sampling_clients was created once at start and is reused
-        else:
-            # LoRA mode: Save weights for sampling, create sampling clients
-            save_response = await training_client.save_weights_for_sampler(
-                name=f"{model_id}-{step:06d}"
-            )
-            sampling_path = save_response.model_path or save_response.path
-            inference_urls = get_inference_urls(config)
-            sampling_clients = [
-                service_client.create_sampling_client(
-                    base_url=url,
-                    model_path=sampling_path,
-                )
-                for url in inference_urls
-            ]
+                sampling_path = save_response.model_path or save_response.path
+                inference_urls = get_inference_urls(config)
+                sampling_clients = [
+                    service_client.create_sampling_client(
+                        base_url=url,
+                        model_path=sampling_path,
+                    )
+                    for url in inference_urls
+                ]
+            prepared_sampling = True
 
         # Validation (in batches of 32)
         if step % config.val_every == 0 and step > 0:
@@ -638,177 +880,74 @@ async def main(config: Config):
             for metric, values in val_metrics.items():
                 metrics[f"val/{metric}/mean"] = sum(values) / len(values)
 
-        # Training
-        training_datums: list[types.Datum] = []
-        batch_rewards: list[float] = []
-        batch_futures: list[list[Future[types.SampleResponse]]] = []
-        batch_inputs: list[ModelInput] = []
-        batch_answers: list[str] = []
-        batch_metrics = defaultdict(list)
-        debug_sample_contents: list[tuple[str, str, bool, float]] = (
-            []
-        )  # (content, answer, format_valid, reward)
-        debug_printed = 0
-        problems_skipped_no_samples = 0
-        problems_skipped_zero_advantage = 0
-        zero_adv_samples: list[dict] = []
-
-        # Submit sampling requests
-        t_sample_start = time.time()
-        for problem_idx, (question, answer) in enumerate(
-            zip(batch_rows["question"], batch_rows["answer"])
-        ):
-            convo = [*convo_prefix, {"role": "user", "content": question}]
-            model_input = renderer.build_generation_prompt(convo, prefill="<answer>\n")
-            prompt_tokens = model_input.to_ints()
-
-            client = sampling_clients[problem_idx % len(sampling_clients)]
-            sample_futures = [
-                client.sample(
-                    prompt=model_input,
-                    num_samples=1,
-                    sampling_params=replace(
-                        sampling_params,
-                        sampling_seed=random.randint(0, 2**63 - 1),
-                    ),
+        gen_result = None
+        used_pipeline_batch = False
+        if generation_queue is not None:
+            queued_result = generation_queue.get()
+            if queued_result is None:
+                logger.warning(
+                    "Generation worker finished early; falling back to synchronous sampling"
                 )
-                for _ in range(config.group_size)
-            ]
-            batch_futures.append(sample_futures)
-            batch_inputs.append(model_input)
-            batch_answers.append(answer)
-
-        # Process sampling results
-        for problem_idx, (sample_futures, model_input, answer) in enumerate(
-            tqdm(
-                zip(batch_futures, batch_inputs, batch_answers),
-                total=len(batch_futures),
-                desc=f"Sampling batch {step}",
-            )
-        ):
-            reward_tasks = []
-            group_rewards: list[float] = []
-            group_tokens: list[list[int]] = []
-            group_logprobs: list[list[float]] = []
-            group_ob_lens: list[int] = []
-            group_routed_experts: list[list[list[list[int]]] | None] = []
-            group_contents: list[dict] = []
-            prompt_tokens = model_input.to_ints()
-
-            for future in sample_futures:
-                try:
-                    sample_result = await future
-                    sampled_tokens = sample_result.sequences[0].tokens
-                    sampled_logprobs = sample_result.sequences[0].logprobs
-                    assert sampled_logprobs is not None
-
-                    all_tokens = prompt_tokens + sampled_tokens
-                    group_tokens.append(all_tokens)
-                    group_ob_lens.append(len(prompt_tokens) - 1)
-                    group_logprobs.append(sampled_logprobs)
-                    routed_experts = (
-                        sample_result.meta_info.get("routed_experts")
-                        if sample_result.meta_info
-                        else None
-                    )
-                    group_routed_experts.append(routed_experts)
-
-                    parsed_message, _ = renderer.parse_response(sampled_tokens)
-                    response_text = renderers.get_text_content(parsed_message)
-                    reward_tasks.append(
-                        get_reward(
-                            prompt_tokens + sampled_tokens, response_text, answer
-                        )
-                    )
-
-                    group_contents.append({"content": response_text, "answer": answer})
-
-                    # Collect debug samples
-                    if debug_printed < config.debug_samples:
-                        # Reward not yet available; will be filled after gather
-                        debug_sample_contents.append(
-                            (response_text, answer, False, 0.0)
-                        )
-                        debug_printed += 1
-                except Exception as e:
-                    logger.warning(f"Training sample failed: {type(e).__name__}: {e}")
-                    logger.warning(f"Full traceback:\n{traceback.format_exc()}")
-
-            rewards = await asyncio.gather(*reward_tasks)
-            for reward in rewards:
-                group_rewards.append(reward["score"])
-                for metric, value in reward.items():
-                    batch_metrics[metric].append(value)
-
-            if len(group_rewards) == 0:
-                problems_skipped_no_samples += 1
-                logger.warning("All samples failed for this group, skipping")
-                continue
-
-            mean_reward = sum(group_rewards) / len(group_rewards)
-            if config.synthetic_advantage:
-                advantages = [1.0 for _ in group_rewards]
+                if generation_stop_event is not None:
+                    generation_stop_event.set()
+                generation_queue = None
+                generation_stop_event = None
+                generation_thread = None
             else:
-                advantages = [r - mean_reward for r in group_rewards]
-            batch_rewards.append(mean_reward)
+                gen_result = queued_result
+                used_pipeline_batch = True
 
-            if not config.synthetic_advantage and all(adv == 0.0 for adv in advantages):
-                problems_skipped_zero_advantage += 1
-                if config.dump_samples:
-                    zero_adv_samples.append(
-                        {
-                            "problem_idx": problem_idx,
-                            "ground_truth": answer,
-                            "mean_reward": mean_reward,
-                            "num_samples": len(group_rewards),
-                            "samples": group_contents,
-                        }
+        if gen_result is None:
+            if not prepared_sampling:
+                if config.use_full_weights:
+                    sync_time, sync_result = sync_inference_weights(
+                        step, "Weight sync"
                     )
-                continue
+                    t_sync += sync_time
+                    metrics["time/weight_sync"] = t_sync
+                    if sync_result.success:
+                        metrics["sync/bytes_gb"] = sync_result.total_bytes / 1e9
+                        metrics["sync/throughput_gbps"] = (
+                            sync_result.throughput_gbps
+                        )
+                else:
+                    save_response = await training_client.save_weights_for_sampler(
+                        name=f"{model_id}-{step:06d}"
+                    )
+                    sampling_path = save_response.model_path or save_response.path
+                    inference_urls = get_inference_urls(config)
+                    sampling_clients = [
+                        service_client.create_sampling_client(
+                            base_url=url,
+                            model_path=sampling_path,
+                        )
+                        for url in inference_urls
+                    ]
 
-            for tokens, logprob, advantage, ob_len, routed_experts in zip(
-                group_tokens,
-                group_logprobs,
-                advantages,
-                group_ob_lens,
-                group_routed_experts,
-            ):
-                input_tokens = [int(t) for t in tokens[:-1]]
-                # Mask prompt tokens with -100 (ignore_index) so they don't contribute to loss/KL
-                target_tokens = [-100] * ob_len + tokens[ob_len + 1 :]
-                all_logprobs = [0.0] * ob_len + logprob
-                all_advantages = [0.0] * ob_len + [advantage] * (
-                    len(input_tokens) - ob_len
-                )
+            gen_result = await _generate_training_batch(
+                questions=batch_questions,
+                answers=batch_answers,
+                config=config,
+                sampling_clients=sampling_clients,
+                sampling_params=sampling_params,
+                convo_prefix=convo_prefix,
+                renderer=renderer,
+                step=step,
+            )
 
-                assert (
-                    len(input_tokens)
-                    == len(target_tokens)
-                    == len(all_logprobs)
-                    == len(all_advantages)
-                )
-
-                datum = types.Datum(
-                    model_input=types.ModelInput.from_ints(tokens=input_tokens),
-                    loss_fn_inputs={
-                        "target_tokens": TensorData.from_torch(
-                            torch.tensor(target_tokens)
-                        ),
-                        "logprobs": TensorData.from_torch(torch.tensor(all_logprobs)),
-                        "advantages": TensorData.from_torch(
-                            torch.tensor(all_advantages)
-                        ),
-                    },
-                    routed_experts=routed_experts,
-                )
-                training_datums.append(datum)
-
-        t_sample = time.time() - t_sample_start
-        metrics["time/sampling"] = t_sample
+        training_datums = gen_result.datums
+        batch_metrics = gen_result.reward_metrics
+        debug_sample_contents = gen_result.debug_samples
+        problems_skipped_no_samples = gen_result.skipped_no_samples
+        problems_skipped_zero_advantage = gen_result.skipped_zero_advantage
+        zero_adv_samples = gen_result.zero_adv_samples
+        metrics["time/sampling"] = gen_result.sampling_time
 
         # Training step - skip if no valid datums
         _fwd_bwd_result = None
         _optim_result = None
+        fwd_bwd_future = None
+        optim_step_future = None
         if len(training_datums) == 0:
             logger.warning(
                 f"Batch {batch_idx}: No valid training datums, skipping training step. "
@@ -831,8 +970,56 @@ async def main(config: Config):
                 loss_fn_params=loss_fn_params,
             )
             optim_step_future = training_client.optim_step(adam_params)
-            _fwd_bwd_result = await fwd_bwd_future
-            _optim_result = await optim_step_future
+            if used_pipeline_batch:
+                _fwd_bwd_result = fwd_bwd_future.result()
+                _optim_result = optim_step_future.result()
+            else:
+                _fwd_bwd_result = await fwd_bwd_future
+                _optim_result = await optim_step_future
+
+        if config.pipeline_rl and config.use_full_weights and batch_idx + 1 < n_train_batches:
+            if generation_queue is None:
+                if len(training_datums) > 0:
+                    sync_time, sync_result = sync_inference_weights(
+                        step, "Pipeline weight sync"
+                    )
+                    t_sync += sync_time
+                    metrics["time/weight_sync"] = t_sync
+                    if sync_result.success:
+                        metrics["sync/bytes_gb"] = sync_result.total_bytes / 1e9
+                        metrics["sync/throughput_gbps"] = (
+                            sync_result.throughput_gbps
+                        )
+
+                generation_queue = queue_module.Queue(maxsize=1)
+                generation_stop_event = threading.Event()
+                generation_thread = threading.Thread(
+                    target=_generation_worker,
+                    args=(
+                        generation_queue,
+                        generation_stop_event,
+                        train_dataset,
+                        config,
+                        sampling_clients,
+                        sampling_params,
+                        convo_prefix,
+                        renderer,
+                        batch_idx + 1,
+                        n_train_batches,
+                    ),
+                    daemon=True,
+                )
+                generation_thread.start()
+                logger.info("Pipeline: started generation worker thread")
+            elif used_pipeline_batch and len(training_datums) > 0:
+                sync_time, sync_result = sync_inference_weights(
+                    step, "Pipeline weight sync"
+                )
+                t_sync += sync_time
+                metrics["time/weight_sync"] = t_sync
+                if sync_result.success:
+                    metrics["sync/bytes_gb"] = sync_result.total_bytes / 1e9
+                    metrics["sync/throughput_gbps"] = sync_result.throughput_gbps
 
         # Log skip reason metrics
         metrics["skip/no_samples"] = problems_skipped_no_samples
@@ -898,7 +1085,7 @@ async def main(config: Config):
                 server_exec_time = _fwd_bwd_result.metrics["execution_time"]
                 metrics["time/server_fwd_bwd"] = server_exec_time
                 metrics["time/network_overhead"] = (
-                    time_total - server_exec_time - t_sample - t_sync
+                    time_total - server_exec_time - gen_result.sampling_time - t_sync
                 )
             # Log expert load imbalance metrics
             if "expert_load_summary" in _fwd_bwd_result.metrics:
@@ -918,6 +1105,11 @@ async def main(config: Config):
                 metrics[f"optim/{key}"] = value
 
         ml_logger.log_metrics(metrics, step=batch_idx)
+
+    if generation_stop_event is not None:
+        generation_stop_event.set()
+    if generation_thread is not None:
+        generation_thread.join(timeout=5)
 
     # Save final checkpoint
     if config.use_full_weights:
