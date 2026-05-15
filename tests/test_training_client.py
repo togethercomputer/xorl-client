@@ -1,8 +1,9 @@
 """Tests for xorl_client TrainingClient with mocked dependencies."""
 
-import pytest
-from unittest.mock import Mock, MagicMock, patch
 from concurrent.futures import Future
+from unittest.mock import Mock, patch
+
+import pytest
 
 from xorl_client import types
 from xorl_client.client.training_client import TrainingClient
@@ -44,10 +45,12 @@ class MockTokenizer:
         remaining = text
         while remaining:
             found = False
-            for token_str, token_id in sorted(self.vocab.items(), key=lambda x: -len(x[0])):
+            for token_str, token_id in sorted(
+                self.vocab.items(), key=lambda x: -len(x[0])
+            ):
                 if remaining.startswith(token_str):
                     tokens.append(token_id)
-                    remaining = remaining[len(token_str):]
+                    remaining = remaining[len(token_str) :]
                     found = True
                     break
             if not found:
@@ -115,14 +118,18 @@ class TestTrainingClientWithMockTokenizer:
         def mock_post_async(endpoint, data, timeout=None):
             future = Future()
             if endpoint == "/api/v1/forward_backward":
-                future.set_result({
-                    "loss_fn_outputs": [{"loss": 0.5}],
-                    "metrics": {"total_tokens": 100},
-                })
+                future.set_result(
+                    {
+                        "loss_fn_outputs": [{"loss": 0.5}],
+                        "metrics": {"total_tokens": 100},
+                    }
+                )
             elif endpoint == "/api/v1/optim_step":
-                future.set_result({
-                    "metrics": {"grad_norm": 1.0, "step": 1},
-                })
+                future.set_result(
+                    {
+                        "metrics": {"grad_norm": 1.0, "step": 1},
+                    }
+                )
             return future
 
         holder.post_async = mock_post_async
@@ -145,17 +152,16 @@ class TestTrainingClientWithMockTokenizer:
         tokenizer = training_client.get_tokenizer()
 
         # Create a simple example
-        example = {
-            "input": "banana split",
-            "output": "anana-bay plit-say"
-        }
+        example = {"input": "banana split", "output": "anana-bay plit-say"}
 
         # Process example (simplified version of xorl_client_example1.py logic)
         prompt = f"English: {example['input']}\nPig Latin:"
         prompt_tokens = tokenizer.encode(prompt, add_special_tokens=True)
         prompt_weights = [0] * len(prompt_tokens)
 
-        completion_tokens = tokenizer.encode(f" {example['output']}\n\n", add_special_tokens=False)
+        completion_tokens = tokenizer.encode(
+            f" {example['output']}\n\n", add_special_tokens=False
+        )
         completion_weights = [1] * len(completion_tokens)
 
         tokens = prompt_tokens + completion_tokens
@@ -168,20 +174,22 @@ class TestTrainingClientWithMockTokenizer:
         # Create Datum
         datum = types.Datum(
             model_input=types.ModelInput.from_ints(tokens=input_tokens),
-            loss_fn_inputs=dict(weights=weights, target_tokens=target_tokens)
+            loss_fn_inputs=dict(weights=weights, target_tokens=target_tokens),
         )
 
         # Verify datum structure - use .tolist() since lists are auto-converted to TensorData
         assert datum.model_input.to_ints() == input_tokens
         assert datum.loss_fn_inputs["target_tokens"].tolist() == target_tokens
         assert datum.loss_fn_inputs["weights"].tolist() == weights
-        assert len(datum.model_input.to_ints()) == len(datum.loss_fn_inputs["target_tokens"].tolist())
-        assert len(datum.model_input.to_ints()) == len(datum.loss_fn_inputs["weights"].tolist())
+        assert len(datum.model_input.to_ints()) == len(
+            datum.loss_fn_inputs["target_tokens"].tolist()
+        )
+        assert len(datum.model_input.to_ints()) == len(
+            datum.loss_fn_inputs["weights"].tolist()
+        )
 
     def test_datum_iteration(self, training_client):
         """Test iterating over datum components as in the visualization code."""
-        tokenizer = training_client.get_tokenizer()
-
         # Create simple datum
         input_tokens = [1, 100, 101, 102]
         target_tokens = [100, 101, 102, 999]
@@ -189,15 +197,17 @@ class TestTrainingClientWithMockTokenizer:
 
         datum = types.Datum(
             model_input=types.ModelInput.from_ints(tokens=input_tokens),
-            loss_fn_inputs=dict(weights=weights, target_tokens=target_tokens)
+            loss_fn_inputs=dict(weights=weights, target_tokens=target_tokens),
         )
 
         # Test iteration (as in xorl_client_example1.py visualization) - use .tolist()
-        items = list(zip(
-            datum.model_input.to_ints(),
-            datum.loss_fn_inputs["target_tokens"].tolist(),
-            datum.loss_fn_inputs["weights"].tolist()
-        ))
+        items = list(
+            zip(
+                datum.model_input.to_ints(),
+                datum.loss_fn_inputs["target_tokens"].tolist(),
+                datum.loss_fn_inputs["weights"].tolist(),
+            )
+        )
 
         assert len(items) == 4
         assert items[0] == (1, 100, 0)
@@ -219,7 +229,9 @@ class TestTrainingClientWithMockTokenizer:
             prompt_tokens = tokenizer.encode(prompt, add_special_tokens=True)
             prompt_weights = [0] * len(prompt_tokens)
 
-            completion_tokens = tokenizer.encode(f" {example['output']}", add_special_tokens=False)
+            completion_tokens = tokenizer.encode(
+                f" {example['output']}", add_special_tokens=False
+            )
             completion_weights = [1] * len(completion_tokens)
 
             tokens = prompt_tokens + completion_tokens
@@ -231,7 +243,7 @@ class TestTrainingClientWithMockTokenizer:
 
             return types.Datum(
                 model_input=types.ModelInput.from_ints(tokens=input_tokens),
-                loss_fn_inputs=dict(weights=weights, target_tokens=target_tokens)
+                loss_fn_inputs=dict(weights=weights, target_tokens=target_tokens),
             )
 
         processed = [process_example(ex) for ex in examples]
@@ -240,8 +252,82 @@ class TestTrainingClientWithMockTokenizer:
         for datum in processed:
             assert isinstance(datum, types.Datum)
             # Use .tolist() since lists are auto-converted to TensorData
-            assert len(datum.model_input.to_ints()) == len(datum.loss_fn_inputs["target_tokens"].tolist())
-            assert len(datum.model_input.to_ints()) == len(datum.loss_fn_inputs["weights"].tolist())
+            assert len(datum.model_input.to_ints()) == len(
+                datum.loss_fn_inputs["target_tokens"].tolist()
+            )
+            assert len(datum.model_input.to_ints()) == len(
+                datum.loss_fn_inputs["weights"].tolist()
+            )
+
+
+class TestTrainingClientWeightSync:
+    """Tests for inference weight-sync request construction."""
+
+    def test_sync_weights_to_inference_includes_explicit_master_address(self):
+        calls = []
+
+        def post_async(endpoint, data, timeout=None):
+            calls.append((endpoint, data, timeout))
+            future = Future()
+            future.set_result(
+                {
+                    "success": True,
+                    "message": "ok",
+                    "transfer_time": 1.0,
+                    "total_bytes": 1024,
+                    "num_parameters": 1,
+                    "num_buckets": 1,
+                    "endpoints_synced": [],
+                }
+            )
+            return future
+
+        holder = Mock(spec=ClientHolder)
+        holder.post_async = post_async
+        client = TrainingClient(
+            holder=holder, model_id="default", base_model="test-model"
+        )
+
+        result = client.sync_weights_to_inference(
+            sync_method="p2p",
+            master_address="192.168.229.118",
+            timeout=123.0,
+        ).result()
+
+        assert result.success
+        assert calls == [
+            (
+                "/sync_inference_weights",
+                {"sync_method": "p2p", "master_address": "192.168.229.118"},
+                123.0,
+            )
+        ]
+
+    def test_sync_weights_to_inference_uses_master_address_env(self, monkeypatch):
+        monkeypatch.setenv("XORL_WEIGHT_SYNC_MASTER_ADDRESS", "10.0.0.8")
+        calls = []
+
+        def post_async(endpoint, data, timeout=None):
+            calls.append((endpoint, data, timeout))
+            future = Future()
+            future.set_result(
+                {
+                    "success": True,
+                    "message": "ok",
+                    "endpoints_synced": [],
+                }
+            )
+            return future
+
+        holder = Mock(spec=ClientHolder)
+        holder.post_async = post_async
+        client = TrainingClient(
+            holder=holder, model_id="default", base_model="test-model"
+        )
+
+        client.sync_weights_to_inference(sync_method="p2p").result()
+
+        assert calls[0][1] == {"sync_method": "p2p", "master_address": "10.0.0.8"}
 
 
 class TestServiceClientMocked:
@@ -250,11 +336,19 @@ class TestServiceClientMocked:
     @pytest.fixture
     def mock_client_holder(self):
         """Create a mock ClientHolder."""
-        with patch("xorl_client.client.service_client.ClientHolder") as mock_holder_class:
+        with patch(
+            "xorl_client.client.service_client.ClientHolder"
+        ) as mock_holder_class:
             mock_holder = Mock(spec=ClientHolder)
             mock_holder.get_model_id.return_value = "test-model-id-123"
-            mock_holder.post.return_value = {"model_id": "test-model-id-123", "status": "created"}
-            mock_holder.post_sync.return_value = {"model_id": "default", "status": "created"}
+            mock_holder.post.return_value = {
+                "model_id": "test-model-id-123",
+                "status": "created",
+            }
+            mock_holder.post_sync.return_value = {
+                "model_id": "default",
+                "status": "created",
+            }
             mock_holder_class.return_value = mock_holder
             yield mock_holder_class
 
@@ -315,7 +409,7 @@ class TestDatumSerialization:
             loss_fn_inputs={
                 "target_tokens": [2, 3, 4, 5],
                 "weights": [0.0, 1.0, 1.0, 1.0],
-            }
+            },
         )
 
         d = datum.to_dict()
@@ -334,11 +428,11 @@ class TestDatumSerialization:
         datums = [
             types.Datum(
                 model_input=types.ModelInput.from_ints([1, 2, 3]),
-                loss_fn_inputs={"target_tokens": [2, 3, 4], "weights": [1, 1, 1]}
+                loss_fn_inputs={"target_tokens": [2, 3, 4], "weights": [1, 1, 1]},
             ),
             types.Datum(
                 model_input=types.ModelInput.from_ints([5, 6, 7]),
-                loss_fn_inputs={"target_tokens": [6, 7, 8], "weights": [1, 1, 1]}
+                loss_fn_inputs={"target_tokens": [6, 7, 8], "weights": [1, 1, 1]},
             ),
         ]
 

@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 from contextlib import asynccontextmanager
-from typing import List, Dict, Any, Optional, Union
+from typing import TYPE_CHECKING, List, Dict, Any, Optional, Union
 
 from xorl_client import types
 from xorl_client.client.api_future import APIFuture, wrap_future
-from xorl_client.client.api_future_impl import _APIFuture, _CombinedAPIFuture
+from xorl_client.client.api_future_impl import _APIFuture
 from xorl_client.client.chunked_helpers import (
     MAX_CHUNK_LEN,
     MAX_CHUNK_BYTES_COUNT,
@@ -35,6 +36,9 @@ from xorl_client.exceptions import InternalServerError, BadRequestError
 logger = logging.getLogger(__name__)
 
 _R3_ROUTING_FIELDS = ("routed_experts", "routed_expert_logits")
+
+if TYPE_CHECKING:
+    from xorl_client.client.sampling_client import SamplingClient
 
 
 class TrainingClient:
@@ -126,9 +130,9 @@ class TrainingClient:
                 # HTTP request is dispatched here
                 future = self.holder.post_async("/api/v1/forward_backward", data)
         """
-        assert (
-            self._turn_counter <= request_id
-        ), f"Same request id cannot be taken twice: turn_counter={self._turn_counter}, request_id={request_id}"
+        assert self._turn_counter <= request_id, (
+            f"Same request id cannot be taken twice: turn_counter={self._turn_counter}, request_id={request_id}"
+        )
 
         # Wait if it's not our turn yet
         if self._turn_counter < request_id:
@@ -393,9 +397,9 @@ class TrainingClient:
                 },
             }
             if loss_fn_params:
-                request_data["forward_backward_input"][
-                    "loss_fn_params"
-                ] = loss_fn_params
+                request_data["forward_backward_input"]["loss_fn_params"] = (
+                    loss_fn_params
+                )
             self._attach_r3_fields(
                 request_data["forward_backward_input"],
                 len(datums_dicts),
@@ -1762,7 +1766,7 @@ class TrainingClient:
             response = types.SyncWeightsResponse.from_dict(result)
             if response.success:
                 logger.info(
-                    f"Weight sync complete: {response.total_bytes/1e9:.2f} GB in "
+                    f"Weight sync complete: {response.total_bytes / 1e9:.2f} GB in "
                     f"{response.transfer_time:.2f}s ({response.throughput_gbps:.2f} GB/s)"
                 )
             else:
@@ -1977,7 +1981,7 @@ class TrainingClient:
         def parse_response(result: Dict[str, Any]) -> types.DisconnectResponse:
             response = types.DisconnectResponse.from_dict(result)
             if response.success:
-                logger.info(f"Disconnected from inference endpoints")
+                logger.info("Disconnected from inference endpoints")
             else:
                 logger.warning(f"Disconnect failed: {response.message}")
             return response
@@ -1999,6 +2003,8 @@ class TrainingClient:
     def sync_weights_to_inference(
         self,
         sync_method: str = "nccl_ep_scatter",
+        master_address: Optional[str] = None,
+        timeout: float = 1800.0,
     ) -> APIFuture[types.SyncWeightsResponse]:
         """Sync current model weights to connected inference endpoint.
 
@@ -2009,6 +2015,9 @@ class TrainingClient:
         Args:
             sync_method: Transfer method - "nccl_ep_scatter" (default, multi-rank parallel),
                         "nccl" (single-rank), or "rdma_direct" (RDMA push)
+            master_address: Optional trainer address for rendezvous. If omitted,
+                XORL_WEIGHT_SYNC_MASTER_ADDRESS is used when set.
+            timeout: HTTP request timeout in seconds.
 
         Returns:
             APIFuture[SyncWeightsResponse] with transfer stats
@@ -2022,19 +2031,24 @@ class TrainingClient:
         request_data = {
             "sync_method": sync_method,
         }
+        master_address = master_address or os.environ.get(
+            "XORL_WEIGHT_SYNC_MASTER_ADDRESS"
+        )
+        if master_address:
+            request_data["master_address"] = master_address
 
         # Use extended timeout for weight sync
         future = self.holder.post_async(
             "/sync_inference_weights",
             request_data,
-            timeout=1800.0,  # 30 minute timeout
+            timeout=timeout,
         )
 
         def parse_response(result: Dict[str, Any]) -> types.SyncWeightsResponse:
             response = types.SyncWeightsResponse.from_dict(result)
             if response.success:
                 logger.info(
-                    f"Weight sync complete: {response.total_bytes/1e9:.2f} GB in "
+                    f"Weight sync complete: {response.total_bytes / 1e9:.2f} GB in "
                     f"{response.transfer_time:.2f}s ({response.throughput_gbps:.2f} GB/s)"
                 )
             else:

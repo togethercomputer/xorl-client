@@ -10,7 +10,9 @@ from .tensor_data import TensorData
 __all__ = ["ForwardBackwardOutput", "LossFnOutput"]
 
 
-def _to_tensor_data(value: Optional[Union[Dict[str, Any], TensorData]]) -> Optional[TensorData]:
+def _to_tensor_data(
+    value: Optional[Union[Dict[str, Any], TensorData]],
+) -> Optional[TensorData]:
     """Convert a dict or TensorData to TensorData, or return None."""
     if value is None:
         return None
@@ -19,6 +21,29 @@ def _to_tensor_data(value: Optional[Union[Dict[str, Any], TensorData]]) -> Optio
     if isinstance(value, dict):
         return TensorData.from_dict(value)
     return None
+
+
+def _to_scalar_loss(value: Any) -> Optional[float]:
+    """Convert scalar loss wire formats to a Python float."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, TensorData):
+        data = value.data
+    elif isinstance(value, dict):
+        if {"data", "dtype"}.issubset(value):
+            data = TensorData.from_dict(value).data
+        elif "loss" in value:
+            return _to_scalar_loss(value["loss"])
+        else:
+            raise TypeError(f"Unsupported loss value format: {value!r}")
+    else:
+        raise TypeError(f"Unsupported loss value type: {type(value)!r}")
+
+    if len(data) != 1:
+        raise ValueError(f"Expected scalar loss TensorData, got {len(data)} values")
+    return float(data[0])
 
 
 @dataclass
@@ -53,16 +78,24 @@ class LossFnOutput:
         if self.loss is not None:
             result["loss"] = self.loss
         if self.logprobs is not None:
-            result["logprobs"] = self.logprobs.to_dict() if isinstance(self.logprobs, TensorData) else self.logprobs
+            result["logprobs"] = (
+                self.logprobs.to_dict()
+                if isinstance(self.logprobs, TensorData)
+                else self.logprobs
+            )
         if self.elementwise_loss is not None:
-            result["elementwise_loss"] = self.elementwise_loss.to_dict() if isinstance(self.elementwise_loss, TensorData) else self.elementwise_loss
+            result["elementwise_loss"] = (
+                self.elementwise_loss.to_dict()
+                if isinstance(self.elementwise_loss, TensorData)
+                else self.elementwise_loss
+            )
         return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "LossFnOutput":
         """Create from dictionary, converting logprobs/elementwise_loss to TensorData."""
         return cls(
-            loss=data.get("loss"),
+            loss=_to_scalar_loss(data.get("loss")),
             logprobs=_to_tensor_data(data.get("logprobs")),
             elementwise_loss=_to_tensor_data(data.get("elementwise_loss")),
         )
@@ -151,7 +184,10 @@ class ForwardBackwardOutput:
         """Convert to dictionary."""
         return {
             "loss_fn_output_type": self.loss_fn_output_type,
-            "loss_fn_outputs": [o.to_dict() if hasattr(o, "to_dict") else o for o in self.loss_fn_outputs],
+            "loss_fn_outputs": [
+                o.to_dict() if hasattr(o, "to_dict") else o
+                for o in self.loss_fn_outputs
+            ],
             "metrics": self.metrics,
             "info": self.info,
         }
@@ -168,7 +204,11 @@ class ForwardBackwardOutput:
                 loss_fn_outputs.append(output)
             else:
                 # Handle legacy format (raw dict stored as-is)
-                loss_fn_outputs.append(LossFnOutput(loss=output.get("loss") if isinstance(output, dict) else None))
+                loss_fn_outputs.append(
+                    LossFnOutput(
+                        loss=output.get("loss") if isinstance(output, dict) else None
+                    )
+                )
 
         return cls(
             loss_fn_output_type=data.get("loss_fn_output_type", ""),
