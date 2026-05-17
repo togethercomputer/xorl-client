@@ -15,6 +15,7 @@ This prevents race conditions like optim_step executing before forward_backward.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import threading
@@ -37,8 +38,40 @@ logger = logging.getLogger(__name__)
 
 _R3_ROUTING_FIELDS = ("routed_experts", "routed_expert_logits")
 
+
+def _sync_quantization_from_env() -> Optional[Dict[str, Any]]:
+    raw = os.environ.get("XORL_WEIGHT_SYNC_QUANTIZATION") or os.environ.get(
+        "XORL_SYNC_QUANTIZATION"
+    )
+    if not raw:
+        return None
+    config = json.loads(raw)
+    if config is None:
+        return None
+    if not isinstance(config, dict):
+        raise ValueError("XORL_WEIGHT_SYNC_QUANTIZATION must be a JSON object or null")
+    return config
+
+
 if TYPE_CHECKING:
     from xorl_client.client.sampling_client import SamplingClient
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r; using %s", name, raw_value, default)
+        return default
+    if value <= 0:
+        logger.warning(
+            "Ignoring non-positive %s=%r; using %s", name, raw_value, default
+        )
+        return default
+    return value
 
 
 class TrainingClient:
@@ -232,14 +265,19 @@ class TrainingClient:
         chunks = []
         current_chunk = []
         current_bytes = 0
+        max_chunk_len = _positive_int_env("XORL_CLIENT_MAX_CHUNK_LEN", MAX_CHUNK_LEN)
+        max_chunk_bytes = _positive_int_env(
+            "XORL_CLIENT_MAX_CHUNK_BYTES_COUNT",
+            _positive_int_env("XORL_CLIENT_MAX_CHUNK_BYTES", MAX_CHUNK_BYTES_COUNT),
+        )
 
         for datum in data:
             datum_bytes = estimate_datum_bytes(datum)
 
             # Start new chunk if adding this datum would exceed limits
             if current_chunk and (
-                len(current_chunk) >= MAX_CHUNK_LEN
-                or current_bytes + datum_bytes > MAX_CHUNK_BYTES_COUNT
+                len(current_chunk) >= max_chunk_len
+                or current_bytes + datum_bytes > max_chunk_bytes
             ):
                 chunks.append(current_chunk)
                 current_chunk = []
@@ -806,6 +844,7 @@ class TrainingClient:
         self,
         name: Optional[str] = None,
         inference_base_url: str = "http://localhost:30000",
+        api_format: Optional[str] = None,
     ) -> "SamplingClient":
         """Atomic operation: save weights and create sampling client.
 
@@ -815,6 +854,8 @@ class TrainingClient:
         Args:
             name: Optional name for checkpoint (default: auto-generated)
             inference_base_url: Base URL for inference server (default: http://localhost:30000)
+            api_format: Inference API format passed to SamplingClient. Use
+                "chat_completions" when sampling through Dispatch.
 
         Returns:
             SamplingClient ready to use
@@ -875,12 +916,14 @@ class TrainingClient:
             model=self.holder._model,
             api_key=self.holder.api_key,
             timeout=self.holder.timeout,
+            api_format=api_format,
         )
 
     async def save_weights_and_get_sampling_client_async(
         self,
         name: Optional[str] = None,
         inference_base_url: str = "http://localhost:30000",
+        api_format: Optional[str] = None,
     ) -> "SamplingClient":
         """Async version of save_weights_and_get_sampling_client.
 
@@ -890,6 +933,8 @@ class TrainingClient:
         Args:
             name: Optional name for checkpoint (default: auto-generated)
             inference_base_url: Base URL for inference server (default: http://localhost:30000)
+            api_format: Inference API format passed to SamplingClient. Use
+                "chat_completions" when sampling through Dispatch.
 
         Returns:
             SamplingClient ready to use
@@ -951,6 +996,7 @@ class TrainingClient:
             model=self.holder._model,
             api_key=self.holder.api_key,
             timeout=self.holder.timeout,
+            api_format=api_format,
         )
 
     def save_state(
@@ -1718,6 +1764,7 @@ class TrainingClient:
         master_port: int = 29600,
         group_name: str = "weight_sync_group",
         buffer_size_mb: int = 1024,
+        quantization: Optional[Dict[str, Any]] = None,
     ) -> APIFuture[types.SyncWeightsResponse]:
         """Sync weights to all registered inference endpoints via NCCL.
 
@@ -1754,6 +1801,11 @@ class TrainingClient:
             "group_name": group_name,
             "buffer_size_mb": buffer_size_mb,
         }
+        quantization = (
+            quantization if quantization is not None else _sync_quantization_from_env()
+        )
+        if quantization is not None:
+            request_data["quantization"] = quantization
 
         # Use extended timeout for weight sync (can take minutes for large models)
         future = self.holder.post_async(
@@ -2005,6 +2057,7 @@ class TrainingClient:
         sync_method: str = "nccl_ep_scatter",
         master_address: Optional[str] = None,
         timeout: float = 1800.0,
+        quantization: Optional[Dict[str, Any]] = None,
     ) -> APIFuture[types.SyncWeightsResponse]:
         """Sync current model weights to connected inference endpoint.
 
@@ -2036,6 +2089,11 @@ class TrainingClient:
         )
         if master_address:
             request_data["master_address"] = master_address
+        quantization = (
+            quantization if quantization is not None else _sync_quantization_from_env()
+        )
+        if quantization is not None:
+            request_data["quantization"] = quantization
 
         # Use extended timeout for weight sync
         future = self.holder.post_async(

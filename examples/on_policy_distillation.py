@@ -18,8 +18,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import numbers
 import os
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -104,6 +106,34 @@ def _wait_for_xorl(base_url: str, timeout: float) -> None:
             pass
         time.sleep(2)
     raise TimeoutError(f"XoRL server at {base_url} not healthy within {timeout}s")
+
+
+def _ensure_xorl_session(
+    base_url: str,
+    *,
+    model_id: str,
+    base_model: str,
+    timeout: float,
+) -> None:
+    """Register model_id for direct /api/v1 calls on a XORL server."""
+    response = requests.post(
+        f"{base_url}/api/v1/create_session",
+        json={"session_id": model_id, "base_model": base_model},
+        timeout=min(timeout, 60.0),
+    )
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        raise RuntimeError(
+            f"Failed to register XORL session {model_id!r} at {base_url}: "
+            f"{response.status_code} {response.text}"
+        ) from exc
+    logger.info(
+        "Registered XORL session: base_url=%s model_id=%s response=%s",
+        base_url,
+        model_id,
+        response.text,
+    )
 
 
 def _wait_for_sglang(base_url: str, timeout: float) -> None:
@@ -192,7 +222,12 @@ def _teacher_cache_from_xorl(
         },
         timeout=60,
     )
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        raise RuntimeError(
+            f"Teacher cache request failed: {response.status_code} {response.text}"
+        ) from exc
     future = _wait_for_future(
         teacher_url, response.json()["request_id"], timeout=timeout
     )
@@ -238,10 +273,12 @@ class Config:
     teacher_base_url: str = "http://127.0.0.1:30002"
     inference_base_urls: str = "http://127.0.0.1:30001"
     inference_port: int = 30001
+    inference_api_format: str = ""
     model_name: str = "default"
     model_id: str = "default"
     teacher_model_id: str = "default"
     teacher_head: str = ""
+    chat_tokenizer_path: str = ""
     output_dir: str = "/tmp/xorl-client-opd"
     profile_output: str = ""
 
@@ -249,6 +286,8 @@ class Config:
     profile_warmup_steps: int = 1
     num_prompts: int = 2
     opd_microbatch_size: int = 0
+    opd_prepare_batch_size: int = 0
+    opd_prepare_concurrency: int = 1
     prompt_len: int = 32
     prompts_json: str = ""
     max_new_tokens: int = 8
@@ -279,62 +318,198 @@ def _default_prompts(num_prompts: int, prompt_len: int) -> list[list[int]]:
     return prompts
 
 
-def _load_prompts(config: Config) -> list[list[int]]:
+def _default_chat_prompts(num_prompts: int) -> list[list[dict[str, str]]]:
+    return [
+        [
+            {
+                "role": "user",
+                "content": f"Write a concise answer to synthetic OPD prompt {idx}.",
+            }
+        ]
+        for idx in range(num_prompts)
+    ]
+
+
+def _uses_chat_completions(config: Config) -> bool:
+    return config.inference_api_format.strip().lower().replace("-", "_") in {
+        "chat",
+        "openai",
+        "openai_chat",
+        "chat_completion",
+        "chat_completions",
+    }
+
+
+def _load_prompts(config: Config) -> list[Any]:
     if config.prompts_json:
         prompts = json.loads(config.prompts_json)
+    elif _uses_chat_completions(config):
+        prompts = _default_chat_prompts(config.num_prompts)
     else:
         prompts = _default_prompts(config.num_prompts, config.prompt_len)
-    if not isinstance(prompts, list) or not all(
-        isinstance(item, list) for item in prompts
+    if not isinstance(prompts, list):
+        raise ValueError("prompts_json must encode a list of prompts")
+
+    normalized: list[Any] = []
+    for prompt in prompts:
+        if isinstance(prompt, str):
+            normalized.append(prompt)
+        elif isinstance(prompt, list) and all(
+            isinstance(token, int) for token in prompt
+        ):
+            normalized.append([int(token) for token in prompt])
+        elif (
+            isinstance(prompt, list)
+            and prompt
+            and all(isinstance(message, dict) for message in prompt)
+        ):
+            normalized.append(prompt)
+        else:
+            raise ValueError(
+                "prompts_json entries must be token-id lists, strings, or chat-message lists"
+            )
+    return normalized
+
+
+def _sample_prompt(prompt: Any) -> Any:
+    if isinstance(prompt, list) and all(isinstance(token, int) for token in prompt):
+        return tomi.ModelInput.from_ints(prompt)
+    return prompt
+
+
+def _load_chat_tokenizer(config: Config) -> Any | None:
+    if not _uses_chat_completions(config):
+        return None
+    tokenizer_path = config.chat_tokenizer_path or config.model_name
+    if not tokenizer_path or tokenizer_path == "default":
+        raise ValueError(
+            "chat_tokenizer_path must be set when inference_api_format=chat_completions"
+        )
+    from transformers import AutoTokenizer
+
+    return AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+
+
+def _as_flat_token_ids(value: Any) -> list[int]:
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if isinstance(value, Mapping) and "input_ids" in value:
+        value = value["input_ids"]
+        if hasattr(value, "tolist"):
+            value = value.tolist()
+    elif hasattr(value, "input_ids"):
+        value = value.input_ids
+        if hasattr(value, "tolist"):
+            value = value.tolist()
+    if (
+        isinstance(value, (list, tuple))
+        and len(value) == 1
+        and isinstance(value[0], (list, tuple))
     ):
-        raise ValueError("prompts_json must encode a list of token-id lists")
-    return [[int(token) for token in prompt] for prompt in prompts]
+        value = value[0]
+    if isinstance(value, (list, tuple)) and all(
+        isinstance(token, numbers.Integral) for token in value
+    ):
+        return [int(token) for token in value]
+    raise ValueError("Tokenizer did not return a flat list of chat prompt token IDs")
+
+
+def _encode_chat_prompt(prompt: Any, tokenizer: Any) -> list[int]:
+    if isinstance(prompt, str):
+        messages = [{"role": "user", "content": prompt}]
+    elif (
+        isinstance(prompt, list)
+        and prompt
+        and all(isinstance(message, dict) for message in prompt)
+    ):
+        messages = prompt
+    else:
+        raise ValueError("Chat OPD prompt must be a string or chat-message list")
+
+    token_ids = tokenizer.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=True,
+    )
+    return _as_flat_token_ids(token_ids)
+
+
+def _sampled_sequence_tokens(
+    prompt: Any, sampled: tomi.SampledSequence, chat_tokenizer: Any | None = None
+) -> list[int]:
+    if isinstance(prompt, list) and all(isinstance(token, int) for token in prompt):
+        return list(prompt) + list(sampled.tokens)
+    if sampled.prompt_tokens:
+        return list(sampled.prompt_tokens) + list(sampled.tokens)
+    if chat_tokenizer is not None:
+        return _encode_chat_prompt(prompt, chat_tokenizer) + list(sampled.tokens)
+    if sampled.prompt_tokens is None:
+        raise RuntimeError(
+            "Chat-completions OPD sampling requires backend input_token_ids in each choice "
+            "or a configured chat_tokenizer_path"
+        )
+    raise RuntimeError("Chat-completions backend returned empty input_token_ids")
 
 
 async def _sample_student_batch(
     sampling_clients: list[tomi.SamplingClient],
-    prompts: list[list[int]],
+    prompts: list[Any],
     max_new_tokens: int,
     temperature: float,
-) -> list[list[int]]:
+    return_logprobs: bool = False,
+    chat_tokenizer: Any | None = None,
+) -> tuple[list[list[int]], list[int]]:
     params = tomi.SamplingParams(max_tokens=max_new_tokens, temperature=temperature)
     futures = []
     for idx, prompt in enumerate(prompts):
         client = sampling_clients[idx % len(sampling_clients)]
         futures.append(
             client.sample(
-                prompt=tomi.ModelInput.from_ints(prompt),
+                prompt=_sample_prompt(prompt),
                 sampling_params=params,
                 num_samples=1,
-                return_logprobs=False,
+                return_logprobs=return_logprobs,
             )
         )
 
     responses = await asyncio.gather(*futures)
     sequences: list[list[int]] = []
+    prompt_token_lens: list[int] = []
     for prompt, response in zip(prompts, responses):
         if not response.sequences:
             raise RuntimeError("Student sampler returned no sequences")
-        sequences.append(list(prompt) + list(response.sequences[0].tokens))
-    return sequences
+        sampled = response.sequences[0]
+        sequences.append(_sampled_sequence_tokens(prompt, sampled, chat_tokenizer))
+        if isinstance(prompt, list) and all(isinstance(token, int) for token in prompt):
+            prompt_token_lens.append(len(prompt))
+        elif sampled.prompt_tokens:
+            prompt_token_lens.append(len(sampled.prompt_tokens))
+        elif chat_tokenizer is not None:
+            prompt_token_lens.append(len(_encode_chat_prompt(prompt, chat_tokenizer)))
+        else:
+            prompt_token_lens.append(0)
+    return sequences, prompt_token_lens
 
 
 async def _prepare_opd_batch(
     config: Config,
     sampling_clients: list[tomi.SamplingClient],
     teacher_url: str,
-    prompts: list[list[int]],
+    prompts: list[Any],
     output_dir: Path,
     step: int,
+    chat_tokenizer: Any | None = None,
     microbatch_idx: int = 0,
 ) -> PreparedOpdBatch:
     prepare_t0 = time.perf_counter()
     sample_t0 = time.perf_counter()
-    sequences = await _sample_student_batch(
+    sequences, prompt_token_lens = await _sample_student_batch(
         sampling_clients,
         prompts,
         max_new_tokens=config.max_new_tokens,
         temperature=config.temperature,
+        return_logprobs=_uses_chat_completions(config),
+        chat_tokenizer=chat_tokenizer,
     )
     sample_s = _elapsed(sample_t0)
 
@@ -353,8 +528,8 @@ async def _prepare_opd_batch(
     teacher_s = _elapsed(teacher_t0)
     teacher_tokens = sum(len(sequence) - 1 for sequence in sequences)
     sample_output_tokens = sum(
-        max(0, len(sequence) - len(prompt))
-        for sequence, prompt in zip(sequences, prompts)
+        max(0, len(sequence) - prompt_len)
+        for sequence, prompt_len in zip(sequences, prompt_token_lens)
     )
 
     data = _opd_loss_data(sequences, teacher_cache["cache_indices_by_sample"])
@@ -405,7 +580,7 @@ def _aggregate_prepared_metrics(
     )
 
     return {
-        "num_microbatches": len(prepared_batches),
+        "num_prepare_batches": len(prepared_batches),
         "student_sampling_s": sample_s,
         "student_sampling_output_tokens": sample_output_tokens,
         "student_sampling_output_tok_per_s": sample_output_tokens / sample_s
@@ -477,6 +652,7 @@ async def main(config: Config) -> None:
     prompts = _load_prompts(config)
     if not prompts:
         raise ValueError("OPD requires at least one prompt")
+    chat_tokenizer = _load_chat_tokenizer(config)
     student_urls = get_inference_urls(config.inference_base_urls, config.inference_port)
 
     logger.info("Waiting for trainer: %s", config.base_url)
@@ -486,6 +662,18 @@ async def main(config: Config) -> None:
     for url in student_urls:
         logger.info("Waiting for student sampler: %s", url)
         _wait_for_sglang(url, timeout=config.endpoint_timeout)
+    _ensure_xorl_session(
+        config.base_url,
+        model_id=config.model_id,
+        base_model=config.model_name,
+        timeout=config.request_timeout,
+    )
+    _ensure_xorl_session(
+        config.teacher_base_url,
+        model_id=config.teacher_model_id,
+        base_model=config.teacher_head,
+        timeout=config.request_timeout,
+    )
 
     service_client = tomi.ServiceClient(
         base_url=config.base_url, timeout=config.request_timeout
@@ -496,10 +684,18 @@ async def main(config: Config) -> None:
         base_model=config.model_name,
     )
     sampling_clients = [
-        tomi.SamplingClient(base_url=url, timeout=config.request_timeout)
+        tomi.SamplingClient(
+            base_url=url,
+            model=config.model_name,
+            timeout=config.request_timeout,
+            api_format=config.inference_api_format or None,
+        )
         for url in student_urls
     ]
-    prompt_batches = _chunked(prompts, config.opd_microbatch_size)
+    train_microbatch_size = config.opd_microbatch_size
+    prepare_batch_size = config.opd_prepare_batch_size or train_microbatch_size
+    prepare_concurrency = max(1, config.opd_prepare_concurrency)
+    prompt_batches = _chunked(prompts, prepare_batch_size)
 
     rows: list[dict[str, Any]] = []
     for step in range(config.num_steps):
@@ -510,58 +706,78 @@ async def main(config: Config) -> None:
         prepared_batches: list[PreparedOpdBatch] = []
         fb_futures: list[Any] = []
         first_fb_submit_t0: float | None = None
+        train_microbatch_count = 0
 
-        next_prepare = asyncio.create_task(
-            _prepare_opd_batch(
-                config,
-                sampling_clients,
-                config.teacher_base_url,
-                prompt_batches[0],
-                output_dir,
-                step,
-                0,
-            )
-        )
-        for microbatch_idx in range(len(prompt_batches)):
-            prepared = await next_prepare
-            prepared_batches.append(prepared)
+        next_prepare_idx = 0
+        completed_prepare_count = 0
+        inflight_prepare: dict[asyncio.Task[PreparedOpdBatch], int] = {}
 
-            next_idx = microbatch_idx + 1
-            if next_idx < len(prompt_batches):
-                next_prepare = asyncio.create_task(
+        def schedule_prepare_batches() -> None:
+            nonlocal next_prepare_idx
+            while (
+                next_prepare_idx < len(prompt_batches)
+                and len(inflight_prepare) < prepare_concurrency
+            ):
+                task = asyncio.create_task(
                     _prepare_opd_batch(
                         config,
                         sampling_clients,
                         config.teacher_base_url,
-                        prompt_batches[next_idx],
+                        prompt_batches[next_prepare_idx],
                         output_dir,
                         step,
-                        next_idx,
+                        chat_tokenizer,
+                        next_prepare_idx,
                     )
                 )
+                inflight_prepare[task] = next_prepare_idx
+                next_prepare_idx += 1
 
-            loss_params: dict[str, Any] = {
-                "teacher_heads": {"0": config.teacher_head},
-                "teacher_hidden_caches": {"0": str(prepared.cache_path)},
-                "opd_sort_by_teacher": True,
-                "opd_kl_backend": config.opd_kl_backend,
-                "opd_vocab_chunk_size": config.opd_vocab_chunk_size,
-                "opd_sharded_head_device_cache": config.opd_sharded_head_device_cache,
-                "opd_profile_timings": True,
-                "opd_profile_sync_cuda": config.profile_sync_cuda,
-                "num_chunks": 8,
-            }
-            if config.skip_optim_step and microbatch_idx == len(prompt_batches) - 1:
-                loss_params["profile_clear_gradients_after_backward"] = True
-            if first_fb_submit_t0 is None:
-                first_fb_submit_t0 = time.perf_counter()
-            fb_futures.append(
-                training_client.forward_backward(
-                    prepared.data,
-                    loss_fn="opd_loss",
-                    loss_fn_params=loss_params,
-                )
+        schedule_prepare_batches()
+        while inflight_prepare:
+            done, _ = await asyncio.wait(
+                inflight_prepare.keys(), return_when=asyncio.FIRST_COMPLETED
             )
+            for task in done:
+                inflight_prepare.pop(task)
+                prepared = task.result()
+                completed_prepare_count += 1
+                schedule_prepare_batches()
+
+                prepared_batches.append(prepared)
+
+                loss_params: dict[str, Any] = {
+                    "teacher_heads": {"0": config.teacher_head},
+                    "teacher_hidden_caches": {"0": str(prepared.cache_path)},
+                    "opd_sort_by_teacher": True,
+                    "opd_kl_backend": config.opd_kl_backend,
+                    "opd_vocab_chunk_size": config.opd_vocab_chunk_size,
+                    "opd_sharded_head_device_cache": config.opd_sharded_head_device_cache,
+                    "opd_profile_timings": True,
+                    "opd_profile_sync_cuda": config.profile_sync_cuda,
+                    "num_chunks": 8,
+                }
+                train_batches = _chunked(prepared.data, train_microbatch_size)
+                for train_idx, train_batch in enumerate(train_batches):
+                    train_loss_params = dict(loss_params)
+                    is_last_train_batch = (
+                        completed_prepare_count == len(prompt_batches)
+                        and train_idx == len(train_batches) - 1
+                    )
+                    if config.skip_optim_step and is_last_train_batch:
+                        train_loss_params["profile_clear_gradients_after_backward"] = (
+                            True
+                        )
+                    if first_fb_submit_t0 is None:
+                        first_fb_submit_t0 = time.perf_counter()
+                    fb_futures.append(
+                        training_client.forward_backward(
+                            train_batch,
+                            loss_fn="opd_loss",
+                            loss_fn_params=train_loss_params,
+                        )
+                    )
+                    train_microbatch_count += 1
         prepare_window_s = _elapsed(prepare_window_t0)
 
         optim_future = None
@@ -601,21 +817,35 @@ async def main(config: Config) -> None:
             if not sync_result.success:
                 sync_failure = sync_result.message or "sync_weights_to_inference failed"
 
+        valid_tokens = sum(_valid_tokens(result) for result in fb_results)
         prepared_metrics = _aggregate_prepared_metrics(prepared_batches)
         row: dict[str, Any] = {
             "step": step,
             "profile_warmup": step < config.profile_warmup_steps,
             "step_total_s": _elapsed(step_t0),
             "opd_microbatch_size": config.opd_microbatch_size,
+            "opd_prepare_batch_size": prepare_batch_size,
+            "opd_prepare_concurrency": prepare_concurrency,
+            "opd_train_microbatch_size": train_microbatch_size,
+            "num_microbatches": train_microbatch_count,
             "prepare_window_s": prepare_window_s,
             "forward_backward_s": fb_s,
             "optim_step_s": optim_s,
             "optim_step_queued_s": optim_queued_s,
             "sync_inference_weights_s": sync_s,
             "loss": _loss_mean_many(fb_results),
-            "valid_tokens": sum(_valid_tokens(result) for result in fb_results),
+            "valid_tokens": valid_tokens,
             **prepared_metrics,
         }
+        if row["step_total_s"] > 0:
+            row["valid_tokens_per_step_s"] = valid_tokens / row["step_total_s"]
+        if prepare_window_s > 0:
+            row["student_sampling_output_tok_per_prepare_window_s"] = (
+                row["student_sampling_output_tokens"] / prepare_window_s
+            )
+            row["teacher_prefill_tok_per_prepare_window_s"] = (
+                row["teacher_prefill_tokens"] / prepare_window_s
+            )
         if sync_result is not None:
             row.update(
                 {

@@ -30,8 +30,14 @@ class SamplingParams:
     stop_token_ids: Optional[List[int]] = None
     """Stop token IDs for generation."""
 
+    custom_params: Optional[Dict[str, Any]] = None
+    """Backend-specific sampling controls passed through to the inference server."""
+
     return_routed_experts: bool = False
     """For R3 (Rollout Routing Replay) in MoE models."""
+
+    return_expert_logits: bool = False
+    """Return expert routing logits for R3 replay in MoE models."""
 
     seed: Optional[int] = None
     """Random seed for reproducible generation."""
@@ -55,6 +61,8 @@ class SamplingParams:
                 result["stop"] = valid_stops
         if self.stop_token_ids is not None:
             result["stop_token_ids"] = self.stop_token_ids
+        if self.custom_params is not None:
+            result["custom_params"] = self.custom_params
         if self.seed is not None:
             result["seed"] = self.seed
         if self.sampling_seed is not None:

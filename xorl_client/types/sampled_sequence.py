@@ -21,3 +21,5 @@ class SampledSequence:
     """Reason why sampling stopped: 'length' if max_tokens reached, 'stop' otherwise."""
     logprobs: Optional[List[float]] = None
     text: Optional[str] = None
+    prompt_tokens: Optional[List[int]] = None
+    """Token IDs for the prompt that produced this sequence, when returned by the backend."""
