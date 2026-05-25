@@ -157,10 +157,70 @@ def _opd_causal_pair(sequence: list[int]) -> tuple[list[int], list[int]]:
     return list(sequence[:-1]), list(sequence[1:])
 
 
-def _teacher_hidden_cache_data(sequences: list[list[int]]) -> list[dict[str, Any]]:
+def _teacher_hidden_cache_data(
+    sequences: list[list[int]],
+    teacher_prefix_tokens: list[int] | None = None,
+    teacher_filler_tokens: list[int] | None = None,
+    prompt_token_lens: list[int] | None = None,
+) -> list[dict[str, Any]]:
+    """Build the teacher forward request payload.
+
+    Two independent ways to give the teacher extra context beyond the student:
+
+    1. ``teacher_prefix_tokens`` — prepended to the very start of every teacher
+       input_ids. Their target positions are set to ``-100`` (IGNORE_INDEX) so
+       they don't appear in the returned cache. This is a "system-instruction
+       prefix" injection — the teacher reads the prefix BEFORE the user prompt.
+
+    2. ``teacher_filler_tokens`` + ``prompt_token_lens`` — inserted AT the
+       user→assistant boundary of each sample. This matches the filler-eval
+       setup (pause/lorem/etc filler tokens added between the user prompt and
+       the assistant answer), giving the teacher a "thinking budget" of fixed
+       content right before it commits the answer.
+
+    The xorl trainer's ``_split_hidden_cache_rows`` (model_runner.py:818)
+    filters hidden states by ``target_tokens != IGNORE_INDEX``, so the
+    resulting ``cache_indices_by_sample`` aligns 1-to-1 with the student-side
+    OPD input regardless of how much extra context the teacher saw.
+    """
+    prefix = list(teacher_prefix_tokens) if teacher_prefix_tokens else []
+    filler = list(teacher_filler_tokens) if teacher_filler_tokens else []
+    use_filler_insert = bool(filler)
+    if use_filler_insert and not prompt_token_lens:
+        raise ValueError(
+            "teacher_filler_tokens requires prompt_token_lens for per-sample boundary insertion"
+        )
+    if use_filler_insert and len(prompt_token_lens) != len(sequences):
+        raise ValueError(
+            f"prompt_token_lens has {len(prompt_token_lens)} entries for {len(sequences)} sequences"
+        )
+
     data: list[dict[str, Any]] = []
-    for sequence in sequences:
+    for idx, sequence in enumerate(sequences):
         input_ids, target_tokens = _opd_causal_pair(sequence)
+
+        if use_filler_insert:
+            # Insert `filler` at boundary position prompt_token_lens[idx].
+            # The full teacher_seq = sequence[:p] + filler + sequence[p:], so:
+            #   teacher_input  = teacher_seq[:-1]
+            #   teacher_target = teacher_seq[1:]
+            # The K positions [p-1, p-1+K) of teacher_target are predicting
+            # filler tokens — mask them with -100 so the cache aligns 1-to-1
+            # with the student's N-1 predictions.
+            p = int(prompt_token_lens[idx])
+            K = len(filler)
+            full_teacher_seq = list(sequence[:p]) + filler + list(sequence[p:])
+            input_ids = full_teacher_seq[:-1]
+            target_tokens = list(full_teacher_seq[1:])
+            # Mask the K filler-predicting positions
+            for j in range(max(0, p - 1), max(0, p - 1) + K):
+                if 0 <= j < len(target_tokens):
+                    target_tokens[j] = -100
+
+        if prefix:
+            input_ids = prefix + input_ids
+            target_tokens = [-100] * len(prefix) + target_tokens
+
         data.append(
             {
                 "model_input": {"input_ids": input_ids},
@@ -205,6 +265,9 @@ def _teacher_cache_from_xorl(
     cache_path: Path,
     model_id: str,
     timeout: float,
+    teacher_prefix_tokens: list[int] | None = None,
+    teacher_filler_tokens: list[int] | None = None,
+    prompt_token_lens: list[int] | None = None,
 ) -> dict[str, Any]:
     """Ask the XORL teacher server to write a hidden-state cache on shared storage."""
     response = requests.post(
@@ -212,7 +275,12 @@ def _teacher_cache_from_xorl(
         json={
             "model_id": model_id,
             "forward_input": {
-                "data": _teacher_hidden_cache_data(sequences),
+                "data": _teacher_hidden_cache_data(
+                    sequences,
+                    teacher_prefix_tokens,
+                    teacher_filler_tokens,
+                    prompt_token_lens,
+                ),
                 "loss_fn": "teacher_hidden_cache",
                 "loss_fn_params": {
                     "teacher_hidden_cache_path": str(cache_path),
@@ -290,6 +358,7 @@ class Config:
     opd_prepare_concurrency: int = 1
     prompt_len: int = 32
     prompts_json: str = ""
+    prompts_json_path: str = ""
     max_new_tokens: int = 8
     temperature: float = 1.0
 
@@ -308,6 +377,80 @@ class Config:
     opd_vocab_chunk_size: int | None = None
     opd_sharded_head_device_cache: bool = True
     profile_sync_cuda: bool = False
+
+    # Teacher-prefix prepend for context-distillation recipes (e.g., teacher
+    # sees an instruction system prompt the student does not). If non-empty,
+    # `_teacher_hidden_cache_data` prepends these tokens to the teacher input
+    # and marks their target_tokens as IGNORE_INDEX (-100) so the returned
+    # `cache_indices_by_sample` aligns 1-to-1 with the student tokens.
+    teacher_system_prefix: str = ""
+    teacher_system_prefix_path: str = ""
+
+    # Teacher filler-token INSERTION at the user→assistant boundary. The student
+    # generates trajectories directly from the user prompt; the teacher sees
+    # `teacher_filler_count` repetitions of `teacher_filler_text` inserted right
+    # at the position where the assistant turn begins (= prompt_token_len). This
+    # gives the teacher a "thinking budget" of fixed-content filler tokens that
+    # the student does not get, matching the filler-eval methodology that showed
+    # `pause`/`lorem`/`ellipsis` lift Qwen3.6-35B accuracy +4-6pp at 100 fillers.
+    teacher_filler_text: str = ""       # e.g. " pause" (single token in Qwen tokenizer)
+    teacher_filler_count: int = 0       # number of filler tokens to insert
+
+    # Wandb logging. Disabled by default; set wandb_enabled=true to opt in.
+    # WANDB_API_KEY must be set, or set wandb_mode="offline" to log locally only.
+    wandb_enabled: bool = False
+    wandb_project: str = "xorl-prefill-time-compute"
+    wandb_entity: str = "together-research"
+    wandb_run_name: str = ""             # auto-generated from output_dir if empty
+    wandb_mode: str = "online"           # online | offline | disabled
+    wandb_group: str = ""                # optional run grouping
+
+
+def _maybe_init_wandb(config: Config):
+    """Initialize wandb if `wandb_enabled` is set. Returns the run handle or None.
+
+    Imports wandb lazily so the dependency is only required when actually used.
+    Logs `OPD step N profile` rows via `wandb.log()` keyed by step number.
+    """
+    if not config.wandb_enabled:
+        return None
+    try:
+        import wandb  # noqa: PLC0415
+    except ImportError:
+        logger.warning("wandb_enabled=true but `import wandb` failed; install wandb or set wandb_enabled=false")
+        return None
+    if not os.environ.get("WANDB_API_KEY") and config.wandb_mode == "online":
+        logger.warning("WANDB_API_KEY not set; falling back to offline mode")
+        os.environ.setdefault("WANDB_MODE", "offline")
+    elif config.wandb_mode != "online":
+        os.environ.setdefault("WANDB_MODE", config.wandb_mode)
+    run_name = config.wandb_run_name or f"opd-{Path(config.output_dir).name}"
+    run = wandb.init(
+        project=config.wandb_project,
+        entity=config.wandb_entity or None,
+        name=run_name,
+        group=config.wandb_group or None,
+        config={
+            "model_name": config.model_name,
+            "teacher_head": config.teacher_head,
+            "num_steps": config.num_steps,
+            "num_prompts": config.num_prompts,
+            "opd_microbatch_size": config.opd_microbatch_size,
+            "opd_prepare_batch_size": config.opd_prepare_batch_size,
+            "opd_prepare_concurrency": config.opd_prepare_concurrency,
+            "max_new_tokens": config.max_new_tokens,
+            "temperature": config.temperature,
+            "learning_rate": config.learning_rate,
+            "sync_method": config.sync_method,
+            "sync_weights": config.sync_weights,
+            "teacher_filler_text": config.teacher_filler_text,
+            "teacher_filler_count": config.teacher_filler_count,
+            "teacher_system_prefix": (config.teacher_system_prefix or "")[:200],
+        },
+        reinit=True,
+    )
+    logger.info("wandb run: %s (project=%s entity=%s)", run.url if run else "n/a", config.wandb_project, config.wandb_entity)
+    return run
 
 
 def _default_prompts(num_prompts: int, prompt_len: int) -> list[list[int]]:
@@ -341,7 +484,12 @@ def _uses_chat_completions(config: Config) -> bool:
 
 
 def _load_prompts(config: Config) -> list[Any]:
-    if config.prompts_json:
+    if config.prompts_json_path:
+        # Path-based loading avoids ARG_MAX explosion for large prompt sets
+        # (passing a 100k+-prompt JSON directly via `prompts_json=...` blows
+        # past Linux's ~128 KB MAX_ARG_STRLEN).
+        prompts = json.loads(Path(config.prompts_json_path).read_text())
+    elif config.prompts_json:
         prompts = json.loads(config.prompts_json)
     elif _uses_chat_completions(config):
         prompts = _default_chat_prompts(config.num_prompts)
@@ -375,6 +523,63 @@ def _sample_prompt(prompt: Any) -> Any:
     if isinstance(prompt, list) and all(isinstance(token, int) for token in prompt):
         return tomi.ModelInput.from_ints(prompt)
     return prompt
+
+
+def _tokenize_teacher_prefix(
+    config: Config, chat_tokenizer: Any | None
+) -> list[int]:
+    """Tokenize the teacher system-prompt prefix.
+
+    Returns an empty list when no prefix is configured. Uses a paired
+    [system, dummy-user] render and strips the user portion so the resulting
+    tokens are exactly the system header that should be prepended to the
+    student's input_ids (which already start with their own user turn).
+    """
+    text = config.teacher_system_prefix
+    if not text and config.teacher_system_prefix_path:
+        text = Path(config.teacher_system_prefix_path).read_text(encoding="utf-8")
+    if not text:
+        return []
+    if chat_tokenizer is None:
+        raise ValueError(
+            "teacher_system_prefix requires a chat_tokenizer (set chat_tokenizer_path)"
+        )
+    # Many chat templates (Qwen, Llama) error if there's no user turn. Render
+    # [system, dummy-user] then split on the dummy-user marker to recover the
+    # pure system header.
+    dummy_marker = "__XORL_OPD_DUMMY_USER__"
+    rendered_full = chat_tokenizer.apply_chat_template(
+        [
+            {"role": "system", "content": text},
+            {"role": "user", "content": dummy_marker},
+        ],
+        tokenize=False,
+        add_generation_prompt=False,
+    )
+    if dummy_marker not in rendered_full:
+        raise RuntimeError(
+            f"Tokenizer did not echo the dummy-user marker; rendered={rendered_full!r}"
+        )
+    # Everything before the dummy user turn is the system header. We also need
+    # to drop the dummy "<|im_start|>user\n" preamble that the template emits
+    # right before the marker. Easiest: locate the marker and walk backward to
+    # the previous "<|im_start|>" (which opens the dummy user turn).
+    idx = rendered_full.index(dummy_marker)
+    # Find the start of the dummy user's opening token. Common open markers:
+    # "<|im_start|>user", "<|start_header_id|>user", "<s>[INST]", etc.
+    # Strategy: scan backwards from idx for the LAST occurrence of "<|" or "<s>"
+    # marker open.
+    cut = idx
+    for marker in ("<|im_start|>user", "<|start_header_id|>user", "[INST]"):
+        pos = rendered_full.rfind(marker, 0, idx)
+        if pos != -1 and pos > cut - len(marker) - 8:
+            cut = pos
+            break
+        if pos != -1:
+            cut = min(cut, pos)
+    system_prefix_text = rendered_full[:cut]
+    encoded = chat_tokenizer.encode(system_prefix_text, add_special_tokens=False)
+    return [int(token) for token in encoded]
 
 
 def _load_chat_tokenizer(config: Config) -> Any | None:
@@ -500,6 +705,8 @@ async def _prepare_opd_batch(
     step: int,
     chat_tokenizer: Any | None = None,
     microbatch_idx: int = 0,
+    teacher_prefix_tokens: list[int] | None = None,
+    teacher_filler_tokens: list[int] | None = None,
 ) -> PreparedOpdBatch:
     prepare_t0 = time.perf_counter()
     sample_t0 = time.perf_counter()
@@ -524,6 +731,9 @@ async def _prepare_opd_batch(
         cache_path,
         config.teacher_model_id,
         config.request_timeout,
+        teacher_prefix_tokens,
+        teacher_filler_tokens,
+        prompt_token_lens,
     )
     teacher_s = _elapsed(teacher_t0)
     teacher_tokens = sum(len(sequence) - 1 for sequence in sequences)
@@ -649,10 +859,36 @@ async def main(config: Config) -> None:
     profile_path.parent.mkdir(parents=True, exist_ok=True)
     profile_path.write_text("", encoding="utf-8")
 
+    wandb_run = _maybe_init_wandb(config)
+
     prompts = _load_prompts(config)
     if not prompts:
         raise ValueError("OPD requires at least one prompt")
     chat_tokenizer = _load_chat_tokenizer(config)
+    teacher_prefix_tokens = _tokenize_teacher_prefix(config, chat_tokenizer)
+    if teacher_prefix_tokens:
+        logger.info(
+            "Teacher system prefix: %d tokens (%r...)",
+            len(teacher_prefix_tokens),
+            (config.teacher_system_prefix or "<file>")[:80],
+        )
+    teacher_filler_tokens: list[int] = []
+    if config.teacher_filler_count > 0 and config.teacher_filler_text:
+        if chat_tokenizer is None:
+            raise ValueError(
+                "teacher_filler_text requires a chat_tokenizer (set chat_tokenizer_path)"
+            )
+        # Tokenize the filler text repeated `teacher_filler_count` times
+        filler_string = config.teacher_filler_text * config.teacher_filler_count
+        teacher_filler_tokens = [
+            int(t) for t in chat_tokenizer.encode(filler_string, add_special_tokens=False)
+        ]
+        logger.info(
+            "Teacher filler insert: %d tokens from %r × %d",
+            len(teacher_filler_tokens),
+            config.teacher_filler_text,
+            config.teacher_filler_count,
+        )
     student_urls = get_inference_urls(config.inference_base_urls, config.inference_port)
 
     logger.info("Waiting for trainer: %s", config.base_url)
@@ -728,6 +964,8 @@ async def main(config: Config) -> None:
                         step,
                         chat_tokenizer,
                         next_prepare_idx,
+                        teacher_prefix_tokens,
+                        teacher_filler_tokens,
                     )
                 )
                 inflight_prepare[task] = next_prepare_idx
@@ -765,9 +1003,7 @@ async def main(config: Config) -> None:
                         and train_idx == len(train_batches) - 1
                     )
                     if config.skip_optim_step and is_last_train_batch:
-                        train_loss_params["profile_clear_gradients_after_backward"] = (
-                            True
-                        )
+                        train_loss_params["profile_clear_gradients_after_backward"] = True
                     if first_fb_submit_t0 is None:
                         first_fb_submit_t0 = time.perf_counter()
                     fb_futures.append(
@@ -860,20 +1096,36 @@ async def main(config: Config) -> None:
         with profile_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, sort_keys=True) + "\n")
         logger.info("OPD step %s profile: %s", step, json.dumps(row, sort_keys=True))
+        if wandb_run is not None:
+            # Log every numeric field from the profile row to wandb, keyed by step.
+            wandb_metrics = {
+                k: v for k, v in row.items()
+                if isinstance(v, numbers.Number) and not isinstance(v, bool)
+            }
+            wandb_metrics["sync_success_int"] = int(bool(row.get("sync_success", True)))
+            wandb_run.log(wandb_metrics, step=step)
         if sync_failure is not None:
             raise RuntimeError(f"OPD weight sync failed at step {step}: {sync_failure}")
 
     steady = [row for row in rows if not row["profile_warmup"]]
     if steady:
+        steady_summary = {
+            "steady/total_s": _mean([row["step_total_s"] for row in steady]),
+            "steady/sample_s": _mean([row["student_sampling_s"] for row in steady]),
+            "steady/teacher_s": _mean([row["teacher_prefill_s"] for row in steady]),
+            "steady/fwd_bwd_s": _mean([row["forward_backward_s"] for row in steady]),
+            "steady/sync_s": _mean([row["sync_inference_weights_s"] for row in steady]),
+        }
         logger.info(
-            "Steady OPD mean: total=%.3fs sample=%.3fs teacher=%.3fs fwd_bwd=%.3fs sync=%.3fs",
-            _mean([row["step_total_s"] for row in steady]),
-            _mean([row["student_sampling_s"] for row in steady]),
-            _mean([row["teacher_prefill_s"] for row in steady]),
-            _mean([row["forward_backward_s"] for row in steady]),
-            _mean([row["sync_inference_weights_s"] for row in steady]),
+            "Steady OPD mean: total=%(steady/total_s).3fs sample=%(steady/sample_s).3fs "
+            "teacher=%(steady/teacher_s).3fs fwd_bwd=%(steady/fwd_bwd_s).3fs sync=%(steady/sync_s).3fs",
+            steady_summary,
         )
+        if wandb_run is not None:
+            wandb_run.summary.update(steady_summary)
     logger.info("Wrote OPD profile rows to %s", profile_path)
+    if wandb_run is not None:
+        wandb_run.finish()
 
 
 if __name__ == "__main__":
