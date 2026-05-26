@@ -1,5 +1,6 @@
 import importlib.util
 import asyncio
+import json
 import sys
 from types import SimpleNamespace
 from pathlib import Path
@@ -59,6 +60,30 @@ def test_chat_completions_defaults_to_message_prompts():
             }
         ],
     ]
+
+
+def test_prompts_json_is_capped_by_num_prompts():
+    opd = _load_example()
+
+    config = opd.Config(
+        prompts_json=json.dumps([[1], [2], [3]]),
+        num_prompts=2,
+    )
+
+    assert opd._load_prompts(config) == [[1], [2]]
+
+
+def test_prompts_json_path_is_capped_by_num_prompts(tmp_path):
+    opd = _load_example()
+    prompts_path = tmp_path / "prompts.json"
+    prompts_path.write_text(json.dumps([[1], [2], [3], [4]]), encoding="utf-8")
+
+    config = opd.Config(
+        prompts_json_path=str(prompts_path),
+        num_prompts=2,
+    )
+
+    assert opd._load_prompts(config) == [[1], [2]]
 
 
 def test_chat_completions_trajectory_uses_returned_input_token_ids():
@@ -214,6 +239,8 @@ def test_concurrent_prepare_submits_all_completed_batches(monkeypatch, tmp_path)
         step,
         chat_tokenizer=None,
         microbatch_idx=0,
+        teacher_prefix_tokens=None,
+        teacher_filler_tokens=None,
     ):
         nonlocal started
         started += 1

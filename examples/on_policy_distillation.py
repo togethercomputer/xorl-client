@@ -516,7 +516,7 @@ def _load_prompts(config: Config) -> list[Any]:
             raise ValueError(
                 "prompts_json entries must be token-id lists, strings, or chat-message lists"
             )
-    return normalized
+    return normalized[: config.num_prompts]
 
 
 def _sample_prompt(prompt: Any) -> Any:
