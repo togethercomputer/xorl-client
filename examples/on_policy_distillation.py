@@ -1119,25 +1119,7 @@ async def main(config: Config) -> None:
             raise ValueError(
                 f"teacher_cot_json_path has {len(cot_data)} entries but need {len(prompts)} prompts"
             )
-        # Fallback filler for prompts whose CoT entry came back empty (e.g.
-        # max_tokens-truncation or server error during precompute). When
-        # teacher_filler_text/count are set, use them; otherwise fall back to
-        # a single space token so the teacher still sees SOME filler at the
-        # boundary instead of crashing.
-        if config.teacher_filler_text and config.teacher_filler_count > 0:
-            fallback_filler = [
-                int(t) for t in chat_tokenizer.encode(
-                    config.teacher_filler_text * config.teacher_filler_count,
-                    add_special_tokens=False,
-                )
-            ]
-        else:
-            fallback_filler = [int(t) for t in chat_tokenizer.encode(" ", add_special_tokens=False)]
-            if not fallback_filler:
-                # Shouldn't happen for any real tokenizer.
-                raise ValueError("Could not build fallback filler from a single space")
         teacher_filler_by_prompt = []
-        empty_indices: list[int] = []
         for idx, entry in enumerate(cot_data[: len(prompts)]):
             if not isinstance(entry, dict) or "cot" not in entry:
                 raise ValueError(
@@ -1148,22 +1130,17 @@ async def main(config: Config) -> None:
                 int(t) for t in chat_tokenizer.encode(cot_text, add_special_tokens=False)
             ]
             if not tokens:
-                empty_indices.append(idx)
-                tokens = list(fallback_filler)
+                raise ValueError(
+                    f"teacher_cot_json_path entry {idx} produced 0 tokens (empty cot?) "
+                    "— precompute the dataset until every entry has a real CoT, or "
+                    "filter the bad indices out of both the prompts and cot JSON before "
+                    "passing them to this trainer."
+                )
             teacher_filler_by_prompt.append(tokens)
-        if empty_indices:
-            logger.warning(
-                "Teacher per-prompt CoT: %d entries empty (likely precompute errors); "
-                "using %d-token fallback filler. First 10 indices: %s",
-                len(empty_indices),
-                len(fallback_filler),
-                empty_indices[:10],
-            )
         cot_lengths = [len(f) for f in teacher_filler_by_prompt]
         logger.info(
-            "Teacher per-prompt CoT loaded: %d entries (%d empty→fallback), min=%d median=%d max=%d tokens",
+            "Teacher per-prompt CoT loaded: %d entries, min=%d median=%d max=%d tokens",
             len(teacher_filler_by_prompt),
-            len(empty_indices),
             min(cot_lengths),
             sorted(cot_lengths)[len(cot_lengths) // 2],
             max(cot_lengths),
