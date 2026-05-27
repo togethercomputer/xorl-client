@@ -828,6 +828,28 @@ async def _sample_student_batch(
             "student_prefill_count > 0 requires a chat_tokenizer (set chat_tokenizer_path)"
         )
 
+    prefill_tokens: list[int] = []
+    if use_prefill:
+        # Tokenize the prefill ONCE — we splice these into the reconstructed
+        # student sequence after sampling. SGLang's chat completions endpoint
+        # does NOT include the prefilled assistant content in either
+        # `input_token_ids` or `tokens` of the response: the prefill goes
+        # through the model's forward pass but is invisible in the API
+        # output. We have to reattach it ourselves between the bare prompt
+        # and the generated completion.
+        prefill_tokens = [
+            int(t)
+            for t in chat_tokenizer.encode(prefill_block, add_special_tokens=False)
+        ]
+        if len(prefill_tokens) != student_prefill_count:
+            raise ValueError(
+                f"student_prefill_text {student_prefill_text!r} tokenizes to "
+                f"{len(prefill_tokens) / student_prefill_count:.2f} tokens per repeat "
+                f"(total {len(prefill_tokens)} != {student_prefill_count}); "
+                "the cache-indices remap assumes one token per repeat. Use a single-token "
+                "filler text."
+            )
+
     def _sample_messages_with_prefill(prompt: Any) -> Any:
         if not use_prefill:
             return _sample_prompt(prompt)
@@ -860,21 +882,25 @@ async def _sample_student_batch(
         if not response.sequences:
             raise RuntimeError("Student sampler returned no sequences")
         sampled = response.sequences[0]
-        sequences.append(_sampled_sequence_tokens(prompt, sampled, chat_tokenizer))
-        if isinstance(prompt, list) and all(isinstance(token, int) for token in prompt):
-            prompt_token_lens.append(len(prompt))
-        elif use_prefill:
-            # With continue_final_message, sampled.prompt_tokens includes the
-            # prefill tokens. We want the boundary BEFORE the prefill, so
-            # re-render the bare prompt with add_generation_prompt=True (this
-            # is exactly where the prefill content starts).
-            prompt_token_lens.append(len(_encode_chat_prompt(prompt, chat_tokenizer)))
-        elif sampled.prompt_tokens:
-            prompt_token_lens.append(len(sampled.prompt_tokens))
-        elif chat_tokenizer is not None:
-            prompt_token_lens.append(len(_encode_chat_prompt(prompt, chat_tokenizer)))
+        if use_prefill:
+            # Reconstruct: bare_prompt + prefill + generated. SGLang's response
+            # gives us only the post-prefill `sampled.tokens`, so we splice the
+            # prefill back in from our tokenized copy.
+            p_tokens = _encode_chat_prompt(prompt, chat_tokenizer)
+            sequences.append(p_tokens + list(prefill_tokens) + list(sampled.tokens))
+            # Boundary p is BEFORE the prefill (where teacher's CoT will be
+            # substituted).
+            prompt_token_lens.append(len(p_tokens))
         else:
-            prompt_token_lens.append(0)
+            sequences.append(_sampled_sequence_tokens(prompt, sampled, chat_tokenizer))
+            if isinstance(prompt, list) and all(isinstance(token, int) for token in prompt):
+                prompt_token_lens.append(len(prompt))
+            elif sampled.prompt_tokens:
+                prompt_token_lens.append(len(sampled.prompt_tokens))
+            elif chat_tokenizer is not None:
+                prompt_token_lens.append(len(_encode_chat_prompt(prompt, chat_tokenizer)))
+            else:
+                prompt_token_lens.append(0)
     return sequences, prompt_token_lens
 
 
