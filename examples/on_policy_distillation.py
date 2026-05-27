@@ -528,6 +528,15 @@ class Config:
     student_prefill_text: str = ""
     student_prefill_count: int = 0
 
+    # Checkpoint cadence: every `save_every` completed steps (post-optim,
+    # post-sync), the OPD client calls TrainingClient.save_state to persist a
+    # named checkpoint (`{save_name_prefix}-step{step}`). Set to 0 to disable.
+    # The save call blocks the next step until the checkpoint completes; on
+    # large MoE models this can add ~30s every 50 steps. Recommended for runs
+    # you want resumable / evaluable mid-training.
+    save_every: int = 0
+    save_name_prefix: str = "opd"
+
     # Wandb logging. Disabled by default; set wandb_enabled=true to opt in.
     # WANDB_API_KEY must be set, or set wandb_mode="offline" to log locally only.
     wandb_enabled: bool = False
@@ -1358,6 +1367,34 @@ async def main(config: Config) -> None:
             if not sync_result.success:
                 sync_failure = sync_result.message or "sync_weights_to_inference failed"
 
+        save_s = 0.0
+        save_path: str | None = None
+        if (
+            config.save_every > 0
+            and not config.skip_optim_step
+            and (step + 1) % config.save_every == 0
+        ):
+            save_name = f"{config.save_name_prefix}-step{step + 1}"
+            save_t0 = time.perf_counter()
+            logger.info("Saving checkpoint %s at step %d ...", save_name, step + 1)
+            try:
+                save_future = training_client.save_state(save_name)
+                save_response = await save_future
+                save_path = getattr(save_response, "path", None) or str(save_response)
+                save_s = _elapsed(save_t0)
+                logger.info(
+                    "Saved checkpoint %s in %.1fs -> %s",
+                    save_name,
+                    save_s,
+                    save_path,
+                )
+            except Exception as exc:  # noqa: BLE001
+                save_s = _elapsed(save_t0)
+                logger.error("Checkpoint save %s failed after %.1fs: %s", save_name, save_s, exc)
+                # Don't kill the training run on a save failure — the trainer
+                # engine continues; the user can retry the save manually.
+                save_path = f"FAILED: {exc}"
+
         valid_tokens = sum(_valid_tokens(result) for result in fb_results)
         prepared_metrics = _aggregate_prepared_metrics(prepared_batches)
         row: dict[str, Any] = {
@@ -1374,6 +1411,8 @@ async def main(config: Config) -> None:
             "optim_step_s": optim_s,
             "optim_step_queued_s": optim_queued_s,
             "sync_inference_weights_s": sync_s,
+            "save_checkpoint_s": save_s,
+            "save_checkpoint_path": save_path,
             "loss": _loss_mean_many(fb_results),
             "valid_tokens": valid_tokens,
             **prepared_metrics,
