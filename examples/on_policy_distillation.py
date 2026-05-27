@@ -160,12 +160,13 @@ def _opd_causal_pair(sequence: list[int]) -> tuple[list[int], list[int]]:
 def _teacher_hidden_cache_data(
     sequences: list[list[int]],
     teacher_prefix_tokens: list[int] | None = None,
-    teacher_filler_tokens: list[int] | None = None,
+    teacher_filler_tokens: list[int] | list[list[int]] | None = None,
     prompt_token_lens: list[int] | None = None,
+    student_filler_count: int = 0,
 ) -> list[dict[str, Any]]:
     """Build the teacher forward request payload.
 
-    Two independent ways to give the teacher extra context beyond the student:
+    Three ways to extend the teacher input beyond the bare student sequence:
 
     1. ``teacher_prefix_tokens`` — prepended to the very start of every teacher
        input_ids. Their target positions are set to ``-100`` (IGNORE_INDEX) so
@@ -173,19 +174,43 @@ def _teacher_hidden_cache_data(
        prefix" injection — the teacher reads the prefix BEFORE the user prompt.
 
     2. ``teacher_filler_tokens`` + ``prompt_token_lens`` — inserted AT the
-       user→assistant boundary of each sample. This matches the filler-eval
-       setup (pause/lorem/etc filler tokens added between the user prompt and
-       the assistant answer), giving the teacher a "thinking budget" of fixed
-       content right before it commits the answer.
+       user→assistant boundary of each sample. Two forms accepted:
+         * ``list[int]``: a single global filler shared by every sample
+           (Run A: 100× " pause").
+         * ``list[list[int]]``: per-sample filler, length-matched to sequences
+           (Run B: per-prompt precomputed CoT tokens).
+       Either way, the K filler-predicting target positions are masked with
+       ``-100`` so they don't appear in the cache.
 
-    The xorl trainer's ``_split_hidden_cache_rows`` (model_runner.py:818)
-    filters hidden states by ``target_tokens != IGNORE_INDEX``, so the
-    resulting ``cache_indices_by_sample`` aligns 1-to-1 with the student-side
-    OPD input regardless of how much extra context the teacher saw.
+    3. ``student_filler_count`` — when > 0, the *student* sequence already
+       contains K student-filler tokens (e.g. pause prefill) starting at
+       position ``prompt_token_lens[idx]``. The teacher reconstruction REPLACES
+       those K positions with ``teacher_filler_tokens[idx]`` rather than
+       appending. Final teacher_seq layout per sample:
+           student_seq[:p] + teacher_filler_tokens[idx] + student_seq[p + K:]
+       This matches Run B: the student sees ``pause × K`` between user and
+       answer; the teacher sees per-prompt CoT in the same slot.
+
+    The xorl trainer's ``_split_hidden_cache_rows`` filters hidden states by
+    ``target_tokens != IGNORE_INDEX``, so the resulting
+    ``cache_indices_by_sample`` returned by the server is a contiguous
+    ``range(num_kept)`` per sample regardless of the filler length.
     """
     prefix = list(teacher_prefix_tokens) if teacher_prefix_tokens else []
-    filler = list(teacher_filler_tokens) if teacher_filler_tokens else []
-    use_filler_insert = bool(filler)
+
+    per_sample_filler: list[list[int]] | None = None
+    if teacher_filler_tokens:
+        first = teacher_filler_tokens[0] if teacher_filler_tokens else None
+        if isinstance(first, list):
+            if len(teacher_filler_tokens) != len(sequences):
+                raise ValueError(
+                    f"teacher_filler_tokens has {len(teacher_filler_tokens)} entries for {len(sequences)} sequences"
+                )
+            per_sample_filler = [list(f) for f in teacher_filler_tokens]
+        else:
+            per_sample_filler = [list(teacher_filler_tokens) for _ in sequences]
+
+    use_filler_insert = per_sample_filler is not None
     if use_filler_insert and not prompt_token_lens:
         raise ValueError(
             "teacher_filler_tokens requires prompt_token_lens for per-sample boundary insertion"
@@ -194,26 +219,34 @@ def _teacher_hidden_cache_data(
         raise ValueError(
             f"prompt_token_lens has {len(prompt_token_lens)} entries for {len(sequences)} sequences"
         )
+    if student_filler_count and not use_filler_insert:
+        raise ValueError(
+            "student_filler_count > 0 requires teacher_filler_tokens (need replacement content)"
+        )
 
     data: list[dict[str, Any]] = []
     for idx, sequence in enumerate(sequences):
         input_ids, target_tokens = _opd_causal_pair(sequence)
 
         if use_filler_insert:
-            # Insert `filler` at boundary position prompt_token_lens[idx].
-            # The full teacher_seq = sequence[:p] + filler + sequence[p:], so:
-            #   teacher_input  = teacher_seq[:-1]
-            #   teacher_target = teacher_seq[1:]
-            # The K positions [p-1, p-1+K) of teacher_target are predicting
-            # filler tokens — mask them with -100 so the cache aligns 1-to-1
-            # with the student's N-1 predictions.
+            # Build teacher_seq by substituting student's filler (K=student_filler_count
+            # tokens at position p) with the per-sample teacher filler, OR by inserting
+            # at position p when the student has no filler. The K filler-predicting
+            # positions of teacher_target are masked with -100 so they don't appear
+            # in the cache.
             p = int(prompt_token_lens[idx])
-            K = len(filler)
-            full_teacher_seq = list(sequence[:p]) + filler + list(sequence[p:])
+            sample_filler = per_sample_filler[idx]
+            C = len(sample_filler)
+            K_student = int(student_filler_count)
+            full_teacher_seq = (
+                list(sequence[:p])
+                + sample_filler
+                + list(sequence[p + K_student:])
+            )
             input_ids = full_teacher_seq[:-1]
             target_tokens = list(full_teacher_seq[1:])
-            # Mask the K filler-predicting positions
-            for j in range(max(0, p - 1), max(0, p - 1) + K):
+            # Mask the C filler-predicting positions [p-1, p-1+C) of teacher_target.
+            for j in range(max(0, p - 1), max(0, p - 1) + C):
                 if 0 <= j < len(target_tokens):
                     target_tokens[j] = -100
 
@@ -231,20 +264,94 @@ def _teacher_hidden_cache_data(
 
 
 def _opd_loss_data(
-    sequences: list[list[int]], cache_indices: list[list[int]]
+    sequences: list[list[int]],
+    cache_indices: list[list[int]],
+    prompt_token_lens: list[int] | None = None,
+    student_filler_count: int = 0,
 ) -> list[dict[str, Any]]:
+    """Build student-side OPD loss request payload.
+
+    Default behavior (Run A, ``student_filler_count == 0``): cache_indices are
+    used as-is and must have length ``len(sequence) - 1`` per sample. The
+    student input is just ``sequence[:-1]`` with no extra masking.
+
+    Run B (``student_filler_count > 0``): the student sequence is
+    ``prompt + student_filler + answer`` (length ``p + K + ans``). The teacher's
+    cache only contains ``p - 1 + ans`` rows (no rows for the student's filler
+    positions, since the teacher's filler was replaced by its own CoT and got
+    masked out). We need to:
+
+      1. Mask the K student-filler-predicting target positions [p-1, p+K-1) so
+         the trainer's ``valid_mask = labels != IGNORE_INDEX`` skips them.
+      2. Build a cache_indices array of length ``len(input_ids)`` that maps the
+         remaining positions to the cache rows that came back from the server:
+            * positions [0, p-1)        → cache rows [0, p-1)        (prompt)
+            * positions [p-1, p+K-1)    → placeholder 0 (will be masked)
+            * positions [p+K-1, L_s)    → cache rows [p-1, p-1+ans)  (answer)
+       where ``L_s = p + K + ans - 1``.
+
+    The cache_indices passed in are the server-returned natural ranges (length
+    ``p - 1 + ans``); we re-map them per-position for the student.
+    """
     if len(cache_indices) != len(sequences):
         raise RuntimeError(
             f"Got {len(cache_indices)} cache-index lists for {len(sequences)} sequences"
         )
 
+    K = int(student_filler_count)
+    use_remap = K > 0
+    if use_remap and prompt_token_lens is None:
+        raise ValueError(
+            "student_filler_count > 0 requires prompt_token_lens for per-sample remap"
+        )
+    if use_remap and len(prompt_token_lens) != len(sequences):
+        raise ValueError(
+            f"prompt_token_lens has {len(prompt_token_lens)} entries for {len(sequences)} sequences"
+        )
+
     data: list[dict[str, Any]] = []
-    for sequence, indices in zip(sequences, cache_indices):
+    for idx, (sequence, indices) in enumerate(zip(sequences, cache_indices)):
         input_ids, target_tokens = _opd_causal_pair(sequence)
-        if len(indices) != len(input_ids):
-            raise RuntimeError(
-                f"Teacher cache index length {len(indices)} does not match OPD input length {len(input_ids)}"
-            )
+        L_s = len(input_ids)
+
+        if not use_remap:
+            if len(indices) != L_s:
+                raise RuntimeError(
+                    f"Teacher cache index length {len(indices)} does not match OPD input length {L_s}"
+                )
+            remapped_indices = indices
+        else:
+            p = int(prompt_token_lens[idx])
+            ans = L_s - (p - 1) - K  # = len(sequence) - p - K = answer-token count
+            if p < 1:
+                raise RuntimeError(f"Sample {idx}: prompt_token_lens={p} too small for remap")
+            if ans < 1:
+                raise RuntimeError(
+                    f"Sample {idx}: derived answer length {ans} from L_s={L_s} p={p} K={K}"
+                )
+            expected_cache_len = (p - 1) + ans
+            if len(indices) != expected_cache_len:
+                raise RuntimeError(
+                    f"Sample {idx}: teacher cache rows {len(indices)} != expected {expected_cache_len} "
+                    f"(p={p}, ans={ans}, K={K})"
+                )
+            # Build remapped cache_indices of length L_s.
+            # indices[j] is the server's natural cache row j; we use the same
+            # `indices` array values (which are typically a `range(...)`) but
+            # at positions matching the student's input_ids layout.
+            remapped_indices = [0] * L_s
+            for j in range(p - 1):
+                remapped_indices[j] = indices[j]
+            for j in range(p - 1 + K, L_s):
+                remapped_indices[j] = indices[(p - 1) + (j - (p - 1 + K))]
+            # Mask the K student-filler-predicting target positions.
+            mask_start = p - 1
+            mask_end = mask_start + K
+            target_tokens = list(target_tokens)
+            for j in range(mask_start, mask_end):
+                if 0 <= j < len(target_tokens):
+                    target_tokens[j] = -100
+
         data.append(
             {
                 "model_input": {"input_ids": input_ids},
@@ -252,7 +359,7 @@ def _opd_loss_data(
                     "target_tokens": target_tokens,
                     "teacher_ids": [0] * len(target_tokens),
                     "teacher_weights": [1.0] * len(target_tokens),
-                    "teacher_cache_indices": indices,
+                    "teacher_cache_indices": remapped_indices,
                 },
             }
         )
@@ -266,8 +373,9 @@ def _teacher_cache_from_xorl(
     model_id: str,
     timeout: float,
     teacher_prefix_tokens: list[int] | None = None,
-    teacher_filler_tokens: list[int] | None = None,
+    teacher_filler_tokens: list[int] | list[list[int]] | None = None,
     prompt_token_lens: list[int] | None = None,
+    student_filler_count: int = 0,
 ) -> dict[str, Any]:
     """Ask the XORL teacher server to write a hidden-state cache on shared storage."""
     response = requests.post(
@@ -280,6 +388,7 @@ def _teacher_cache_from_xorl(
                     teacher_prefix_tokens,
                     teacher_filler_tokens,
                     prompt_token_lens,
+                    student_filler_count=student_filler_count,
                 ),
                 "loss_fn": "teacher_hidden_cache",
                 "loss_fn_params": {
@@ -310,12 +419,18 @@ def _teacher_cache_from_xorl(
         raise RuntimeError(
             f"XORL teacher returned {len(cache_indices)} cache-index lists for {len(sequences)}"
         )
-    for sequence, indices in zip(sequences, cache_indices):
-        input_ids, _ = _opd_causal_pair(sequence)
-        if len(indices) != len(input_ids):
-            raise RuntimeError(
-                f"XORL teacher returned {len(indices)} indices for input length {len(input_ids)}"
-            )
+    # When the student has its own filler (Run B), the teacher cache rows
+    # count is shorter than student input_ids by exactly student_filler_count,
+    # because we filtered out the teacher's filler-predicting positions and
+    # the student's filler positions get masked client-side. So skip the
+    # 1-to-1 length check in that branch.
+    if student_filler_count == 0:
+        for sequence, indices in zip(sequences, cache_indices):
+            input_ids, _ = _opd_causal_pair(sequence)
+            if len(indices) != len(input_ids):
+                raise RuntimeError(
+                    f"XORL teacher returned {len(indices)} indices for input length {len(input_ids)}"
+                )
     if cache.get("path") != str(cache_path):
         raise RuntimeError(
             f"XORL teacher wrote unexpected cache path: {cache.get('path')} != {cache_path}"
@@ -395,6 +510,23 @@ class Config:
     # `pause`/`lorem`/`ellipsis` lift Qwen3.6-35B accuracy +4-6pp at 100 fillers.
     teacher_filler_text: str = ""       # e.g. " pause" (single token in Qwen tokenizer)
     teacher_filler_count: int = 0       # number of filler tokens to insert
+
+    # Per-prompt teacher CoT (Run B recipe). When set, OVERRIDES teacher_filler_text/
+    # teacher_filler_count with a per-sample filler taken from a JSON file produced
+    # by experiments/opd_profile/cot_precompute.py. Schema: list of dicts with at
+    # least a "cot" field; order matches the prompts JSON. The CoT text is tokenized
+    # with the chat_tokenizer once at startup, and the i-th prompt uses
+    # teacher_cot_tokens_by_prompt[i] as its filler insertion.
+    teacher_cot_json_path: str = ""
+
+    # Student-side prefill (Run B): the student SAMPLES with an open assistant turn
+    # prefilled with `student_prefill_text` × `student_prefill_count`. The student
+    # forward pass (and OPD loss target) thus sees the pause/lorem/etc tokens; the
+    # teacher's CoT-filler replaces those positions when reconstructing teacher_seq.
+    # Only meaningful when inference_api_format=chat_completions (uses
+    # continue_final_message=true). When zero/empty, falls back to Run A behavior.
+    student_prefill_text: str = ""
+    student_prefill_count: int = 0
 
     # Wandb logging. Disabled by default; set wandb_enabled=true to opt in.
     # WANDB_API_KEY must be set, or set wandb_mode="offline" to log locally only.
@@ -663,14 +795,49 @@ async def _sample_student_batch(
     temperature: float,
     return_logprobs: bool = False,
     chat_tokenizer: Any | None = None,
+    student_prefill_text: str = "",
+    student_prefill_count: int = 0,
 ) -> tuple[list[list[int]], list[int]]:
-    params = tomi.SamplingParams(max_tokens=max_new_tokens, temperature=temperature)
+    """Sample student trajectories.
+
+    With ``student_prefill_count > 0`` and a chat prompt, the student request
+    appends an extra assistant message with ``student_prefill_text`` repeated
+    ``student_prefill_count`` times and asks the backend to ``continue`` from
+    that open turn. The sampled sequence is then ``prompt + assistant_open +
+    prefill_tokens + answer``; ``prompt_token_lens[i]`` is the boundary BEFORE
+    the prefill (the index where the teacher-CoT replacement should occur).
+    """
+    use_prefill = bool(student_prefill_count) and bool(student_prefill_text)
+    params = tomi.SamplingParams(
+        max_tokens=max_new_tokens,
+        temperature=temperature,
+        chat_continue_final_message=use_prefill,
+    )
+    prefill_block = student_prefill_text * student_prefill_count if use_prefill else ""
+    if use_prefill and chat_tokenizer is None:
+        raise ValueError(
+            "student_prefill_count > 0 requires a chat_tokenizer (set chat_tokenizer_path)"
+        )
+
+    def _sample_messages_with_prefill(prompt: Any) -> Any:
+        if not use_prefill:
+            return _sample_prompt(prompt)
+        if not (
+            isinstance(prompt, list)
+            and prompt
+            and all(isinstance(message, dict) for message in prompt)
+        ):
+            raise ValueError(
+                "student_prefill_count > 0 requires chat-message prompts (list of {role, content} dicts)"
+            )
+        return list(prompt) + [{"role": "assistant", "content": prefill_block}]
+
     futures = []
     for idx, prompt in enumerate(prompts):
         client = sampling_clients[idx % len(sampling_clients)]
         futures.append(
             client.sample(
-                prompt=_sample_prompt(prompt),
+                prompt=_sample_messages_with_prefill(prompt),
                 sampling_params=params,
                 num_samples=1,
                 return_logprobs=return_logprobs,
@@ -687,6 +854,12 @@ async def _sample_student_batch(
         sequences.append(_sampled_sequence_tokens(prompt, sampled, chat_tokenizer))
         if isinstance(prompt, list) and all(isinstance(token, int) for token in prompt):
             prompt_token_lens.append(len(prompt))
+        elif use_prefill:
+            # With continue_final_message, sampled.prompt_tokens includes the
+            # prefill tokens. We want the boundary BEFORE the prefill, so
+            # re-render the bare prompt with add_generation_prompt=True (this
+            # is exactly where the prefill content starts).
+            prompt_token_lens.append(len(_encode_chat_prompt(prompt, chat_tokenizer)))
         elif sampled.prompt_tokens:
             prompt_token_lens.append(len(sampled.prompt_tokens))
         elif chat_tokenizer is not None:
@@ -706,7 +879,7 @@ async def _prepare_opd_batch(
     chat_tokenizer: Any | None = None,
     microbatch_idx: int = 0,
     teacher_prefix_tokens: list[int] | None = None,
-    teacher_filler_tokens: list[int] | None = None,
+    teacher_filler_tokens: list[int] | list[list[int]] | None = None,
 ) -> PreparedOpdBatch:
     prepare_t0 = time.perf_counter()
     sample_t0 = time.perf_counter()
@@ -717,6 +890,8 @@ async def _prepare_opd_batch(
         temperature=config.temperature,
         return_logprobs=_uses_chat_completions(config),
         chat_tokenizer=chat_tokenizer,
+        student_prefill_text=config.student_prefill_text,
+        student_prefill_count=config.student_prefill_count,
     )
     sample_s = _elapsed(sample_t0)
 
@@ -734,15 +909,21 @@ async def _prepare_opd_batch(
         teacher_prefix_tokens,
         teacher_filler_tokens,
         prompt_token_lens,
+        config.student_prefill_count,
     )
     teacher_s = _elapsed(teacher_t0)
     teacher_tokens = sum(len(sequence) - 1 for sequence in sequences)
     sample_output_tokens = sum(
-        max(0, len(sequence) - prompt_len)
+        max(0, len(sequence) - prompt_len - config.student_prefill_count)
         for sequence, prompt_len in zip(sequences, prompt_token_lens)
     )
 
-    data = _opd_loss_data(sequences, teacher_cache["cache_indices_by_sample"])
+    data = _opd_loss_data(
+        sequences,
+        teacher_cache["cache_indices_by_sample"],
+        prompt_token_lens=prompt_token_lens,
+        student_filler_count=config.student_prefill_count,
+    )
     metrics = {
         "student_sampling_s": sample_s,
         "student_sampling_output_tokens": sample_output_tokens,
@@ -913,8 +1094,46 @@ async def main(config: Config) -> None:
             len(teacher_prefix_tokens),
             (config.teacher_system_prefix or "<file>")[:80],
         )
-    teacher_filler_tokens: list[int] = []
-    if config.teacher_filler_count > 0 and config.teacher_filler_text:
+    teacher_filler_tokens: list[int] | list[list[int]] = []
+    teacher_filler_by_prompt: list[list[int]] | None = None
+    if config.teacher_cot_json_path:
+        if chat_tokenizer is None:
+            raise ValueError(
+                "teacher_cot_json_path requires a chat_tokenizer (set chat_tokenizer_path)"
+            )
+        cot_data = json.loads(Path(config.teacher_cot_json_path).read_text())
+        if not isinstance(cot_data, list):
+            raise ValueError(
+                f"teacher_cot_json_path file {config.teacher_cot_json_path} must contain a list"
+            )
+        if len(cot_data) < len(prompts):
+            raise ValueError(
+                f"teacher_cot_json_path has {len(cot_data)} entries but need {len(prompts)} prompts"
+            )
+        teacher_filler_by_prompt = []
+        for idx, entry in enumerate(cot_data[: len(prompts)]):
+            if not isinstance(entry, dict) or "cot" not in entry:
+                raise ValueError(
+                    f"teacher_cot_json_path entry {idx} missing 'cot' field"
+                )
+            cot_text = entry["cot"]
+            tokens = [
+                int(t) for t in chat_tokenizer.encode(cot_text, add_special_tokens=False)
+            ]
+            if not tokens:
+                raise ValueError(
+                    f"teacher_cot_json_path entry {idx} produced 0 tokens (empty cot?)"
+                )
+            teacher_filler_by_prompt.append(tokens)
+        cot_lengths = [len(f) for f in teacher_filler_by_prompt]
+        logger.info(
+            "Teacher per-prompt CoT loaded: %d entries, min=%d median=%d max=%d tokens",
+            len(teacher_filler_by_prompt),
+            min(cot_lengths),
+            sorted(cot_lengths)[len(cot_lengths) // 2],
+            max(cot_lengths),
+        )
+    elif config.teacher_filler_count > 0 and config.teacher_filler_text:
         if chat_tokenizer is None:
             raise ValueError(
                 "teacher_filler_text requires a chat_tokenizer (set chat_tokenizer_path)"
@@ -930,6 +1149,35 @@ async def main(config: Config) -> None:
             config.teacher_filler_text,
             config.teacher_filler_count,
         )
+    if config.student_prefill_count > 0:
+        if not config.student_prefill_text:
+            raise ValueError(
+                "student_prefill_count > 0 requires student_prefill_text"
+            )
+        if chat_tokenizer is None:
+            raise ValueError(
+                "student_prefill_count > 0 requires a chat_tokenizer (set chat_tokenizer_path)"
+            )
+        prefill_token_count = len(
+            chat_tokenizer.encode(
+                config.student_prefill_text * config.student_prefill_count,
+                add_special_tokens=False,
+            )
+        )
+        logger.info(
+            "Student prefill: %r × %d → %d tokens (continue_final_message)",
+            config.student_prefill_text,
+            config.student_prefill_count,
+            prefill_token_count,
+        )
+        if prefill_token_count != config.student_prefill_count:
+            raise ValueError(
+                f"student_prefill_text {config.student_prefill_text!r} tokenizes to "
+                f"{prefill_token_count // config.student_prefill_count} tokens per repeat "
+                f"(total {prefill_token_count} != {config.student_prefill_count}); "
+                "the cache-indices remap assumes one token per repeat. Use a single-token "
+                "filler text or extend the remap to handle multi-token-per-repeat fillers."
+            )
     student_urls = get_inference_urls(config.inference_base_urls, config.inference_port)
 
     logger.info("Waiting for trainer: %s", config.base_url)
@@ -973,6 +1221,16 @@ async def main(config: Config) -> None:
     prepare_batch_size = config.opd_prepare_batch_size or train_microbatch_size
     prepare_concurrency = max(1, config.opd_prepare_concurrency)
     prompt_batches = _chunked(prompts, prepare_batch_size)
+    # Per-prompt teacher CoT (Run B): slice in lockstep with prompt_batches so
+    # each prepare task sees the CoT-token list aligned to its prompt slice.
+    teacher_filler_batches: list[list[list[int]]] | None = None
+    if teacher_filler_by_prompt is not None:
+        teacher_filler_batches = _chunked(teacher_filler_by_prompt, prepare_batch_size)
+        if len(teacher_filler_batches) != len(prompt_batches):
+            raise RuntimeError(
+                f"prompt_batches ({len(prompt_batches)}) and teacher_filler_batches "
+                f"({len(teacher_filler_batches)}) misaligned"
+            )
 
     rows: list[dict[str, Any]] = []
     for step in range(config.num_steps):
@@ -995,6 +1253,12 @@ async def main(config: Config) -> None:
                 next_prepare_idx < len(prompt_batches)
                 and len(inflight_prepare) < prepare_concurrency
             ):
+                if teacher_filler_batches is not None:
+                    filler_for_batch: list[int] | list[list[int]] = teacher_filler_batches[
+                        next_prepare_idx
+                    ]
+                else:
+                    filler_for_batch = teacher_filler_tokens
                 task = asyncio.create_task(
                     _prepare_opd_batch(
                         config,
@@ -1006,7 +1270,7 @@ async def main(config: Config) -> None:
                         chat_tokenizer,
                         next_prepare_idx,
                         teacher_prefix_tokens,
-                        teacher_filler_tokens,
+                        filler_for_batch,
                     )
                 )
                 inflight_prepare[task] = next_prepare_idx

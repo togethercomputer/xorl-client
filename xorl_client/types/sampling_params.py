@@ -45,6 +45,13 @@ class SamplingParams:
     sampling_seed: Optional[int] = None
     """Per-request sampling seed for diverse generation across requests."""
 
+    chat_continue_final_message: bool = False
+    """For chat_completions api_format: if True, the request asks the backend to
+    continue the trailing assistant message rather than open a new turn. Used by
+    student-prefill OPD recipes (e.g. Run B's pause-prefilled student) where the
+    student's last assistant message contains the prefill content and the model
+    should generate from that point."""
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         result = {

@@ -275,6 +275,87 @@ def test_forward_backward_profile_metrics_are_aggregated():
     assert metrics["opd_profile_forward_loop_total_s"] == pytest.approx(12.0)
 
 
+def test_teacher_hidden_cache_data_per_sample_filler_replaces_student_filler():
+    """Run B: each sample's teacher_filler is a different list, student_filler_count > 0.
+    Teacher seq = student[:p] + per-sample CoT + student[p+K:], with -100 at
+    CoT-predicting positions."""
+    opd = _load_example()
+
+    # Sample 0: student_seq = [P0, P1, U0, U1, A0, A1] (p=2, K=2, ans=2)
+    # Sample 1: student_seq = [P0, P1, P2, U0, U1, A0]  (p=3, K=2, ans=1)
+    sequences = [[100, 101, 200, 201, 300, 301], [110, 111, 112, 200, 201, 300]]
+    prompt_lens = [2, 3]
+    # Per-sample CoT: 3 tokens for sample 0, 4 tokens for sample 1.
+    cots = [[900, 901, 902], [910, 911, 912, 913]]
+
+    data = opd._teacher_hidden_cache_data(
+        sequences,
+        teacher_prefix_tokens=None,
+        teacher_filler_tokens=cots,
+        prompt_token_lens=prompt_lens,
+        student_filler_count=2,
+    )
+
+    # Sample 0: teacher_seq = [P0,P1,C0,C1,C2,A0,A1] (replaces U0,U1 with cot[0])
+    # input_ids = seq[:-1] = [P0,P1,C0,C1,C2,A0]
+    # target_tokens = seq[1:] = [P1,C0,C1,C2,A0,A1]
+    # Mask [p-1, p-1+C) = [1, 4) → positions 1,2,3
+    assert data[0]["model_input"]["input_ids"] == [100, 101, 900, 901, 902, 300]
+    assert data[0]["loss_fn_inputs"]["target_tokens"] == [101, -100, -100, -100, 300, 301]
+
+    # Sample 1: teacher_seq = [P0,P1,P2,C0,C1,C2,C3,A0] (replaces U0,U1 with cot[1])
+    # input_ids = [P0,P1,P2,C0,C1,C2,C3]
+    # target_tokens = [P1,P2,C0,C1,C2,C3,A0]
+    # Mask [2, 6) → positions 2,3,4,5
+    assert data[1]["model_input"]["input_ids"] == [110, 111, 112, 910, 911, 912, 913]
+    assert data[1]["loss_fn_inputs"]["target_tokens"] == [111, 112, -100, -100, -100, -100, 300]
+
+
+def test_opd_loss_data_remaps_cache_indices_for_student_filler():
+    """Run B: cache_indices length L_s, with -100 mask at K student-filler positions,
+    and answer positions mapped to cache rows beyond the prompt block."""
+    opd = _load_example()
+
+    # student_seq = [P0,P1,P2,U0,U1,A0,A1,A2] (p=3, K=2, ans=3)
+    # L_s = 7
+    # Teacher cache rows = (p-1) + ans = 2 + 3 = 5 → server indices = [0,1,2,3,4]
+    sequences = [[100, 101, 102, 200, 201, 300, 301, 302]]
+    cache_indices = [[0, 1, 2, 3, 4]]
+
+    data = opd._opd_loss_data(
+        sequences,
+        cache_indices,
+        prompt_token_lens=[3],
+        student_filler_count=2,
+    )
+
+    inputs = data[0]
+    assert inputs["model_input"]["input_ids"] == [100, 101, 102, 200, 201, 300, 301]
+    # Target tokens: seq[1:] = [P1,P2,U0,U1,A0,A1,A2], mask positions 2,3 (= [p-1, p+K-1))
+    assert inputs["loss_fn_inputs"]["target_tokens"] == [101, 102, -100, -100, 300, 301, 302]
+    # cache_indices: positions 0,1 → cache rows 0,1; positions 2,3 → placeholder; positions 4,5,6 → cache rows 2,3,4
+    cache_idx = inputs["loss_fn_inputs"]["teacher_cache_indices"]
+    assert len(cache_idx) == 7
+    assert cache_idx[0] == 0
+    assert cache_idx[1] == 1
+    assert cache_idx[4] == 2
+    assert cache_idx[5] == 3
+    assert cache_idx[6] == 4
+
+
+def test_opd_loss_data_run_a_path_unchanged():
+    """Run A (student_filler_count=0) must behave exactly as before: cache_indices used as-is."""
+    opd = _load_example()
+
+    sequences = [[1, 2, 3, 4, 5]]
+    cache_indices = [[0, 1, 2, 3]]
+
+    data = opd._opd_loss_data(sequences, cache_indices)
+    assert data[0]["model_input"]["input_ids"] == [1, 2, 3, 4]
+    assert data[0]["loss_fn_inputs"]["target_tokens"] == [2, 3, 4, 5]
+    assert data[0]["loss_fn_inputs"]["teacher_cache_indices"] == [0, 1, 2, 3]
+
+
 def test_concurrent_prepare_submits_all_completed_batches(monkeypatch, tmp_path):
     opd = _load_example()
 

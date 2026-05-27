@@ -702,6 +702,9 @@ class SamplingClient:
         if return_expert_logits:
             payload["return_expert_logits"] = True
 
+        if sampling_params.chat_continue_final_message:
+            payload["continue_final_message"] = True
+
         self._validate_chat_completions_payload(payload)
         return payload
 
