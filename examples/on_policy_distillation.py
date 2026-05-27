@@ -835,6 +835,47 @@ def _valid_tokens(output: tomi.ForwardBackwardOutput) -> int | float:
     )
 
 
+def _metric_value(metrics: dict[str, Any], key: str) -> float | None:
+    for candidate in (key, f"{key}:sum", f"{key}:mean"):
+        value = metrics.get(candidate)
+        if isinstance(value, numbers.Number):
+            return float(value)
+    return None
+
+
+def _aggregate_forward_backward_profile_metrics(
+    outputs: list[tomi.ForwardBackwardOutput],
+) -> dict[str, float]:
+    specs = {
+        "opd_profile_forward_compute_s": ("opd_profile_forward_compute_s", 1.0),
+        "opd_profile_backward_compute_s": ("opd_profile_backward_compute_s", 1.0),
+        "opd_profile_input_transfer_s": ("opd_profile_input_transfer_s", 1.0),
+        "opd_profile_per_token_collect_s": ("opd_profile_per_token_collect_s", 1.0),
+        "opd_profile_deferred_k3_s": ("opd_profile_deferred_k3_s", 1.0),
+        "opd_profile_loss_report_allreduce_s": ("opd_profile_loss_report_allreduce_s", 1.0),
+        "opd_profile_sp_grad_sync_s": ("opd_profile_sp_grad_sync_s", 1.0),
+        "opd_profile_metric_finalize_s": ("opd_profile_metric_finalize_s", 1.0),
+        "opd_profile_final_synchronize_s": ("opd_profile_final_synchronize_s", 1.0),
+        "opd_profile_forward_loop_total_s": ("opd_profile_forward_loop_total_s", 1.0),
+        "opd_profile_prefetch_s": ("opd_profile_prefetch_ms", 0.001),
+        "opd_profile_hidden_fetch_s": ("opd_profile_hidden_fetch_ms", 0.001),
+        "opd_profile_head_prepare_s": ("opd_profile_head_prepare_ms", 0.001),
+        "opd_profile_kl_compute_s": ("opd_profile_kl_compute_ms", 0.001),
+        "opd_profile_model_forward_s": ("opd_profile_model_forward_ms", 0.001),
+        "opd_profile_loss_compute_s": ("opd_profile_loss_compute_ms", 0.001),
+        "opd_profile_loss_total_s": ("opd_profile_total_ms", 0.001),
+        "opd_profile_clear_gradients_s": ("opd_profile_clear_gradients_ms", 0.001),
+    }
+    totals: dict[str, float] = {}
+    for output in outputs:
+        metrics = output.metrics or {}
+        for output_key, (metric_key, scale) in specs.items():
+            value = _metric_value(metrics, metric_key)
+            if value is not None:
+                totals[output_key] = totals.get(output_key, 0.0) + value * scale
+    return totals
+
+
 def _weight_sync_master_address(config: Config) -> str | None:
     return (
         config.weight_sync_master_address
@@ -1072,6 +1113,7 @@ async def main(config: Config) -> None:
             "loss": _loss_mean_many(fb_results),
             "valid_tokens": valid_tokens,
             **prepared_metrics,
+            **_aggregate_forward_backward_profile_metrics(fb_results),
         }
         if row["step_total_s"] > 0:
             row["valid_tokens_per_step_s"] = valid_tokens / row["step_total_s"]

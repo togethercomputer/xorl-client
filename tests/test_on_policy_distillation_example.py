@@ -222,6 +222,59 @@ def test_valid_tokens_accepts_tinker_reduction_metric():
     assert opd._valid_tokens(output) == 19
 
 
+def test_forward_backward_profile_metrics_are_aggregated():
+    opd = _load_example()
+
+    outputs = [
+        opd.tomi.ForwardBackwardOutput(
+            metrics={
+                "opd_profile_forward_compute_s:mean": 1.5,
+                "opd_profile_backward_compute_s:mean": 2.5,
+                "opd_profile_hidden_fetch_ms:mean": 100.0,
+                "opd_profile_kl_compute_ms:mean": 250.0,
+                "opd_profile_model_forward_ms:mean": 1100.0,
+                "opd_profile_loss_compute_ms:mean": 400.0,
+                "opd_profile_input_transfer_s:mean": 0.05,
+                "opd_profile_sp_grad_sync_s:mean": 0.02,
+                "opd_profile_metric_finalize_s:mean": 0.03,
+                "opd_profile_final_synchronize_s:mean": 0.04,
+                "opd_profile_forward_loop_total_s:mean": 5.0,
+            }
+        ),
+        opd.tomi.ForwardBackwardOutput(
+            metrics={
+                "opd_profile_forward_compute_s:mean": 3.0,
+                "opd_profile_backward_compute_s:mean": 4.0,
+                "opd_profile_hidden_fetch_ms:mean": 50.0,
+                "opd_profile_kl_compute_ms:mean": 125.0,
+                "opd_profile_clear_gradients_ms:mean": 10.0,
+                "opd_profile_model_forward_ms:mean": 900.0,
+                "opd_profile_loss_compute_ms:mean": 600.0,
+                "opd_profile_input_transfer_s:mean": 0.05,
+                "opd_profile_sp_grad_sync_s:mean": 0.02,
+                "opd_profile_metric_finalize_s:mean": 0.03,
+                "opd_profile_final_synchronize_s:mean": 0.04,
+                "opd_profile_forward_loop_total_s:mean": 7.0,
+            }
+        ),
+    ]
+
+    metrics = opd._aggregate_forward_backward_profile_metrics(outputs)
+
+    assert metrics["opd_profile_forward_compute_s"] == pytest.approx(4.5)
+    assert metrics["opd_profile_backward_compute_s"] == pytest.approx(6.5)
+    assert metrics["opd_profile_hidden_fetch_s"] == pytest.approx(0.15)
+    assert metrics["opd_profile_kl_compute_s"] == pytest.approx(0.375)
+    assert metrics["opd_profile_clear_gradients_s"] == pytest.approx(0.01)
+    assert metrics["opd_profile_model_forward_s"] == pytest.approx(2.0)
+    assert metrics["opd_profile_loss_compute_s"] == pytest.approx(1.0)
+    assert metrics["opd_profile_input_transfer_s"] == pytest.approx(0.10)
+    assert metrics["opd_profile_sp_grad_sync_s"] == pytest.approx(0.04)
+    assert metrics["opd_profile_metric_finalize_s"] == pytest.approx(0.06)
+    assert metrics["opd_profile_final_synchronize_s"] == pytest.approx(0.08)
+    assert metrics["opd_profile_forward_loop_total_s"] == pytest.approx(12.0)
+
+
 def test_concurrent_prepare_submits_all_completed_batches(monkeypatch, tmp_path):
     opd = _load_example()
 
