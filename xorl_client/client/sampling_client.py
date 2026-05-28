@@ -895,7 +895,13 @@ class SamplingClient:
             except httpx.HTTPStatusError as e:
                 error_text = e.response.text
                 status_code = e.response.status_code
-                is_transient = status_code == 503 or any(
+                # Treat 502/503/504 as transient — proxy/gateway errors from
+                # dispatch when an upstream sglang backend is briefly unreachable
+                # (e.g. during sglang's post-sync pause window). Original logic
+                # only retried 503, so a single 502 crashed the trainer and lost
+                # all per-step progress. Repro: dispatch returning HTTP 502
+                # "All backends failed" mid-step during Q3.6-35B-A3B OPD Run B.
+                is_transient = status_code in (502, 503, 504) or any(
                     err in error_text
                     for err in ["ReadError", "ConnectError", "TimeoutError"]
                 )
@@ -1085,7 +1091,13 @@ class SamplingClient:
                 error_text = e.response.text
                 status_code = e.response.status_code
                 # 503 Service Unavailable is transient, as are errors mentioning connection issues
-                is_transient = status_code == 503 or any(
+                # Treat 502/503/504 as transient — proxy/gateway errors from
+                # dispatch when an upstream sglang backend is briefly unreachable
+                # (e.g. during sglang's post-sync pause window). Original logic
+                # only retried 503, so a single 502 crashed the trainer and lost
+                # all per-step progress. Repro: dispatch returning HTTP 502
+                # "All backends failed" mid-step during Q3.6-35B-A3B OPD Run B.
+                is_transient = status_code in (502, 503, 504) or any(
                     err in error_text
                     for err in ["ReadError", "ConnectError", "TimeoutError"]
                 )
@@ -1327,7 +1339,13 @@ class SamplingClient:
             except httpx.HTTPStatusError as e:
                 error_text = e.response.text
                 status_code = e.response.status_code
-                is_transient = status_code == 503 or any(
+                # Treat 502/503/504 as transient — proxy/gateway errors from
+                # dispatch when an upstream sglang backend is briefly unreachable
+                # (e.g. during sglang's post-sync pause window). Original logic
+                # only retried 503, so a single 502 crashed the trainer and lost
+                # all per-step progress. Repro: dispatch returning HTTP 502
+                # "All backends failed" mid-step during Q3.6-35B-A3B OPD Run B.
+                is_transient = status_code in (502, 503, 504) or any(
                     err in error_text
                     for err in ["ReadError", "ConnectError", "TimeoutError"]
                 )
