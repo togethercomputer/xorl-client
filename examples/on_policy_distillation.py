@@ -1065,7 +1065,12 @@ def _valid_tokens(output: tomi.ForwardBackwardOutput) -> int | float:
 
 
 def _metric_value(metrics: dict[str, Any], key: str) -> float | None:
-    for candidate in (key, f"{key}:sum", f"{key}:mean"):
+    # The xorl-internal trainer applies a reduction suffix to each metric
+    # (see ModelRunner._metric_accumulator_key): `:mean` for most OPD fields,
+    # `:max` for `opd_num_teachers`, `:sum_max` for `opd_profile_*_ms`. Check
+    # all candidates so the OPD client doesn't silently miss a metric just
+    # because its reducer differs from the default.
+    for candidate in (key, f"{key}:sum", f"{key}:mean", f"{key}:max", f"{key}:sum_max", f"{key}:min"):
         value = metrics.get(candidate)
         if isinstance(value, numbers.Number):
             return float(value)
