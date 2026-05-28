@@ -491,6 +491,19 @@ class Config:
     opd_kl_backend: str = "streaming"
     opd_vocab_chunk_size: int | None = None
     opd_sharded_head_device_cache: bool = True
+
+    # PR #320 (xorl-internal) — VERL-parity OPD loss controls.
+    # `opd_loss_mode`: one of `reverse_kl_full` (default), `forward_kl_full`,
+    #   `kl`/`k1`/`abs`/`mse`/`k2`/`low_var_kl`/`k3` (single-sample estimators;
+    #   trailing `+` applies k2 straight-through gradient trick).
+    # `opd_emit_full_vocab_diagnostics`: enable extra metrics (teacher/student
+    #   entropy, top1 agreement, loss min/max/abs-mean). Slight per-batch overhead.
+    # `opd_use_policy_gradient`: PG mode (PPO advantage = -distillation_loss).
+    # `opd_loss_max_clamp`: symmetric per-token clamp.
+    opd_loss_mode: str = "reverse_kl_full"
+    opd_emit_full_vocab_diagnostics: bool = False
+    opd_use_policy_gradient: bool = False
+    opd_loss_max_clamp: float | None = None
     profile_sync_cuda: bool = False
 
     # Teacher-prefix prepend for context-distillation recipes (e.g., teacher
@@ -1402,6 +1415,10 @@ async def main(config: Config) -> None:
                     "opd_kl_backend": config.opd_kl_backend,
                     "opd_vocab_chunk_size": config.opd_vocab_chunk_size,
                     "opd_sharded_head_device_cache": config.opd_sharded_head_device_cache,
+                    "opd_loss_mode": config.opd_loss_mode,
+                    "opd_emit_full_vocab_diagnostics": config.opd_emit_full_vocab_diagnostics,
+                    "opd_use_policy_gradient": config.opd_use_policy_gradient,
+                    "opd_loss_max_clamp": config.opd_loss_max_clamp,
                     "opd_profile_timings": True,
                     "opd_profile_sync_cuda": config.profile_sync_cuda,
                     "num_chunks": 8,
