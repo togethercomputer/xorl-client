@@ -1092,6 +1092,74 @@ def _aggregate_forward_backward_profile_metrics(
     return totals
 
 
+def _aggregate_opd_loss_metrics(
+    outputs: list[tomi.ForwardBackwardOutput],
+) -> dict[str, float]:
+    """Token-weighted average of per-microbatch OPDLossMetrics fields.
+
+    The xorl-internal OPD loss path (PR #320 + #323) emits a per-microbatch
+    `OPDLossMetrics.to_dict()` payload containing the actual distillation
+    diagnostics: full-vocab KL, full-vocab entropy per side, top1 agreement,
+    estimator-mode abs_loss, loss min/max/abs_mean, multi-teacher weight
+    bookkeeping, and PG-mode clipfrac / ppo_kl. They live in each
+    `ForwardBackwardOutput.metrics`.
+
+    The xorl-internal trainer averages OVER microbatch tokens (not over
+    microbatches), so to recover a step-level scalar we re-weight each
+    microbatch's mean by its `valid_tokens` count and divide by the total.
+    Mirrors what VERL's aggregator does for `distillation/*` per step.
+    """
+    # Per-call key inventory — keep in sync with src/xorl/ops/loss/opd_loss.py
+    # OPDLossMetrics.to_dict(). Numeric fields are mean-aggregated by valid
+    # tokens; "valid_tokens" itself is summed separately by the caller; the
+    # discrete `opd_num_teachers` field is taken as the max (sane fallback —
+    # ranks with zero valid tokens emit 0).
+    SUM_KEYS = ("opd_num_teachers",)
+    MEAN_KEYS = (
+        "opd_kl",
+        "opd_weighted_kl",
+        "opd_teacher_weight_mean",
+        "opd_teacher_entropy",
+        "opd_student_entropy",
+        "opd_top1_agreement",
+        "opd_abs_loss",
+        "opd_loss_min",
+        "opd_loss_max",
+        "opd_loss_abs_mean",
+        "opd_pg_clipfrac",
+        "opd_pg_clipfrac_lower",
+        "opd_ppo_kl",
+    )
+
+    mean_totals: dict[str, float] = {k: 0.0 for k in MEAN_KEYS}
+    weight_total = 0.0
+    max_vals: dict[str, float] = {k: 0.0 for k in SUM_KEYS}
+
+    for output in outputs:
+        metrics = output.metrics or {}
+        valid = _metric_value(metrics, "valid_tokens") or 0.0
+        if valid <= 0:
+            # Skip ranks/microbatches with zero valid tokens — their metric
+            # contributions are unconstrained noise (per OPDLossMetrics docstring).
+            continue
+        weight_total += valid
+        for key in MEAN_KEYS:
+            value = _metric_value(metrics, key)
+            if value is not None:
+                mean_totals[key] += float(value) * valid
+        for key in SUM_KEYS:
+            value = _metric_value(metrics, key)
+            if value is not None:
+                max_vals[key] = max(max_vals[key], float(value))
+
+    if weight_total <= 0:
+        return {}
+    result: dict[str, float] = {k: v / weight_total for k, v in mean_totals.items()}
+    for k, v in max_vals.items():
+        result[k] = v
+    return result
+
+
 def _weight_sync_master_address(config: Config) -> str | None:
     return (
         config.weight_sync_master_address
@@ -1446,6 +1514,7 @@ async def main(config: Config) -> None:
             "valid_tokens": valid_tokens,
             **prepared_metrics,
             **_aggregate_forward_backward_profile_metrics(fb_results),
+            **_aggregate_opd_loss_metrics(fb_results),
         }
         if row["step_total_s"] > 0:
             row["valid_tokens_per_step_s"] = valid_tokens / row["step_total_s"]

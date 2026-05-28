@@ -275,6 +275,98 @@ def test_forward_backward_profile_metrics_are_aggregated():
     assert metrics["opd_profile_forward_loop_total_s"] == pytest.approx(12.0)
 
 
+def test_opd_loss_metrics_are_token_weighted_aggregated():
+    """Per-microbatch OPDLossMetrics fields are token-weighted averaged per step."""
+
+    opd = _load_example()
+
+    # microbatch A: 100 valid tokens, kl=0.5, entropy=2.0, top1=0.6
+    # microbatch B: 300 valid tokens, kl=0.9, entropy=4.0, top1=0.8
+    # token-weighted mean: kl = (0.5*100 + 0.9*300) / 400 = 0.80
+    #                    entropy = (2*100 + 4*300) / 400 = 3.5
+    #                    top1 = (0.6*100 + 0.8*300) / 400 = 0.75
+    outputs = [
+        opd.tomi.ForwardBackwardOutput(
+            metrics={
+                "valid_tokens:sum": 100.0,
+                "opd_kl:mean": 0.5,
+                "opd_teacher_entropy:mean": 2.0,
+                "opd_student_entropy:mean": 1.8,
+                "opd_top1_agreement:mean": 0.6,
+                "opd_loss_min:mean": 0.1,
+                "opd_loss_max:mean": 1.2,
+                "opd_pg_clipfrac:mean": 0.0,
+                "opd_ppo_kl:mean": 0.0,
+                "opd_pg_clipfrac_lower:mean": 0.0,
+                "opd_num_teachers:mean": 1.0,
+            }
+        ),
+        opd.tomi.ForwardBackwardOutput(
+            metrics={
+                "valid_tokens:sum": 300.0,
+                "opd_kl:mean": 0.9,
+                "opd_teacher_entropy:mean": 4.0,
+                "opd_student_entropy:mean": 3.5,
+                "opd_top1_agreement:mean": 0.8,
+                "opd_loss_min:mean": 0.05,
+                "opd_loss_max:mean": 1.5,
+                "opd_pg_clipfrac:mean": 0.0,
+                "opd_ppo_kl:mean": 0.0,
+                "opd_pg_clipfrac_lower:mean": 0.0,
+                "opd_num_teachers:mean": 1.0,
+            }
+        ),
+    ]
+
+    metrics = opd._aggregate_opd_loss_metrics(outputs)
+
+    assert metrics["opd_kl"] == pytest.approx(0.80)
+    assert metrics["opd_teacher_entropy"] == pytest.approx(3.5)
+    assert metrics["opd_student_entropy"] == pytest.approx(3.075)
+    assert metrics["opd_top1_agreement"] == pytest.approx(0.75)
+    assert metrics["opd_loss_min"] == pytest.approx(0.0625)
+    assert metrics["opd_loss_max"] == pytest.approx(1.425)
+    assert metrics["opd_num_teachers"] == pytest.approx(1.0)
+
+
+def test_opd_loss_metrics_skips_zero_valid_token_microbatches():
+    """Microbatches with valid_tokens=0 (dummy-only ranks) don't contribute noise."""
+
+    opd = _load_example()
+
+    outputs = [
+        opd.tomi.ForwardBackwardOutput(
+            metrics={
+                "valid_tokens:sum": 0.0,
+                "opd_kl:mean": 999.0,  # nonsense — must be ignored
+                "opd_teacher_entropy:mean": 999.0,
+            }
+        ),
+        opd.tomi.ForwardBackwardOutput(
+            metrics={
+                "valid_tokens:sum": 50.0,
+                "opd_kl:mean": 0.42,
+                "opd_teacher_entropy:mean": 1.5,
+            }
+        ),
+    ]
+
+    metrics = opd._aggregate_opd_loss_metrics(outputs)
+    assert metrics["opd_kl"] == pytest.approx(0.42)
+    assert metrics["opd_teacher_entropy"] == pytest.approx(1.5)
+
+
+def test_opd_loss_metrics_returns_empty_when_all_microbatches_have_zero_valid():
+    opd = _load_example()
+
+    outputs = [
+        opd.tomi.ForwardBackwardOutput(metrics={"valid_tokens:sum": 0.0}),
+        opd.tomi.ForwardBackwardOutput(metrics={"valid_tokens:sum": 0.0}),
+    ]
+
+    assert opd._aggregate_opd_loss_metrics(outputs) == {}
+
+
 def test_teacher_hidden_cache_data_per_sample_filler_replaces_student_filler():
     """Run B: each sample's teacher_filler is a different list, student_filler_count > 0.
     Teacher seq = student[:p] + per-sample CoT + student[p+K:], with -100 at
