@@ -23,7 +23,11 @@ Metrics = Dict[str, float]
 
 # Chunking constants
 MAX_CHUNK_LEN = 2048 # Maximum number of data items per chunk
-MAX_CHUNK_BYTES_COUNT = 5_000_000  # Maximum bytes per chunk (5MB)
+# Maximum bytes per chunk (64MB). Small caps fragment every forward_backward into
+# ~hundred-sample engine calls and serialize the fb path (xorl-internal ada302bc
+# root cause); 64MB is production-validated on the OPD slots stack. Override with
+# XORL_CLIENT_MAX_CHUNK_BYTES_COUNT (or legacy XORL_CLIENT_MAX_CHUNK_BYTES).
+MAX_CHUNK_BYTES_COUNT = 67_108_864
 
 
 def combine_fwd_bwd_output_results(

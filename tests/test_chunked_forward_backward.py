@@ -173,8 +173,11 @@ class TestChunkedDatums:
         assert len(chunks[0][1]) == MAX_CHUNK_LEN
         assert len(chunks[1][1]) == 1
 
-    def test_byte_limit_splits(self):
+    def test_byte_limit_splits(self, monkeypatch):
         """Large datums should split based on byte limit."""
+        # Pin a small byte cap: the shipped default is 64MB, which these 200
+        # ~49KB datums (~9.8MB) would never split.
+        monkeypatch.setenv("XORL_CLIENT_MAX_CHUNK_BYTES_COUNT", "5000000")
         client = _make_training_client()
         # Each datum: ~4096 tokens * 4 * 3 fields ~= 49152 bytes
         # 5MB / 49152 ~= ~100 datums per chunk

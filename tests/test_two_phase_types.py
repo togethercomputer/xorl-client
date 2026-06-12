@@ -5,6 +5,7 @@ Tests for two-phase request pattern types in xorl_client.
 import pytest
 from xorl_client.types import (
     RequestID,
+    TensorData,
     UntypedAPIFuture,
     TryAgainResponse,
     RequestErrorCategory,
@@ -316,11 +317,12 @@ class TestLossFnOutput:
         assert "elementwise_loss" not in d
 
     def test_from_dict(self):
-        """Test from_dict class method."""
+        """Test from_dict class method (logprobs converted to TensorData)."""
         data = {"loss": 0.7, "logprobs": {"data": [-1.5]}}
         output = LossFnOutput.from_dict(data)
         assert output.loss == 0.7
-        assert output.logprobs == {"data": [-1.5]}
+        assert isinstance(output.logprobs, TensorData)
+        assert output.logprobs.data == [-1.5]
         assert output.elementwise_loss is None
 
 
