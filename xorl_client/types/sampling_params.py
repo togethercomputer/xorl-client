@@ -52,6 +52,20 @@ class SamplingParams:
     student's last assistant message contains the prefill content and the model
     should generate from that point."""
 
+    chat_template_kwargs: Optional[Dict[str, Any]] = None
+    """For chat_completions api_format: forwarded to the backend's chat-template
+    application (e.g. {"enable_thinking": False} to pin Qwen3.x to the closed
+    think-block rendering). Without it the SERVER's template default decides —
+    found 2026-06-10 to render assistant prefills inside an OPEN <think> block,
+    silently flipping every sampled token's context (PTC-118 reproduction gap)."""
+
+    chat_logprob_start_len: Optional[int] = None
+    """For chat_completions api_format: logprob_start_len for the request. Set 0
+    so the backend returns input_token_logprobs -> input_token_ids (the server's
+    ACTUAL rendered prompt). Without it SGLang returns EMPTY input_token_ids and
+    the client silently re-renders the prompt locally — the trained context can
+    then mismatch the sampled context (same 2026-06-10 finding)."""
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         result = {

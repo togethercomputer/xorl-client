@@ -681,6 +681,13 @@ class SamplingClient:
             payload["stop_token_ids"] = params["stop_token_ids"]
         if "custom_params" in params:
             payload["custom_params"] = params["custom_params"]
+            custom_params = params["custom_params"] or {}
+            if "ignore_eos" in custom_params:
+                payload["ignore_eos"] = bool(custom_params["ignore_eos"])
+            if "min_tokens" in custom_params:
+                payload["min_tokens"] = int(custom_params["min_tokens"])
+            elif "min_new_tokens" in custom_params:
+                payload["min_tokens"] = int(custom_params["min_new_tokens"])
 
         seed = (
             sampling_params.sampling_seed
@@ -704,6 +711,15 @@ class SamplingClient:
 
         if sampling_params.chat_continue_final_message:
             payload["continue_final_message"] = True
+
+        if sampling_params.chat_template_kwargs is not None:
+            payload["chat_template_kwargs"] = dict(sampling_params.chat_template_kwargs)
+
+        # Explicit start-len wins over the caller-supplied one: it exists to force
+        # the backend to return input_token_logprobs -> input_token_ids (the
+        # server-truth rendered prompt) for OPD sequence reconstruction.
+        if sampling_params.chat_logprob_start_len is not None:
+            payload["logprob_start_len"] = int(sampling_params.chat_logprob_start_len)
 
         self._validate_chat_completions_payload(payload)
         return payload

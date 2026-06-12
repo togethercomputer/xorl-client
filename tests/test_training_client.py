@@ -278,6 +278,8 @@ class TestTrainingClientWeightSync:
                     "num_parameters": 1,
                     "num_buckets": 1,
                     "endpoints_synced": [],
+                    "timing_breakdown": {"serial_endpoint_sync": 1.0},
+                    "p2p_rank_summaries": [{"rank": 0, "transfer_wall_s": 0.25}],
                 }
             )
             return future
@@ -295,10 +297,12 @@ class TestTrainingClientWeightSync:
         ).result()
 
         assert result.success
+        assert result.timing_breakdown == {"serial_endpoint_sync": 1.0}
+        assert result.p2p_rank_summaries == [{"rank": 0, "transfer_wall_s": 0.25}]
         assert calls == [
             (
                 "/sync_inference_weights",
-                {"sync_method": "p2p", "master_address": "192.168.229.118"},
+                {"sync_method": "p2p", "timeout_s": 123.0, "master_address": "192.168.229.118"},
                 123.0,
             )
         ]
@@ -327,7 +331,7 @@ class TestTrainingClientWeightSync:
 
         client.sync_weights_to_inference(sync_method="p2p").result()
 
-        assert calls[0][1] == {"sync_method": "p2p", "master_address": "10.0.0.8"}
+        assert calls[0][1] == {"sync_method": "p2p", "timeout_s": 1800.0, "master_address": "10.0.0.8"}
 
 
 class TestServiceClientMocked:
