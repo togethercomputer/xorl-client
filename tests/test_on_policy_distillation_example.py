@@ -1538,7 +1538,7 @@ def test_opd_loss_data_masked_remap_emits_global_rows_and_base():
     assert inputs["teacher_cache_indices"] == [40, 41, 0, 0, 42, 43, 44]
     assert inputs["target_tokens"] == [101, 102, -100, -100, 300, 301, 302]
     # Explicit re-base anchor = the sample's first global cache row.
-    assert inputs["teacher_cache_base"] == 40
+    assert inputs["teacher_cache_base"] == [40]
     assert inputs["teacher_input_ids"] == [1, 2, 3, 4, 5, 6, 7]
     assert inputs["teacher_kept_indices"] == [0, 1, 3, 4, 5]
 
@@ -1566,7 +1566,7 @@ def test_opd_loss_data_buffer_only_emits_global_rows_and_base():
     inputs = data[0]["loss_fn_inputs"]
     assert inputs["teacher_cache_indices"] == [40, 41, 42, 43, 0, 0, 0]
     assert inputs["target_tokens"] == [101, 102, 200, 201, -100, -100, -100]
-    assert inputs["teacher_cache_base"] == 40
+    assert inputs["teacher_cache_base"] == [40]
 
 
 def test_opd_loss_data_run_a_path_unchanged():

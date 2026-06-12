@@ -1054,8 +1054,10 @@ def _opd_loss_data(
             # (= the sample's first GLOBAL cache row; indices is the server-returned
             # contiguous ascending range). Additive: old servers ignore it. Without
             # it the packer falls back to min()-inference, which is wrong for the
-            # masked variants (their 0-filled positions make min()==0).
-            loss_fn_inputs["teacher_cache_base"] = int(indices[0]) if len(indices) else 0
+            # masked variants (their 0-filled positions make min()==0). Wrapped as a
+            # 1-element list: the API schema's loss_fn_inputs InputType has no
+            # scalar form (bare ints 422 at /forward_backward).
+            loss_fn_inputs["teacher_cache_base"] = [int(indices[0]) if len(indices) else 0]
         if hidden_match_weights is not None:
             loss_fn_inputs["hidden_match_weights"] = hidden_match_weights
         if old_logprobs_by_sample is not None:
