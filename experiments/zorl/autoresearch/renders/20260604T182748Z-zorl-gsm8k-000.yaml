@@ -1,0 +1,177 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: zorl-ar-zorl-gsm8k-000-
+  labels:
+    experiment-group: zorl
+    autoresearch-id: zorl-gsm8k-000
+    app: zorl-ar-zorl-gsm8k-000
+  annotations:
+    autoresearch.together.ai/id: ZORL-GSM8K-000
+    autoresearch.together.ai/rendered_utc: '2026-06-04T18:27:48Z'
+    autoresearch.together.ai/candidate: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/candidates/ZORL-GSM8K-000-smoke.yaml
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: zorl-ar-zorl-gsm8k-000
+        experiment-group: zorl
+        experiment-variant: standalone-client
+        autoresearch-id: zorl-gsm8k-000
+    spec:
+      restartPolicy: Never
+      priorityClassName: normal
+      hostNetwork: false
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        node-group: default
+        node-pool: compute
+      tolerations:
+      - key: node-group
+        operator: Equal
+        value: default
+        effect: NoSchedule
+      volumes:
+      - name: shared
+        persistentVolumeClaim:
+          claimName: shared-data
+      - name: workspace-home
+        persistentVolumeClaim:
+          claimName: home-apanda
+      containers:
+      - name: zorl-client
+        image: nvcr.io/nvidia/pytorch:26.02-py3
+        workingDir: /workspace/home/xorl-apanda-dev-zorl-consolidated
+        env:
+        - name: HOME
+          value: "/workspace/home"
+        - name: HF_HOME
+          value: "/shared/huggingface"
+        - name: HF_HUB_DISABLE_XET
+          value: "1"
+        - name: HF_HUB_OFFLINE
+          value: "1"
+        - name: TRANSFORMERS_CACHE
+          value: "/shared/huggingface/transformers"
+        - name: TRANSFORMERS_OFFLINE
+          value: "1"
+        - name: TOKENIZERS_PARALLELISM
+          value: "false"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: AUTORESEARCH_ID
+          value: "ZORL-GSM8K-000"
+        - name: AUTORESEARCH_CANDIDATE
+          value: "/home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/candidates/ZORL-GSM8K-000-smoke.yaml"
+        - name: RESULT_ROOT
+          value: "/workspace/home/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-GSM8K-000"
+        - name: INFER_URL
+          value: "http://zorl-ar-sglang-047.apanda.svc.cluster.local:30000"
+        - name: TASK
+          value: "gsm8k"
+        - name: STEPS
+          value: "1"
+        - name: NUM_PAIRS
+          value: "2"
+        - name: B_SIGMA
+          value: "0.012"
+        - name: LEARNING_RATE
+          value: "0.01"
+        - name: MAX_UPDATE_NORM
+          value: "20000"
+        - name: SEED
+          value: "1234"
+        - name: TRAIN_SIZE
+          value: "4"
+        - name: EVAL_SIZE
+          value: "16"
+        - name: ROLLOUTS_PER_PUZZLE
+          value: "1"
+        - name: ROLLOUT_TEMPERATURE
+          value: "0.6"
+        - name: ROLLOUT_MAX_NEW_TOKENS
+          value: "1024"
+        - name: SCORE_MAX_WORKERS
+          value: "16"
+        - name: PROBE_INTERVAL
+          value: "1"
+        - name: PROBE_TEMPERATURE
+          value: "0.0"
+        - name: PROBE_N
+          value: "1"
+        - name: LORA_RANK
+          value: "4"
+        - name: LORA_ALPHA
+          value: "4"
+        volumeMounts:
+        - name: shared
+          mountPath: /shared
+        - name: workspace-home
+          mountPath: /workspace/home
+        resources:
+          requests:
+            cpu: '4'
+            memory: 32Gi
+          limits:
+            cpu: '8'
+            memory: 64Gi
+        command:
+        - /bin/bash
+        - -lc
+        - "set -euo pipefail\n\nREPO_ROOT=\"${REPO_ROOT:-/workspace/home/xorl-apanda-dev-zorl-consolidated}\"\
+          \nPYTHON_BIN=\"${PYTHON_BIN:-/workspace/home/xorl-internal/.venv/bin/python}\"\
+          \nMODEL_PATH=\"${MODEL_PATH:-Qwen/Qwen3-30B-A3B-Instruct-2507}\"\nADAPTER_DIR=\"\
+          ${ADAPTER_DIR:-/shared/zorl/init-adapters/qwen3-30b-a3b-r4}\"\nRESULT_ROOT=\"\
+          ${RESULT_ROOT:-${REPO_ROOT}/experiments/zorl/results/standalone}\"\nTASK=\"\
+          ${TASK:-opd_multiplication}\"\nINFER_URL=\"${INFER_URL:-http://zorl-ar-sglang-047.apanda.svc.cluster.local:30000}\"\
+          \n\nLORA_RANK=\"${LORA_RANK:-4}\"\nLORA_ALPHA=\"${LORA_ALPHA:-${LORA_RANK}}\"\
+          \nSTEPS=\"${STEPS:-8}\"\nNUM_PAIRS=\"${NUM_PAIRS:-8}\"\nB_SIGMA=\"${B_SIGMA:-0.012}\"\
+          \nLEARNING_RATE=\"${LEARNING_RATE:-0.01}\"\nMAX_UPDATE_NORM=\"${MAX_UPDATE_NORM:-20000}\"\
+          \nSEED=\"${SEED:-1234}\"\nTRAIN_SIZE=\"${TRAIN_SIZE:-8}\"\nEVAL_SIZE=\"\
+          ${EVAL_SIZE:-16}\"\nROLLOUTS_PER_PUZZLE=\"${ROLLOUTS_PER_PUZZLE:-1}\"\n\
+          ROLLOUT_TEMPERATURE=\"${ROLLOUT_TEMPERATURE:-0.6}\"\nROLLOUT_MAX_NEW_TOKENS=\"\
+          ${ROLLOUT_MAX_NEW_TOKENS:-32}\"\nSCORE_MAX_WORKERS=\"${SCORE_MAX_WORKERS:-32}\"\
+          \nPROBE_INTERVAL=\"${PROBE_INTERVAL:-1}\"\nPROBE_TEMPERATURE=\"${PROBE_TEMPERATURE:-0.6}\"\
+          \nPROBE_N=\"${PROBE_N:-16}\"\nELITIST_ROLLBACK=\"${ELITIST_ROLLBACK:-0}\"\
+          \n\nRUN_ID=\"$(date -u +%Y%m%dT%H%M%SZ)-${HOSTNAME}\"\nRUN_DIR=\"${RESULT_ROOT}/${RUN_ID}-${TASK}\"\
+          \nmkdir -p \"${RUN_DIR}\" \"${ADAPTER_DIR}\"\n\nexport PYTHONPATH=\"${REPO_ROOT}:${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}\"\
+          \nexport PATH=\"/workspace/home/xorl-internal/.venv/bin:${PATH}\"\n\nexec\
+          \ > >(tee -a \"${RUN_DIR}/job.log\") 2>&1\n\necho \"run_id=${RUN_ID}\"\n\
+          echo \"run_dir=${RUN_DIR}\"\necho \"task=${TASK}\"\necho \"infer_url=${INFER_URL}\"\
+          \necho \"model_path=${MODEL_PATH}\"\necho \"adapter_dir=${ADAPTER_DIR}\"\
+          \necho \"seed=${SEED}\"\necho \"recipe: rank=${LORA_RANK} alpha=${LORA_ALPHA}\
+          \ steps=${STEPS} pairs=${NUM_PAIRS} sigma=${B_SIGMA} lr=${LEARNING_RATE}\
+          \ max_update_norm=${MAX_UPDATE_NORM}\"\necho \"git_head_zorl=$(git -C \"\
+          ${REPO_ROOT}\" rev-parse HEAD 2>/dev/null || echo unknown)\"\n\necho \"\
+          Waiting for remote SGLang at ${INFER_URL}...\"\nfor i in $(seq 1 180); do\n\
+          \  if curl -sf \"${INFER_URL}/health_generate\" >/dev/null 2>&1 || \\\n\
+          \     curl -sf \"${INFER_URL}/health\" >/dev/null 2>&1 || \\\n     curl\
+          \ -sf \"${INFER_URL}/v1/models\" >/dev/null 2>&1 || \\\n     curl -sf \"\
+          ${INFER_URL}/get_model_info\" >/dev/null 2>&1; then\n    echo \"Remote SGLang\
+          \ reachable after ${i} polls.\"\n    break\n  fi\n  if [[ \"${i}\" == \"\
+          180\" ]]; then\n    echo \"Remote SGLang did not become reachable in time.\"\
+          \ >&2\n    exit 1\n  fi\n  sleep 10\ndone\n\nif [[ ! -f \"${ADAPTER_DIR}/adapter_model.safetensors\"\
+          \ || ! -f \"${ADAPTER_DIR}/adapter_config.json\" ]]; then\n  echo \"Creating\
+          \ init adapter in ${ADAPTER_DIR}...\"\n  \"${PYTHON_BIN}\" -u \"${REPO_ROOT}/experiments/zorl/standalone/init_zorl_adapter.py\"\
+          \ \\\n    --model \"${MODEL_PATH}\" \\\n    --output-dir \"${ADAPTER_DIR}\"\
+          \ \\\n    --rank \"${LORA_RANK}\" \\\n    --alpha \"${LORA_ALPHA}\"\nelse\n\
+          \  echo \"Reusing existing init adapter in ${ADAPTER_DIR}.\"\nfi\n\nSESSION_ID=\"\
+          ${SESSION_ID:-zorl-${TASK}-${RUN_ID}}\"\nPARENT_LORA_NAME=\"${PARENT_LORA_NAME:-${SESSION_ID}/parent}\"\
+          \nEXTRA_ARGS=()\nif [[ \"${ELITIST_ROLLBACK}\" == \"1\" ]]; then\n  EXTRA_ARGS+=(--elitist-rollback)\n\
+          fi\n\necho \"Starting standalone ZORL client...\"\n\"${PYTHON_BIN}\" -u\
+          \ -m experiments.zorl.standalone.zorl_client \\\n  --task \"${TASK}\" \\\
+          \n  --infer-url \"${INFER_URL}\" \\\n  --adapter-dir \"${ADAPTER_DIR}\"\
+          \ \\\n  --model \"${MODEL_PATH}\" \\\n  --parent-lora-name \"${PARENT_LORA_NAME}\"\
+          \ \\\n  --session-id \"${SESSION_ID}\" \\\n  --steps \"${STEPS}\" \\\n \
+          \ --num-pairs \"${NUM_PAIRS}\" \\\n  --b-sigma \"${B_SIGMA}\" \\\n  --lr\
+          \ \"${LEARNING_RATE}\" \\\n  --max-update-norm \"${MAX_UPDATE_NORM}\" \\\
+          \n  --seed \"${SEED}\" \\\n  --train-size \"${TRAIN_SIZE}\" \\\n  --eval-size\
+          \ \"${EVAL_SIZE}\" \\\n  --rollouts-per-puzzle \"${ROLLOUTS_PER_PUZZLE}\"\
+          \ \\\n  --rollout-temperature \"${ROLLOUT_TEMPERATURE}\" \\\n  --rollout-max-new-tokens\
+          \ \"${ROLLOUT_MAX_NEW_TOKENS}\" \\\n  --score-max-workers \"${SCORE_MAX_WORKERS}\"\
+          \ \\\n  --probe-interval \"${PROBE_INTERVAL}\" \\\n  --probe-temperature\
+          \ \"${PROBE_TEMPERATURE}\" \\\n  --probe-n \"${PROBE_N}\" \\\n  \"${EXTRA_ARGS[@]}\"\
+          \ \\\n  2>&1 | tee \"${RUN_DIR}/zorl_client.log\"\n\necho \"Done. Results\
+          \ in ${RUN_DIR}\"\n"

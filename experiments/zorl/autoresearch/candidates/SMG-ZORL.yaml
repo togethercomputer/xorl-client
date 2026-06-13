@@ -1,0 +1,15 @@
+id: SMG-ZORL
+kind: smg_router
+base_manifest: k8s/qwen3-coder-30b-a3b-zorl-smg-router.yaml
+container: smg
+k8s:
+  service_name: zorl-ar-smg
+  app_label: zorl-ar-smg
+  job_generate_name: zorl-ar-smg-
+env:
+  SMG_POLICY: round_robin
+  WORKER_URLS: http://zorl-ar-sglang-0.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-1.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-2.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-3.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-4.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-5.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-6.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-7.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-8.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-9.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-10.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-11.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-12.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-13.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-14.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-15.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000
+notes:
+  - Stable routed generation endpoint for ZORL autoresearch.
+  - Trainers should keep direct SGLang worker URLs for sync/control and use this service as REWARD_INFER_URL.
+  - ZORL owner-routed candidate requests should set X-SMG-Target-Worker to the candidate owner URL.

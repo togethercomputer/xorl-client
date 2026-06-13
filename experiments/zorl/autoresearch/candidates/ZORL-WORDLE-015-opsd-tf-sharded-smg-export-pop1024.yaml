@@ -1,0 +1,70 @@
+id: ZORL-WORDLE-015
+kind: standalone_wordle_opsd_teacher_forced_sharded_smg_export_pop1024
+base_manifest: k8s/qwen3-coder-30b-a3b-zorl-standalone-client-job.yaml
+container: zorl-client
+score_source: standalone_zorl_log
+result_root: experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-015
+env:
+  RESULT_ROOT: /workspace/home/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-015
+  INFER_URL: http://zorl-ar-sglang-0.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-1.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-2.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-3.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-4.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-5.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-6.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-7.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-8.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-9.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-10.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-11.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-12.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-13.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-14.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-15.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000
+  REWARD_INFER_URL: http://zorl-ar-smg.apanda.svc.cluster.local:30000
+  POPULATION_SHARDING: pair_shard
+  NUM_SHARDS: auto
+  PAIRS_PER_SHARD: "32"
+  CANDIDATE_ROUTING: owner_via_smg
+  PRELOAD_CANDIDATES: "0"
+  TASK: wordle
+  SCORE_MODE: teacher_forced
+  WORDLE_TEACHER_TRACE_STYLE: hinted_cot
+  STEPS: "384"
+  NUM_PAIRS: "512"
+  B_SIGMA: "0.05"
+  LEARNING_RATE: "0.01"
+  MAX_UPDATE_NORM: "20000"
+  PERTURBATION_MODE: b_only
+  ELITIST_ROLLBACK: "1"
+  SEED: "9234"
+  TRAIN_SIZE: "128"
+  TRAIN_POOL_SIZE: "512"
+  RESAMPLE_TRAIN_EACH_STEP: "1"
+  EVAL_SIZE: "128"
+  ROLLOUTS_PER_PUZZLE: "1"
+  ROLLOUT_TEMPERATURE: "0.9"
+  ROLLOUT_MAX_NEW_TOKENS: "32"
+  SCORE_MAX_WORKERS: "128"
+  SCORE_MAX_WORKERS_PER_OWNER: "8"
+  TEACHER_FORCED_BATCH_SIZE: "8"
+  SCORE_JOB_ORDER: owner_round_robin
+  EXPORT_INTERVAL: "16"
+  PROBE_INTERVAL: "16"
+  PROBE_TEMPERATURE: "0.9"
+  PROBE_N: "1"
+  LORA_RANK: "4"
+  LORA_ALPHA: "4"
+  WANDB_PROJECT: zorl
+  WANDB_NAME: ZORL-WORDLE-015
+  WANDB_GROUP: ZORL-WORDLE-015
+  WANDB_JOB_TYPE: zorl-standalone-wordle
+score_gates:
+  expected_total: 128
+  min_steps: 32
+  min_update_norm_positive_rows: 16
+  weak_exact_gain: 1
+  promote_exact_gain: 2
+  strong_exact_gain: 4
+  weak_reward_gain: 0.001
+  promote_reward_gain: 0.003
+  strong_reward_gain: 0.008
+notes:
+  - Relaunch of ZORL-WORDLE-014 with the chunked-SGMV expand grid_z OOB fix +
+    grow-on-demand MoE-LoRA buffers, and the updated OPSD teacher-forced reward
+    (wordle.py hinted_cot trace, working tree).
+  - Score config bumped to per_owner=8 / batch=8 (C*S=64, fused 15232 tok =
+    121856 dispatched > 65535) — this was the config run-014's notes flagged as
+    "8 concurrent restarted the workers"; it is the §3d crash and is now fixed.
+    C*S=64 stays well under the ~30k-token fused-prefill OOM edge.
+  - SCORE_MAX_WORKERS=128 so 16 owners x per_owner=8 are actually realized (64
+    only gave 4/owner).
+  - Requires the restarted zorl-ar-sglang pool (fix picked up via PYTHONPATH) with
+    the §3b serialization guards dropped (CUDA_LAUNCH_BLOCKING / SGLANG_DEBUG_SHARED_OUTER
+    / --disable-overlap-schedule).

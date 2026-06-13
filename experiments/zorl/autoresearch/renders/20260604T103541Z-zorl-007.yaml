@@ -1,0 +1,280 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: zorl-ar-zorl-007-
+  labels:
+    experiment-group: zorl
+    autoresearch-id: zorl-007
+    app: zorl-ar-zorl-007
+  annotations:
+    autoresearch.together.ai/id: ZORL-007
+    autoresearch.together.ai/rendered_utc: '2026-06-04T10:35:41Z'
+    autoresearch.together.ai/candidate: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/candidates/ZORL-007-countdown-validity-tilted-lrshrink.yaml
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: zorl-ar-zorl-007
+        team: turbo
+        experiment-group: zorl
+        experiment-variant: countdown-30b-trainer
+        autoresearch-id: zorl-007
+    spec:
+      restartPolicy: Never
+      priorityClassName: normal
+      runtimeClassName: nvidia
+      hostIPC: true
+      hostNetwork: false
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        node-group: default
+        node-pool: compute
+      tolerations:
+      - key: node-group
+        operator: Equal
+        value: default
+        effect: NoSchedule
+      volumes:
+      - name: shared
+        persistentVolumeClaim:
+          claimName: shared-data
+      - name: workspace-home
+        persistentVolumeClaim:
+          claimName: home-apanda
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 64Gi
+      containers:
+      - name: trainer
+        image: nvcr.io/nvidia/pytorch:26.02-py3
+        workingDir: /workspace/home/xorl-apanda-dev-zorl-consolidated
+        securityContext:
+          privileged: true
+        env:
+        - name: HOME
+          value: "/workspace/home"
+        - name: HF_HOME
+          value: "/shared/huggingface"
+        - name: HF_HUB_DISABLE_XET
+          value: "1"
+        - name: HF_HUB_OFFLINE
+          value: "1"
+        - name: TRANSFORMERS_CACHE
+          value: "/shared/huggingface/transformers"
+        - name: TRANSFORMERS_OFFLINE
+          value: "1"
+        - name: TOKENIZERS_PARALLELISM
+          value: "false"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "expandable_segments:True"
+        - name: NCCL_IB_DISABLE
+          value: "0"
+        - name: NCCL_NET_GDR_LEVEL
+          value: "2"
+        - name: NCCL_IB_HCA
+          value: "mlx5"
+        - name: NCCL_SOCKET_IFNAME
+          value: "^lo,docker"
+        - name: NCCL_DEBUG
+          value: "WARN"
+        - name: AUTORESEARCH_ID
+          value: "ZORL-007"
+        - name: AUTORESEARCH_CANDIDATE
+          value: "/home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/candidates/ZORL-007-countdown-validity-tilted-lrshrink.yaml"
+        - name: RESULT_ROOT
+          value: "/workspace/home/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-007"
+        - name: INFER_URL
+          value: "http://zorl-ar-sglang-047.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-117.apanda.svc.cluster.local:30000\
+            \ http://zorl-ar-sglang-001.apanda.svc.cluster.local:30000"
+        - name: REWARD_INFER_URL
+          value: "http://zorl-ar-smg.apanda.svc.cluster.local:30000"
+        - name: TRAINER_MODE
+          value: "zorl"
+        - name: STEPS
+          value: "64"
+        - name: LEARNING_RATE
+          value: "5.4e-3"
+        - name: LORA_RANK
+          value: "4"
+        - name: LORA_ALPHA
+          value: "4"
+        - name: ZORL_NUM_PAIRS
+          value: "8"
+        - name: ZORL_ROLLOUTS_PER_PUZZLE
+          value: "4"
+        - name: ZORL_ROLLOUT_TEMPERATURE
+          value: "0.6"
+        - name: ZORL_B_SIGMA
+          value: "0.08"
+        - name: ZORL_REFRESH_INTERVAL
+          value: "0"
+        - name: ZORL_SCORE_BATCH_SIZE
+          value: "128"
+        - name: ZORL_SCORE_MAX_WORKERS
+          value: "4"
+        - name: ZORL_SGD_MOMENTUM
+          value: "0.0"
+        - name: ZORL_REWARD_MODE
+          value: "rollout"
+        - name: ZORL_ROLLOUT_EXACT_BONUS
+          value: "1.0"
+        - name: ZORL_ROLLOUT_VALID_WEIGHT
+          value: "0.30"
+        - name: ZORL_ROLLOUT_VALUE_WEIGHT
+          value: "0.05"
+        - name: ZORL_PARENT_PROBE_INTERVAL
+          value: "8"
+        - name: SYNC_QUANT
+          value: "none"
+        volumeMounts:
+        - name: shared
+          mountPath: /shared
+        - name: workspace-home
+          mountPath: /workspace/home
+        - name: shm
+          mountPath: /dev/shm
+        resources:
+          requests:
+            nvidia.com/gpu: 4
+            cpu: '16'
+            memory: 192Gi
+          limits:
+            nvidia.com/gpu: 4
+            cpu: '32'
+            memory: 384Gi
+        command:
+        - /bin/bash
+        - -lc
+        - "set -euo pipefail\n\nREPO_ROOT=/workspace/home/xorl-apanda-dev-zorl-consolidated\n\
+          XORL_PYTHON=/workspace/home/xorl-internal/.venv/bin/python\nCONFIG_PATH=\"\
+          ${CONFIG_PATH:-${REPO_ROOT}/experiments/zorl/configs/qwen3_coder_30b_a3b_zorl_password.yaml}\"\
+          \nSCRIPT_PATH=\"${SCRIPT_PATH:-${REPO_ROOT}/experiments/zorl/run_countdown_test.py}\"\
+          \nRESULT_ROOT=\"${RESULT_ROOT:-${REPO_ROOT}/experiments/zorl/results/qwen3_coder_30b_a3b_zorl_password}\"\
+          \n\nAPI_PORT=\"${API_PORT:-26040}\"\nWORKER_PORT=\"${WORKER_PORT:-25596}\"\
+          \nMASTER_PORT=\"${MASTER_PORT:-29610}\"\n\nMODEL_NAME=\"${MODEL_NAME:-Qwen/Qwen3-30B-A3B-Instruct-2507}\"\
+          \nTRAINER_MODE=\"${TRAINER_MODE:-zorl}\"\nTRAIN_MODEL_ID=\"${TRAIN_MODEL_ID:-countdown-test}\"\
+          \nSERVED_MODEL_NAME=\"${SERVED_MODEL_NAME:-${MODEL_NAME}}\"\n\n# Winning\
+          \ recipe (rank=4 MoE LoRA, TF, lr=1e-1, momentum=0.9, pairs=64, gens=48).\n\
+          STEPS=\"${STEPS:-64}\"\nLEARNING_RATE=\"${LEARNING_RATE:-1e-2}\"\nLR_SCHEDULE=\"\
+          ${LR_SCHEDULE:-constant}\"\nLR_MIN_RATIO=\"${LR_MIN_RATIO:-0.01}\"\nWARMUP_STEPS=\"\
+          ${WARMUP_STEPS:-0}\"\nLOG_INTERVAL=\"${LOG_INTERVAL:-4}\"\nTRAIN_STARTUP_TIMEOUT=\"\
+          ${TRAIN_STARTUP_TIMEOUT:-1800}\"\nINFER_STARTUP_TIMEOUT=\"${INFER_STARTUP_TIMEOUT:-1800}\"\
+          \nSYNC_WAIT_TIMEOUT=\"${SYNC_WAIT_TIMEOUT:-600}\"\n# Modal-style: fewer\
+          \ perturbations, deeper evaluation. 8 antithetic\n# pairs = 16 perturbations\
+          \ \xD7 (8 puzzles \xD7 8 rollouts) = 1024 evals\n# total per gen, but per-perturbation\
+          \ reward has 1/64 granularity\n# vs the previous 1/8 \u2014 8\xD7 cleaner\
+          \ ES gradient signal.\nZORL_NUM_PAIRS=\"${ZORL_NUM_PAIRS:-8}\"\nZORL_ROLLOUTS_PER_PUZZLE=\"\
+          ${ZORL_ROLLOUTS_PER_PUZZLE:-4}\"\nZORL_ROLLOUT_TEMPERATURE=\"${ZORL_ROLLOUT_TEMPERATURE:-0.6}\"\
+          \nZORL_B_SIGMA=\"${ZORL_B_SIGMA:-0.1}\"\nZORL_REFRESH_INTERVAL=\"${ZORL_REFRESH_INTERVAL:-0}\"\
+          \nZORL_SEED=\"${ZORL_SEED:-1234}\"\nZORL_SCORE_BATCH_SIZE=\"${ZORL_SCORE_BATCH_SIZE:-128}\"\
+          \nZORL_SCORE_MAX_WORKERS=\"${ZORL_SCORE_MAX_WORKERS:-4}\"\nZORL_SGD_MOMENTUM=\"\
+          ${ZORL_SGD_MOMENTUM:-0.0}\"\nZORL_OPTIMIZER=\"${ZORL_OPTIMIZER:-sgd}\"\n\
+          # Binary verifiable reward for letter counting: only the exact\n# bonus\
+          \ contributes (prefix/char weights are zeroed below at\n# invocation), so\
+          \ the per-candidate reward is {0, 1}.\nZORL_REWARD_MODE=\"${ZORL_REWARD_MODE:-rollout}\"\
+          \nZORL_INFERENCE_API_FORMAT=\"${ZORL_INFERENCE_API_FORMAT:-}\"\nZORL_ROLLOUT_EXACT_BONUS=\"\
+          ${ZORL_ROLLOUT_EXACT_BONUS:-1.0}\"\nZORL_ROLLOUT_PREFIX_WEIGHT=\"${ZORL_ROLLOUT_PREFIX_WEIGHT:-0}\"\
+          \nZORL_ROLLOUT_CHAR_WEIGHT=\"${ZORL_ROLLOUT_CHAR_WEIGHT:-0}\"\nZORL_ROLLOUT_VALID_WEIGHT=\"\
+          ${ZORL_ROLLOUT_VALID_WEIGHT:-0}\"\nZORL_ROLLOUT_VALUE_WEIGHT=\"${ZORL_ROLLOUT_VALUE_WEIGHT:-0}\"\
+          \nZORL_ROLLOUT_EXTRA_TOKENS=\"${ZORL_ROLLOUT_EXTRA_TOKENS:-24}\"\nZORL_ROLLOUT_MAX_NEW_TOKENS=\"\
+          ${ZORL_ROLLOUT_MAX_NEW_TOKENS:-48}\"\nZORL_MAX_UPDATE_NORM=\"${ZORL_MAX_UPDATE_NORM:-}\"\
+          \nZORL_ADAPTIVE_UPDATE_NORM=\"${ZORL_ADAPTIVE_UPDATE_NORM:-0}\"\nZORL_ADAPTIVE_UPDATE_NORM_REFERENCE=\"\
+          ${ZORL_ADAPTIVE_UPDATE_NORM_REFERENCE:-0.25}\"\nZORL_ADAPTIVE_UPDATE_NORM_MIN_SCALE=\"\
+          ${ZORL_ADAPTIVE_UPDATE_NORM_MIN_SCALE:-0.15}\"\nZORL_ADAPTIVE_UPDATE_NORM_MAX_SCALE=\"\
+          ${ZORL_ADAPTIVE_UPDATE_NORM_MAX_SCALE:-1.0}\"\nZORL_PARENT_PROBE_INTERVAL=\"\
+          ${ZORL_PARENT_PROBE_INTERVAL:-8}\"\nLORA_RANK=\"${LORA_RANK:-4}\"\nLORA_ALPHA=\"\
+          ${LORA_ALPHA:-${LORA_RANK}}\"\nSYNC_QUANT=\"${SYNC_QUANT:-none}\"\nINIT_WEIGHTS_PATH=\"\
+          ${INIT_WEIGHTS_PATH:-}\"\n\n# Direct SGLang workers are used for adapter\
+          \ registration, native\n# ZORL control, and weight sync. REWARD_INFER_URL\
+          \ may point at SMG\n# for generation/scoring traffic.\nINFER_URL=\"${INFER_URL:-http://zorl-30b-password-sglang.apanda.svc.cluster.local:30000}\"\
+          \nREWARD_INFER_URL=\"${REWARD_INFER_URL:-}\"\nread -r -a INFER_URL_ARGS\
+          \ <<< \"${INFER_URL}\"\nREWARD_INFER_URL_ARGS=()\nif [[ -n \"${REWARD_INFER_URL}\"\
+          \ ]]; then\n  read -r -a REWARD_INFER_URL_ARGS <<< \"${REWARD_INFER_URL}\"\
+          \nfi\nif [[ -z \"${ZORL_INFERENCE_API_FORMAT}\" ]]; then\n  if [[ ${#REWARD_INFER_URL_ARGS[@]}\
+          \ -gt 0 ]]; then\n    ZORL_INFERENCE_API_FORMAT=\"chat_completions\"\n \
+          \ else\n    ZORL_INFERENCE_API_FORMAT=\"generate\"\n  fi\nfi\n\nRUN_ID=\"\
+          $(date -u +%Y%m%dT%H%M%SZ)-${HOSTNAME}\"\nRUN_DIR=\"${RESULT_ROOT}/${RUN_ID}-trainer-only\"\
+          \nmkdir -p \"${RUN_DIR}\"\n\nexport PYTHONPATH=\"${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}\"\
+          \nexport PATH=\"/workspace/home/xorl-internal/.venv/bin:${PATH}\"\n\nexec\
+          \ > >(tee -a \"${RUN_DIR}/job.log\") 2>&1\n\nTRAINER_GPUS=\"${TRAINER_GPUS:-4}\"\
+          \nCUDA_VISIBLE_DEVICES=\"$(\n  nvidia-smi --query-gpu=index,memory.free\
+          \ --format=csv,noheader,nounits \\\n    | sort -t, -k2,2 -nr -k1,1 -n \\\
+          \n    | cut -d, -f1 \\\n    | head -n \"${TRAINER_GPUS}\" \\\n    | paste\
+          \ -sd,\n)\"\nif [[ \"$(tr -cd ',' <<< \"${CUDA_VISIBLE_DEVICES}\" | wc -c)\"\
+          \ -ne \"$((TRAINER_GPUS - 1))\" ]]; then\n  echo \"failed_to_select_${TRAINER_GPUS}_gpus=${CUDA_VISIBLE_DEVICES}\"\
+          \ >&2\n  exit 1\nfi\nexport CUDA_VISIBLE_DEVICES\n\nMASTER_ADDRESS=\"$(hostname\
+          \ -i | awk '{print $1}')\"\n\necho \"selected_cuda_visible_devices=${CUDA_VISIBLE_DEVICES}\"\
+          \necho \"run_id=${RUN_ID}\"\necho \"run_dir=${RUN_DIR}\"\necho \"master_address=${MASTER_ADDRESS}\"\
+          \necho \"infer_url=${INFER_URL}\"\necho \"reward_infer_url=${REWARD_INFER_URL:-<direct>}\"\
+          \necho \"config_path=${CONFIG_PATH}\"\necho \"recipe: lora_rank=${LORA_RANK}\
+          \ lr=${LEARNING_RATE} momentum=${ZORL_SGD_MOMENTUM} sigma=${ZORL_B_SIGMA}\
+          \ pairs=${ZORL_NUM_PAIRS} steps=${STEPS} reward_mode=${ZORL_REWARD_MODE}\"\
+          \necho \"zorl_inference_api_format=${ZORL_INFERENCE_API_FORMAT}\"\necho\
+          \ \"git_head_zorl=$(git -C \"${REPO_ROOT}\" rev-parse HEAD 2>/dev/null ||\
+          \ echo unknown)\"\necho \"git_head_xorl=$(git -C /workspace/home/xorl-internal\
+          \ rev-parse HEAD 2>/dev/null || echo unknown)\"\n\n# Wait for direct SGLang\
+          \ workers before starting the trainer.\nfor endpoint in \"${INFER_URL_ARGS[@]}\"\
+          ; do\n  echo \"Waiting for direct SGLang at ${endpoint}...\"\n  for i in\
+          \ $(seq 1 180); do\n    if curl -sf \"${endpoint}/health_generate\" >/dev/null\
+          \ 2>&1 || \\\n       curl -sf \"${endpoint}/health\"          >/dev/null\
+          \ 2>&1 || \\\n       curl -sf \"${endpoint}/v1/models\"       >/dev/null\
+          \ 2>&1 || \\\n       curl -sf \"${endpoint}/get_model_info\"  >/dev/null\
+          \ 2>&1; then\n      echo \"Direct SGLang ${endpoint} reachable after ${i}\
+          \ polls.\"\n      break\n    fi\n    sleep 10\n  done\ndone\n\n# SMG /health\
+          \ can be OK before workers are registered; wait for a\n# model-bearing /v1/models\
+          \ response when a routed reward URL is set.\nfor endpoint in \"${REWARD_INFER_URL_ARGS[@]}\"\
+          ; do\n  echo \"Waiting for routed reward SGLang at ${endpoint}...\"\n  for\
+          \ i in $(seq 1 180); do\n    if curl -sf \"${endpoint}/v1/models\" 2>/dev/null\
+          \ | grep -q \"Qwen\"; then\n      echo \"Routed reward endpoint ${endpoint}\
+          \ registered a model after ${i} polls.\"\n      break\n    fi\n    sleep\
+          \ 10\n  done\ndone\n\n# --- Start xorl training server on 4 GPUs (FSDP shard=4)\
+          \ ---\necho \"Starting training server on CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}...\"\
+          \n\"${XORL_PYTHON}\" -u -m xorl.server.launcher \\\n  --mode auto \\\n \
+          \ --config \"${CONFIG_PATH}\" \\\n  --api-port \"${API_PORT}\" \\\n  --worker-address\
+          \ \"tcp://0.0.0.0:${WORKER_PORT}\" \\\n  --master-port \"${MASTER_PORT}\"\
+          \ \\\n  --log-level INFO \\\n  --server.output_dir \"${RUN_DIR}/server_output\"\
+          \ \\\n  --server.worker_bind_address \"tcp://0.0.0.0:${WORKER_PORT}\" \\\
+          \n  --server.max_sampling_loras 128 \\\n  > \"${RUN_DIR}/server.log\" 2>&1\
+          \ &\nTRAINER_PID=$!\n\ncleanup() {\n  echo \"Cleaning up...\"\n  if kill\
+          \ -0 \"${TRAINER_PID}\" >/dev/null 2>&1; then\n    kill \"${TRAINER_PID}\"\
+          \ || true\n  fi\n  wait || true\n}\ntrap cleanup EXIT\n\nEXTRA_ARGS=()\n\
+          if [[ -n \"${INIT_WEIGHTS_PATH}\" ]]; then\n  EXTRA_ARGS+=(--init-weights-path\
+          \ \"${INIT_WEIGHTS_PATH}\")\nfi\nif [[ ${#REWARD_INFER_URL_ARGS[@]} -gt\
+          \ 0 ]]; then\n  EXTRA_ARGS+=(--reward-infer-url \"${REWARD_INFER_URL_ARGS[@]}\"\
+          )\nfi\nif [[ -n \"${ZORL_MAX_UPDATE_NORM}\" ]]; then\n  EXTRA_ARGS+=(--zorl-max-update-norm\
+          \ \"${ZORL_MAX_UPDATE_NORM}\")\nfi\ncase \"${ZORL_ADAPTIVE_UPDATE_NORM}\"\
+          \ in\n  1|true|TRUE|yes|YES)\n    EXTRA_ARGS+=(\n      --zorl-adaptive-update-norm\n\
+          \      --zorl-adaptive-update-norm-reference \"${ZORL_ADAPTIVE_UPDATE_NORM_REFERENCE}\"\
+          \n      --zorl-adaptive-update-norm-min-scale \"${ZORL_ADAPTIVE_UPDATE_NORM_MIN_SCALE}\"\
+          \n      --zorl-adaptive-update-norm-max-scale \"${ZORL_ADAPTIVE_UPDATE_NORM_MAX_SCALE}\"\
+          \n    )\n    ;;\nesac\n\necho \"Running ZORL password test...\"\n\"${XORL_PYTHON}\"\
+          \ -u \"${SCRIPT_PATH}\" \\\n  --model \"${MODEL_NAME}\" \\\n  --trainer-mode\
+          \ \"${TRAINER_MODE}\" \\\n  --steps \"${STEPS}\" \\\n  --lr \"${LEARNING_RATE}\"\
+          \ \\\n  --lr-schedule \"${LR_SCHEDULE}\" \\\n  --lr-min-ratio \"${LR_MIN_RATIO}\"\
+          \ \\\n  --warmup-steps \"${WARMUP_STEPS}\" \\\n  --train-url \"http://127.0.0.1:${API_PORT}\"\
+          \ \\\n  --infer-url \"${INFER_URL_ARGS[@]}\" \\\n  --master-address \"${MASTER_ADDRESS}\"\
+          \ \\\n  --train-model-id \"${TRAIN_MODEL_ID}\" \\\n  --served-model-name\
+          \ \"${SERVED_MODEL_NAME}\" \\\n  --sync-quant \"${SYNC_QUANT}\" \\\n  --log-interval\
+          \ \"${LOG_INTERVAL}\" \\\n  --train-startup-timeout \"${TRAIN_STARTUP_TIMEOUT}\"\
+          \ \\\n  --infer-startup-timeout \"${INFER_STARTUP_TIMEOUT}\" \\\n  --sync-wait-timeout\
+          \ \"${SYNC_WAIT_TIMEOUT}\" \\\n  --lora-rank \"${LORA_RANK}\" \\\n  --lora-alpha\
+          \ \"${LORA_ALPHA}\" \\\n  --zorl-b-sigma \"${ZORL_B_SIGMA}\" \\\n  --zorl-num-pairs\
+          \ \"${ZORL_NUM_PAIRS}\" \\\n  --zorl-refresh-interval \"${ZORL_REFRESH_INTERVAL}\"\
+          \ \\\n  --zorl-seed \"${ZORL_SEED}\" \\\n  --zorl-score-batch-size \"${ZORL_SCORE_BATCH_SIZE}\"\
+          \ \\\n  --zorl-score-max-workers \"${ZORL_SCORE_MAX_WORKERS}\" \\\n  --zorl-sgd-momentum\
+          \ \"${ZORL_SGD_MOMENTUM}\" \\\n  --zorl-optimizer \"${ZORL_OPTIMIZER}\"\
+          \ \\\n  --zorl-reward-mode \"${ZORL_REWARD_MODE}\" \\\n  --zorl-inference-api-format\
+          \ \"${ZORL_INFERENCE_API_FORMAT}\" \\\n  --zorl-rollout-exact-bonus \"${ZORL_ROLLOUT_EXACT_BONUS}\"\
+          \ \\\n  --zorl-rollout-prefix-weight \"${ZORL_ROLLOUT_PREFIX_WEIGHT}\" \\\
+          \n  --zorl-rollout-char-weight \"${ZORL_ROLLOUT_CHAR_WEIGHT}\" \\\n  --zorl-rollout-valid-weight\
+          \ \"${ZORL_ROLLOUT_VALID_WEIGHT}\" \\\n  --zorl-rollout-value-weight \"\
+          ${ZORL_ROLLOUT_VALUE_WEIGHT}\" \\\n  --zorl-rollout-extra-tokens \"${ZORL_ROLLOUT_EXTRA_TOKENS}\"\
+          \ \\\n  --zorl-rollout-max-new-tokens \"${ZORL_ROLLOUT_MAX_NEW_TOKENS}\"\
+          \ \\\n  --zorl-rollouts-per-puzzle \"${ZORL_ROLLOUTS_PER_PUZZLE}\" \\\n\
+          \  --zorl-rollout-temperature \"${ZORL_ROLLOUT_TEMPERATURE}\" \\\n  --zorl-parent-probe-interval\
+          \ \"${ZORL_PARENT_PROBE_INTERVAL}\" \\\n  \"${EXTRA_ARGS[@]}\" \\\n  2>&1\
+          \ | tee \"${RUN_DIR}/letter_count_test.log\"\n\necho \"Done. Results in\
+          \ ${RUN_DIR}\"\n"

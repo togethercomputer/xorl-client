@@ -1,0 +1,66 @@
+id: MULTOPSD-EGGROLL-30B
+kind: standalone_mult_nofiller_opsd_kl_fullvocab_singleshot_es
+base_manifest: k8s/qwen3-coder-30b-a3b-zorl-standalone-client-job.yaml
+container: zorl-client
+score_source: standalone_zorl_log
+result_root: experiments/zorl/results/zorl_autoresearch/MULTOPSD-EGGROLL-30B
+env:
+  RESULT_ROOT: /workspace/home/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/MULTOPSD-EGGROLL-30B
+  MODEL_PATH: Qwen/Qwen3-30B-A3B-Instruct-2507
+  ADAPTER_DIR: /shared/zorl/init-adapters/qwen3-30b-a3b-r16-eggroll
+  INFER_URL: http://zorl-ar-sglang-0.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-1.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-2.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-3.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-4.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-5.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-6.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-7.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-8.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-9.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-10.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-11.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-12.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-13.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-14.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-15.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000
+  POPULATION_SHARDING: pair_shard
+  NUM_SHARDS: auto
+  PAIRS_PER_SHARD: "5"
+  CANDIDATE_ROUTING: owner
+  PRELOAD_CANDIDATES: "0"
+  TASK: mult
+  SCORE_MODE: opsd_kl_full
+  OPSD_KL_MODE: forward_kl_full
+  OPSD_KL_VOCAB_CHUNK_SIZE: "32768"
+  STEPS: "100000"
+  MAX_RUNTIME_SECONDS: "43200"
+  NUM_PAIRS: "80"
+  B_SIGMA: "0.05"
+  LEARNING_RATE: "0.01"
+  MAX_UPDATE_NORM: "20000"
+  PERTURBATION_MODE: b_only
+  ELITIST_ROLLBACK: "0"   # EggRoll merge folds into base -> LoRA snapshot cannot capture it
+  MERGE_EVERY_STEPS: "1"   # EggRoll: fold parent LoRA -> base + re-init LoRA-A every step (full-rank accumulation)
+  SEED: "9234"
+  TRAIN_SIZE: "8"
+  TRAIN_POOL_SIZE: "512"
+  RESAMPLE_TRAIN_EACH_STEP: "1"
+  EVAL_SIZE: "128"
+  ROLLOUTS_PER_PUZZLE: "1"
+  ROLLOUT_TEMPERATURE: "0.7"
+  ROLLOUT_MAX_NEW_TOKENS: "64"
+  SCORE_MAX_WORKERS: "512"
+  SCORE_MAX_WORKERS_PER_OWNER: "16"
+  SCORE_JOB_ORDER: owner_round_robin
+  EXPORT_INTERVAL: "32"
+  PROBE_INTERVAL: "10"
+  PROBE_TEMPERATURE: "0.0"
+  PROBE_N: "1"
+  LORA_RANK: "16"
+  LORA_ALPHA: "16"
+  WANDB_PROJECT: zorl
+  WANDB_NAME: MULTOPSD-EGGROLL-30B
+  WANDB_GROUP: MULTOPSD-EGGROLL-30B
+  WANDB_JOB_TYPE: zorl-standalone-mult
+score_gates:
+  expected_total: 128
+  min_steps: 10
+  min_update_norm_positive_rows: 16
+  weak_exact_gain: 1
+  promote_exact_gain: 2
+  strong_exact_gain: 4
+  weak_reward_gain: 0.001
+  promote_reward_gain: 0.003
+  strong_reward_gain: 0.008
+notes:
+  - EggRoll-ES port of the no-filler OPSD (single-shot) 4x4-multiplication recipe to Qwen3-30B-A3B-Instruct-2507 (the "for now" model while the Qwen3.6-35B shared-outer forward HANG is debugged by the dispatched agent - see SHARED_OUTER_LORA_MOE_35B_FORWARD_HANG.md). FIRST PURPOSE of this run is to answer "does the shared-outer (attention+experts) LoRA-MoE forward serve on the 30B?" - watch the cold probe / first LoRA /generate return (not hang -> watchdog -> pool recycle).
+  - Attention + EXPERTS LoRA (shared_outer / hybrid_shared): init_zorl_adapter auto-detects MoE and emits mlp.experts.{w1,w2,w3} shared_outer tensors plus self_attn qkv/o. rank/alpha 16. Cold from a fresh adapter at qwen3-30b-a3b-r16-eggroll.
+  - EggRoll: PERTURBATION_MODE=b_only, MERGE_EVERY_STEPS=1 (fold parent LoRA into base + re-init LoRA-A each step so the accumulated update is full-rank, not rank-capped), ELITIST_ROLLBACK=0 (snapshot can't capture a merged base). B_SIGMA=0.05, LEARNING_RATE=0.01.
+  - Pool: 16x zorl-ar-sglang (TP=2, 30B) at max-lora-rank 16, mem-fraction 0.72, max-loaded-loras 16 (rank-16 shared-outer-MoE pool is ~230 MB/rank/lora; 80 loras OOMs the KV cache). PAIRS_PER_SHARD=5 x 16 replicas = 80 pairs -> 10 candidates/replica + parent = 11 <= 16 loaded-loras cap.
+  - Only ONE ZORL client can run on these pools at a time. Cold base-30B direct accuracy is ~0.03 (large room to climb). PROBE_TEMPERATURE=0.0 reads GREEDY direct accuracy every 10 steps.

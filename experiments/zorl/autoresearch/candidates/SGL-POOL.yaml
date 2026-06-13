@@ -1,0 +1,12 @@
+id: SGL-POOL
+kind: sglang_controller
+base_manifest: k8s/qwen3-coder-30b-a3b-zorl-sglang-tp2-shard.yaml
+container: sglang
+k8s:
+  service_name: zorl-ar-sglang-headless
+  app_label: zorl-ar-sglang
+notes:
+  - Sixteen unpinned TP=2 SGLang workers for the ZORL autoresearch SMG pool.
+  - Pods use preferred podAffinity to colocate with existing eval/ZORL work instead of hostname pinning.
+  - Default SGLang caps are max-loaded-loras=80, max-loras-per-batch=64, max-running-requests=64, max-queued-requests=512.
+  - Direct per-replica endpoints are zorl-ar-sglang-{0..15}.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000.

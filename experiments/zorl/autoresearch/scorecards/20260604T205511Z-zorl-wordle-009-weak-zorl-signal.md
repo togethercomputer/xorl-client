@@ -1,0 +1,46 @@
+# ZORL-WORDLE-009 scorecard
+
+- verdict: `weak_zorl_signal`
+- reason: standalone reward_gain=0.0003999999999999993 exact_gain=0.0 passed weak gate
+- result: `experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-009/20260604T205358Z-zorl-ar-zorl-wordle-009-ml97k-qfjfv-wordle/job.log`
+- source: `standalone_zorl_log`
+
+## Metrics
+
+- b_sigma: `0.05`
+- best_candidate_reward_max: `0.0162`
+- best_exact: `0.0`
+- best_probe_after_positive_update: `True`
+- best_probe_step: `1`
+- best_probe_update_norm: `3141.61`
+- best_reward_mean: `0.0093`
+- best_total: `8`
+- candidate_reward_mean_last: `0.0119`
+- cold_exact: `0.0`
+- cold_reward_mean: `0.0089`
+- cold_total: `8`
+- completed_steps: `2`
+- exact_gain: `0.0`
+- fatal_error: `False`
+- infer_url: `http://zorl-ar-sglang-0.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-1.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-2.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-3.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000`
+- learning_rate: `0.01`
+- lora_rank: `4`
+- max_update_norm: `20000`
+- num_pairs: `4`
+- pair_delta_abs_mean: `0.0013`
+- pair_delta_std_last: `0.0037`
+- perturbation_mode: `b_only`
+- planned_steps: `2`
+- probe_rows: `2`
+- result_file: `experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-009/20260604T205358Z-zorl-ar-zorl-wordle-009-ml97k-qfjfv-wordle/job.log`
+- reward_gain: `0.0003999999999999993`
+- run_complete: `True`
+- score_mode: `teacher_forced`
+- seed: `4234`
+- step_rows: `2`
+- task: `wordle`
+- unclipped_update_norm_last: `3142.44`
+- update_clip_scale_last: `1.0`
+- update_norm_last: `3142.44`
+- update_norm_positive_rows: `2`
+- used_pairs_last: `4.0`

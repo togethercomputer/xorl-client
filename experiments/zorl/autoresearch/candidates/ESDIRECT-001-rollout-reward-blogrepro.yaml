@@ -1,0 +1,62 @@
+id: ESDIRECT-001
+kind: standalone_wordle_direct_env_reward_es_blogrepro
+base_manifest: k8s/qwen3-coder-30b-a3b-zorl-standalone-client-job.yaml
+container: zorl-client
+score_source: standalone_zorl_log
+result_root: experiments/zorl/results/zorl_autoresearch/ESDIRECT-001
+env:
+  RESULT_ROOT: /workspace/home/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ESDIRECT-001
+  INFER_URL: http://zorl-ar-sglang-0.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-1.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-2.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-3.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-4.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-5.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-6.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-7.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-8.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-9.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-10.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-11.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-12.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-13.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-14.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-15.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000
+  POPULATION_SHARDING: pair_shard
+  NUM_SHARDS: auto
+  PAIRS_PER_SHARD: "2"
+  CANDIDATE_ROUTING: owner
+  PRELOAD_CANDIDATES: "0"
+  TASK: wordle
+  SCORE_MODE: rollout
+  WORDLE_PROMPT_STYLE: public_reasoning
+  STEPS: "100"
+  MAX_RUNTIME_SECONDS: "43200"
+  NUM_PAIRS: "32"
+  B_SIGMA: "0.01"
+  LEARNING_RATE: "0.01"
+  MAX_UPDATE_NORM: "20000"
+  PERTURBATION_MODE: b_only
+  ELITIST_ROLLBACK: "1"
+  SEED: "9234"
+  TRAIN_SIZE: "8"
+  TRAIN_POOL_SIZE: "512"
+  RESAMPLE_TRAIN_EACH_STEP: "1"
+  EVAL_SIZE: "32"
+  ROLLOUTS_PER_PUZZLE: "1"
+  ROLLOUT_TEMPERATURE: "0.0"
+  ROLLOUT_MAX_NEW_TOKENS: "512"
+  SCORE_MAX_WORKERS: "512"
+  SCORE_MAX_WORKERS_PER_OWNER: "32"
+  SCORE_JOB_ORDER: owner_round_robin
+  EXPORT_INTERVAL: "10"
+  PROBE_INTERVAL: "10"
+  PROBE_TEMPERATURE: "0.0"
+  PROBE_N: "1"
+  LORA_RANK: "4"
+  LORA_ALPHA: "4"
+  WANDB_PROJECT: zorl
+  WANDB_NAME: ESDIRECT-001
+  WANDB_GROUP: ESDIRECT-001
+  WANDB_JOB_TYPE: zorl-standalone-wordle
+score_gates:
+  expected_total: 32
+  min_steps: 10
+  min_update_norm_positive_rows: 8
+  weak_exact_gain: 1
+  promote_exact_gain: 2
+  strong_exact_gain: 4
+  weak_reward_gain: 0.01
+  promote_reward_gain: 0.05
+  strong_reward_gain: 0.1
+notes:
+  - Reproduce the ES-blog Wordle result (Evolution as a Comparable Strategy to RL) on our infra.
+  - DIRECT ENV REWARD via ES, NOT the OPSD-KL teacher (which taught format-not-solving). score_mode=rollout means each candidate plays the multi-turn game (rollout_completion) and the ES fitness is the composite reward (0.4 solved + 0.3 format + 0.2 info_gain + 0.1 turn_bonus). This is the blog setup; it tests whether our ES machinery learns Wordle when the reward rewards actual SOLVING/PLAY (it should, per the blog).
+  - Blog hyperparams matched. B_SIGMA=0.01 (vs our prior 0.05), LEARNING_RATE=0.01, ROLLOUT_TEMPERATURE=0.0 (greedy rollouts since for ES the perturbation is the explorer), NUM_PAIRS=32 (~group_size 64), ~100 steps. Deltas - our model is Qwen3-30B-A3B-Instruct (blog used Qwen3-1.7B-Wordle-SFT), stronger and not Wordle-SFT'd but already decent format; TRAIN_SIZE=8 (blog 16) for faster iteration; public_reasoning student prompt.
+  - WATCH reward_mean + probe exact_rate/format/partial CLIMBING (blog reward 0.51 to 0.885, format 0.48 to 0.80, wins to ~20-25%). If our ES climbs here, the ES works and the OPSD-KL objective was the blocker. If flat too, the ES machinery needs scrutiny.
+  - score_mode=rollout is HEAVY (every candidate plays full games, 64 cand x 8 ex x ~6 turns). Tune NUM_PAIRS/TRAIN_SIZE from observed t_score. On the fixed-kernel pool (CANDIDATE_ROUTING=owner, no SMG).

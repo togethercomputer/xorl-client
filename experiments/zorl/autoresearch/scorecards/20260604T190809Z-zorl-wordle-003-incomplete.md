@@ -1,0 +1,41 @@
+# ZORL-WORDLE-003 scorecard
+
+- verdict: `incomplete`
+- reason: completed_steps=2 < 3
+- result: `experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-003/20260604T190538Z-zorl-ar-zorl-wordle-003-zspcv-nsfls-wordle/job.log`
+- source: `standalone_zorl_log`
+
+## Metrics
+
+- b_sigma: `0.05`
+- best_candidate_reward_max: `0.3421`
+- best_exact: `0.0`
+- best_reward_mean: `0.289`
+- best_total: `16`
+- candidate_reward_mean_last: `0.2863`
+- cold_exact: `0.0`
+- cold_reward_mean: `0.0552`
+- cold_total: `16`
+- completed_steps: `2`
+- exact_gain: `0.0`
+- fatal_error: `False`
+- infer_url: `http://zorl-ar-sglang-117.apanda.svc.cluster.local:30000`
+- learning_rate: `0.01`
+- lora_rank: `4`
+- max_update_norm: `20000`
+- num_pairs: `8`
+- pair_delta_abs_mean: `0.00145`
+- pair_delta_std_last: `0.0048`
+- perturbation_mode: `b_only`
+- planned_steps: `6`
+- probe_rows: `2`
+- result_file: `experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-003/20260604T190538Z-zorl-ar-zorl-wordle-003-zspcv-nsfls-wordle/job.log`
+- reward_gain: `0.23379999999999998`
+- seed: `3234`
+- step_rows: `2`
+- task: `wordle`
+- unclipped_update_norm_last: `2222.43`
+- update_clip_scale_last: `1.0`
+- update_norm_last: `2222.43`
+- update_norm_positive_rows: `2`
+- used_pairs_last: `8.0`

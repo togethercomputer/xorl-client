@@ -1,0 +1,66 @@
+id: MTOPSD-020
+kind: standalone_wordle_opsd_kl_fullvocab_multiturn_enumerate_cot_teacher
+base_manifest: k8s/qwen3-coder-30b-a3b-zorl-standalone-client-job.yaml
+container: zorl-client
+score_source: standalone_zorl_log
+result_root: experiments/zorl/results/zorl_autoresearch/MTOPSD-020
+env:
+  RESULT_ROOT: /workspace/home/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/MTOPSD-020
+  INFER_URL: http://zorl-ar-sglang-0.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-1.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-2.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-3.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-4.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-5.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-6.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-7.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-8.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-9.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-10.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-11.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-12.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-13.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-14.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-15.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000
+  POPULATION_SHARDING: pair_shard
+  NUM_SHARDS: auto
+  PAIRS_PER_SHARD: "32"
+  CANDIDATE_ROUTING: owner
+  PRELOAD_CANDIDATES: "0"
+  TASK: wordle
+  SCORE_MODE: opsd_kl_full
+  OPSD_MULTI_TURN: "1"
+  WORDLE_PROMPT_STYLE: enumerate
+  WORDLE_TEACHER_PROMPT_STYLE: enumerate
+  OPSD_KL_MODE: forward_kl_full
+  OPSD_KL_VOCAB_CHUNK_SIZE: "32768"
+  STEPS: "100000"
+  MAX_RUNTIME_SECONDS: "43200"
+  NUM_PAIRS: "512"
+  B_SIGMA: "0.05"
+  LEARNING_RATE: "0.01"
+  MAX_UPDATE_NORM: "20000"
+  PERTURBATION_MODE: b_only
+  ELITIST_ROLLBACK: "1"
+  SEED: "9234"
+  TRAIN_SIZE: "2"
+  TRAIN_POOL_SIZE: "512"
+  RESAMPLE_TRAIN_EACH_STEP: "1"
+  EVAL_SIZE: "48"
+  ROLLOUTS_PER_PUZZLE: "1"
+  ROLLOUT_TEMPERATURE: "0.7"
+  ROLLOUT_MAX_NEW_TOKENS: "224"
+  SCORE_MAX_WORKERS: "512"
+  SCORE_MAX_WORKERS_PER_OWNER: "16"
+  SCORE_JOB_ORDER: owner_round_robin
+  EXPORT_INTERVAL: "32"
+  PROBE_INTERVAL: "32"
+  PROBE_TEMPERATURE: "0.9"
+  PROBE_N: "1"
+  LORA_RANK: "4"
+  LORA_ALPHA: "4"
+  WANDB_PROJECT: zorl
+  WANDB_NAME: MTOPSD-020
+  WANDB_GROUP: MTOPSD-020
+  WANDB_JOB_TYPE: zorl-standalone-wordle
+score_gates:
+  expected_total: 128
+  min_steps: 32
+  min_update_norm_positive_rows: 16
+  weak_exact_gain: 1
+  promote_exact_gain: 2
+  strong_exact_gain: 4
+  weak_reward_gain: 0.001
+  promote_reward_gain: 0.003
+  strong_reward_gain: 0.008
+notes:
+  - ENUMERATE-CoT teacher distillation. The teacher (enumerate style) keeps the privileged target but demonstrates PUBLIC candidate-narrowing the student can reproduce - it lists the consistent words, cites the discriminating feedback constraint, then lands on the target. Probe on base 30B - leak 0.0, solve 0.83, enum 0.67 (vs oblique 1.0/0.06, base policy_hint 0.5).
+  - Hypothesis - distilling the enumerate teacher's CoT teaches the STUDENT to enumerate consistent words in its OWN reasoning, which is the inferable narrowing skill the student needs to solve at inference WITHOUT a candidate-list scaffold (user ruled out scaffolding to stay comparable to the gradient OPSD arm). The competence probe showed the floor is an enumeration gap (base 0/32 from transcript vs 16/32 given the list) - this run tests whether CoT distillation installs that enumeration ability into the weights.
+  - Student WORDLE_PROMPT_STYLE=enumerate is instructed to list consistent words and narrow (it is NOT given the list - must produce it). ROLLOUT_MAX_NEW_TOKENS bumped 96 to 224 for the longer narrowing CoT. Full-reply KL (supervise reasoning + guess - user kept CoT supervision rather than masking). forward_kl_full, rank-4, CANDIDATE_ROUTING=owner, no SMG.
+  - WATCH - eval exact_rate climbing off the ~2pct floor AND whether the student's probe CoT actually enumerates consistent words (inspect with inspect_cots.py). The MTOPSD-019 policy_hint run is the control (post-hoc justification, no enumeration, eval floored).
+  - NaN-guard fix is in zorl_client.py (apply payload sanitized + degenerate=worst). Do NOT run heavy probes on the pool while this is live (a contended replica forward can NaN and, pre-fix, crash; the fix prevents the crash but a replica crash still drops its LoRAs/session).

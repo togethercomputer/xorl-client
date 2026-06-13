@@ -1,0 +1,64 @@
+id: GRPO-ZORL-001
+kind: standalone_wordle_direct_env_reward_es_grpo_counterpart
+base_manifest: k8s/qwen3-coder-30b-a3b-zorl-standalone-client-job.yaml
+container: zorl-client
+score_source: standalone_zorl_log
+result_root: experiments/zorl/results/zorl_autoresearch/GRPO-ZORL-001
+env:
+  RESULT_ROOT: /workspace/home/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/GRPO-ZORL-001
+  INFER_URL: http://zorl-ar-sglang-b-0.zorl-ar-sglang-b-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-b-1.zorl-ar-sglang-b-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-b-2.zorl-ar-sglang-b-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-b-3.zorl-ar-sglang-b-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-b-4.zorl-ar-sglang-b-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-b-5.zorl-ar-sglang-b-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-b-6.zorl-ar-sglang-b-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-b-7.zorl-ar-sglang-b-headless.apanda.svc.cluster.local:30000
+  POPULATION_SHARDING: pair_shard
+  NUM_SHARDS: auto
+  PAIRS_PER_SHARD: "4"
+  CANDIDATE_ROUTING: owner
+  PRELOAD_CANDIDATES: "0"
+  TASK: wordle
+  SCORE_MODE: rollout
+  WORDLE_PROMPT_STYLE: public_reasoning_constraints
+  INVALID_RETRIES: "2"
+  STEPS: "100000"
+  MAX_RUNTIME_SECONDS: "43200"
+  NUM_PAIRS: "32"
+  B_SIGMA: "0.01"
+  LEARNING_RATE: "0.01"
+  MAX_UPDATE_NORM: "20000"
+  PERTURBATION_MODE: b_only
+  ELITIST_ROLLBACK: "1"
+  SEED: "9234"
+  TRAIN_SIZE: "8"
+  TRAIN_POOL_SIZE: "512"
+  RESAMPLE_TRAIN_EACH_STEP: "1"
+  EVAL_SIZE: "48"
+  ROLLOUTS_PER_PUZZLE: "1"
+  ROLLOUT_TEMPERATURE: "0.7"
+  ROLLOUT_MAX_NEW_TOKENS: "96"
+  SCORE_MAX_WORKERS: "512"
+  SCORE_MAX_WORKERS_PER_OWNER: "32"
+  SCORE_JOB_ORDER: owner_round_robin
+  EXPORT_INTERVAL: "10"
+  PROBE_INTERVAL: "10"
+  PROBE_TEMPERATURE: "0.7"
+  PROBE_N: "1"
+  LORA_RANK: "4"
+  LORA_ALPHA: "4"
+  WANDB_PROJECT: zorl
+  WANDB_NAME: GRPO-ZORL-001
+  WANDB_GROUP: GRPO-ZORL-001
+  WANDB_JOB_TYPE: zorl-standalone-wordle
+score_gates:
+  expected_total: 48
+  min_steps: 10
+  min_update_norm_positive_rows: 8
+  weak_exact_gain: 1
+  promote_exact_gain: 2
+  strong_exact_gain: 4
+  weak_reward_gain: 0.001
+  promote_reward_gain: 0.003
+  strong_reward_gain: 0.008
+notes:
+  - This is the ES (ZORL) counterpart to the gradient GRPO Wordle baseline (train_grpo_wordle.py / qwen3-coder-30b-a3b-grpo-wordle-baseline.yaml in the run-20260607 worktree). It runs the SAME fair env, the SAME composite env reward, and the SAME student prompt as the gradient GRPO arm, so ES vs gradient is compared on identical footing.
+  - DIRECT ENV REWARD via ES. SCORE_MODE=rollout means each ES candidate plays the full multi-turn fair-env game (rollout_completion) and its fitness IS the composite env reward (0.4 solved + 0.3 format + 0.2 info_gain + 0.1 turn_bonus) - the exact same wordle_reward the gradient GRPO arm optimizes. NOT the OPSD-KL teacher objective.
+  - WORDLE_PROMPT_STYLE=public_reasoning_constraints matches what the gradient GRPO trains on (its --wordle-prompt-style default is public_reasoning_constraints) - the plain fair-env student that sees the public board-state summary (green pattern / present / excluded / likely-absent), NO candidate list, NO target, X for absent, bracketed <guess>[WORD]</guess>. This is NOT the enumerate variant. INVALID_RETRIES=2 - an illegal/repeated/unparseable guess (gated by the vendored 693-word legal list) is rejected and re-prompted and does NOT burn a turn, matching the gradient GRPO env.
+  - ES hyperparams mirroring the GRPO baseline. ROLLOUT_TEMPERATURE=0.7 and ROLLOUT_MAX_NEW_TOKENS=96 match the gradient GRPO student sampler exactly (student_temperature 0.7, student_max_new_tokens 96). NUM_PAIRS=32 (population 64) mirrors the gradient per-step population (group_size 4 x train_size 8 = 32 trajectories) while staying at the blog-validated ES population of 64 - and within pool capacity (32 pairs over 16 replicas is 2 pairs/shard, same as ESDIRECT-001). TRAIN_SIZE=8 matches the gradient train_size. B_SIGMA=0.01 plus LEARNING_RATE=0.01 plus PERTURBATION_MODE=b_only plus ELITIST_ROLLBACK are the known-good ES values from ESDIRECT-001/the ES blog. SEED=9234 and LoRA rank/alpha 4/4 match the gradient baseline.
+  - Baseline to beat = the base-30B fair eval (eval_fair_baseline.py, public_reasoning_constraints, temp 0.2, N=128, seed 9234) which scored solve_rate 0.070 (9/128), format_rate 0.724, reward_mean 0.294, valid_guess_rate_first_try 0.522. The 693-word legal list is restrictive - about half of first-try guesses are rejected as not-in-dictionary - so a real ES lift should move format_rate/valid_guess_rate and solve_rate together.
+  - Pool note - only ONE ZORL client can run on the zorl-ar-sglang pool at a time. The gradient GRPO arm and the OPSD-KL ES arm (MTOPSD-021) run separately. CANDIDATE_ROUTING=owner (fixed-kernel pool, no SMG). SCORE_MODE=rollout is heavy (64 candidates x 8 examples x up to 6 turns x retries), so watch t_score and trim NUM_PAIRS/TRAIN_SIZE if a step is too slow.

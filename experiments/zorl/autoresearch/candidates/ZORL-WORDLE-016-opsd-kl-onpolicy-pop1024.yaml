@@ -1,0 +1,67 @@
+id: ZORL-WORDLE-016
+kind: standalone_wordle_opsd_kl_onpolicy_sharded_smg_pop1024
+base_manifest: k8s/qwen3-coder-30b-a3b-zorl-standalone-client-job.yaml
+container: zorl-client
+score_source: standalone_zorl_log
+result_root: experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-016
+env:
+  RESULT_ROOT: /workspace/home/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-016
+  INFER_URL: http://zorl-ar-sglang-0.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-1.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-2.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-3.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-4.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-5.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-6.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-7.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-8.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-9.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-10.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-11.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-12.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-13.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-14.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-15.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000
+  REWARD_INFER_URL: http://zorl-ar-smg.apanda.svc.cluster.local:30000
+  POPULATION_SHARDING: pair_shard
+  NUM_SHARDS: auto
+  PAIRS_PER_SHARD: "32"
+  CANDIDATE_ROUTING: owner_via_smg
+  PRELOAD_CANDIDATES: "0"
+  TASK: wordle
+  SCORE_MODE: opsd_kl
+  STEPS: "384"
+  NUM_PAIRS: "512"
+  B_SIGMA: "0.05"
+  LEARNING_RATE: "0.01"
+  MAX_UPDATE_NORM: "20000"
+  PERTURBATION_MODE: b_only
+  ELITIST_ROLLBACK: "1"
+  SEED: "9234"
+  TRAIN_SIZE: "8"
+  TRAIN_POOL_SIZE: "512"
+  RESAMPLE_TRAIN_EACH_STEP: "1"
+  EVAL_SIZE: "128"
+  ROLLOUTS_PER_PUZZLE: "1"
+  ROLLOUT_TEMPERATURE: "0.7"
+  ROLLOUT_MAX_NEW_TOKENS: "96"
+  SCORE_MAX_WORKERS: "1024"
+  SCORE_MAX_WORKERS_PER_OWNER: "64"
+  TEACHER_FORCED_BATCH_SIZE: "8"
+  SCORE_JOB_ORDER: owner_round_robin
+  EXPORT_INTERVAL: "16"
+  PROBE_INTERVAL: "16"
+  PROBE_TEMPERATURE: "0.9"
+  PROBE_N: "4"
+  LORA_RANK: "4"
+  LORA_ALPHA: "4"
+  WANDB_PROJECT: zorl
+  WANDB_NAME: ZORL-WORDLE-016
+  WANDB_GROUP: ZORL-WORDLE-016
+  WANDB_JOB_TYPE: zorl-standalone-wordle
+score_gates:
+  expected_total: 128
+  min_steps: 32
+  min_update_norm_positive_rows: 16
+  weak_exact_gain: 1
+  promote_exact_gain: 2
+  strong_exact_gain: 4
+  weak_reward_gain: 0.001
+  promote_reward_gain: 0.003
+  strong_reward_gain: 0.008
+notes:
+  - On-policy OPSD via ZORL/ES (reverse-KL reward), on the §3d-fixed zorl-ar-sglang pool.
+  - score_mode=opsd_kl - each candidate (student) samples a HINT-FREE CoT, then the frozen
+    base teacher (lora_path=None) with the HINTED prefix is scored on that same CoT; reward =
+    mean(teacher_logprob - student_logprob) = single-sample estimate of -KL(student||teacher).
+  - Prompts come from wordle.build_opsd_prompts, identical to train_opsd_baseline._asymmetric_prompt_ids,
+    so this ES run and the gradient/GRPO run distill from the same teacher context.
+  - This reward GENERATES per (candidate x example), far heavier than teacher-forced scoring, so
+    TRAIN_SIZE=8 + ROLLOUT_MAX_NEW_TOKENS=96 + per_owner=4. Tune from observed step time.
+  - Probe is the normal multi-turn Wordle game (no hint) -> exact_rate monitors whether the
+    distilled student actually solves Wordle without the hint.

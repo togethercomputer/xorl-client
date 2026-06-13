@@ -1,0 +1,15 @@
+id: SGL-001
+kind: sglang_controller
+base_manifest: k8s/qwen3-coder-30b-a3b-zorl-sglang-tp2-shard.yaml
+container: sglang
+k8s:
+  service_name: zorl-ar-sglang-001
+  workload_name: zorl-ar-sglang-001
+  app_label: zorl-ar-sglang-001
+  job_generate_name: zorl-ar-sglang-001-
+  replicas: 1
+  node_selector:
+    node-pool: compute
+notes:
+  - TP=2 SGLang worker for the ZORL autoresearch SMG pool.
+  - Legacy single-worker launch; prefer SGL-POOL for new runs.

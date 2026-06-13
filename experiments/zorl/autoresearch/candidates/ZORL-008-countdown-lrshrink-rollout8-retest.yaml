@@ -1,0 +1,42 @@
+id: ZORL-008
+kind: countdown
+base_manifest: k8s/qwen3-coder-30b-a3b-zorl-countdown-trainer-only.yaml
+container: trainer
+score_source: countdown_log
+result_root: experiments/zorl/results/zorl_autoresearch/ZORL-008
+env:
+  RESULT_ROOT: /workspace/home/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-008
+  INFER_URL: "http://zorl-ar-sglang-047.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-117.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-001.apanda.svc.cluster.local:30000"
+  REWARD_INFER_URL: http://zorl-ar-smg.apanda.svc.cluster.local:30000
+  TRAINER_MODE: zorl
+  STEPS: "96"
+  LEARNING_RATE: "5.4e-3"
+  LORA_RANK: "4"
+  LORA_ALPHA: "4"
+  ZORL_NUM_PAIRS: "8"
+  ZORL_ROLLOUTS_PER_PUZZLE: "8"
+  ZORL_ROLLOUT_TEMPERATURE: "0.6"
+  ZORL_B_SIGMA: "0.08"
+  ZORL_REFRESH_INTERVAL: "0"
+  ZORL_SCORE_BATCH_SIZE: "128"
+  ZORL_SCORE_MAX_WORKERS: "4"
+  ZORL_SGD_MOMENTUM: "0.0"
+  ZORL_REWARD_MODE: rollout
+  ZORL_ROLLOUT_EXACT_BONUS: "1.0"
+  ZORL_ROLLOUT_VALID_WEIGHT: "0.15"
+  ZORL_ROLLOUT_VALUE_WEIGHT: "0.10"
+  ZORL_PARENT_PROBE_INTERVAL: "8"
+  SYNC_QUANT: none
+score_gates:
+  expected_total: 32
+  baseline_exact: 1
+  weak_exact: 2
+  promote_exact: 3
+  strong_exact: 5
+  min_generations: 8
+notes:
+  - ZORL-006 reached the 3/32 parent promote gate by generation 8 using
+    LR-shrunk validity/value shaping, while ZORL-007's heavier validity shaping
+    regressed exact signal immediately.
+  - This run keeps the ZORL-006 reward balance and spends more rollout averaging
+    plus a longer step budget to test whether the parent improvement is stable.

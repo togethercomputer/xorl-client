@@ -1,0 +1,10 @@
+id: ZORL-000
+kind: smoke
+base_manifest: k8s/qwen3-coder-30b-a3b-zorl-smoke-job.yaml
+container: zorl-smoke
+score_source: smoke_summary
+result_root: experiments/zorl/results/qwen3_coder_30b_a3b_zorl_smoke
+score_gates:
+  min_records: 4
+notes:
+  - Uses the existing synthetic-reward smoke job; no external SGLang service is required.

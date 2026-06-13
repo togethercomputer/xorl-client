@@ -1,0 +1,62 @@
+id: ZORL-WORDLE-017
+kind: standalone_wordle_rollout_sharded_smoke
+base_manifest: k8s/qwen3-coder-30b-a3b-zorl-standalone-client-job.yaml
+container: zorl-client
+score_source: standalone_zorl_log
+result_root: experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-017
+env:
+  RESULT_ROOT: /workspace/home/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-017
+  INFER_URL: http://zorl-ar-sglang-0.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-1.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-2.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-3.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-4.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-5.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-6.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-7.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-8.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-9.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-10.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-11.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-12.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-13.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-14.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-15.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000
+  REWARD_INFER_URL: http://zorl-ar-smg.apanda.svc.cluster.local:30000
+  POPULATION_SHARDING: pair_shard
+  NUM_SHARDS: auto
+  PAIRS_PER_SHARD: "4"
+  CANDIDATE_ROUTING: owner_via_smg
+  PRELOAD_CANDIDATES: "0"
+  TASK: wordle
+  SCORE_MODE: rollout
+  STEPS: "16"
+  NUM_PAIRS: "64"
+  B_SIGMA: "0.05"
+  LEARNING_RATE: "0.01"
+  MAX_UPDATE_NORM: "20000"
+  UPDATE_STRATEGY: raw
+  PERTURBATION_MODE: b_only
+  ELITIST_ROLLBACK: "1"
+  SEED: "10234"
+  TRAIN_SIZE: "16"
+  TRAIN_POOL_SIZE: "512"
+  RESAMPLE_TRAIN_EACH_STEP: "1"
+  EVAL_SIZE: "64"
+  ROLLOUTS_PER_PUZZLE: "1"
+  ROLLOUT_TEMPERATURE: "0.9"
+  ROLLOUT_MAX_NEW_TOKENS: "24"
+  SCORE_MAX_WORKERS: "64"
+  SCORE_MAX_WORKERS_PER_OWNER: "4"
+  TEACHER_FORCED_BATCH_SIZE: "1"
+  SCORE_JOB_ORDER: owner_round_robin
+  EXPORT_INTERVAL: "4"
+  PROBE_INTERVAL: "4"
+  PROBE_TEMPERATURE: "0.9"
+  PROBE_N: "4"
+  LORA_RANK: "4"
+  LORA_ALPHA: "4"
+  WANDB_PROJECT: zorl
+  WANDB_NAME: ZORL-WORDLE-017
+  WANDB_GROUP: ZORL-WORDLE-017
+  WANDB_JOB_TYPE: zorl-standalone-wordle
+score_gates:
+  expected_total: 64
+  min_steps: 4
+  min_update_norm_positive_rows: 4
+  weak_exact_gain: 1
+  promote_exact_gain: 2
+  strong_exact_gain: 4
+  weak_reward_gain: 0.02
+  promote_reward_gain: 0.05
+  strong_reward_gain: 0.10
+notes:
+  - Direct multi-turn Wordle reward baseline. This intentionally uses score_mode=rollout, not teacher_forced or opsd_kl.
+  - Each candidate is scored by rollout_completion, which rebuilds the Wordle prompt with prior guesses and feedback after every turn.
+  - Sixteen direct SGLang workers own four antithetic pairs each; SMG routes scoring to the candidate owner with X-SMG-Target-Worker.
+  - Probe exact_rate is the main "student can solve games" signal; reward_mean includes format, information gain, solve reward, and turn bonus.

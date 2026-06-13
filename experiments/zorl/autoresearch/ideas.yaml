@@ -1,0 +1,743 @@
+programme: zorl_autoresearch
+created_utc: '2026-06-03T00:00:00Z'
+available_sgl_nodes:
+- '047'
+- '117'
+- '001'
+notes:
+- Launch long-lived SGLang candidates SGL-047, SGL-117, or SGL-001 before trainer
+  candidates.
+- Default trainer candidates point at zorl-ar-sglang-047; override INFER_URL at render
+  or launch time to use another SGL node.
+- Primary science queue now targets standalone GSM8K first, then OPD multiplication
+  and Wordle. Countdown remains as a reference branch, not the main success target.
+- Native ZORL session control is worker-local; standalone candidates use direct SGLang
+  worker URLs instead of the SMG router.
+ideas:
+- id: ZORL-000
+  status: complete
+  priority: 100
+  candidate: candidates/ZORL-000-smoke.yaml
+  hypothesis: Multi-session ZORL plumbing should produce nonzero parent updates and
+    export checkpoint metadata.
+  rationale: This is an infra gate before burning long SGLang controller time on science
+    runs.
+  last_launched_utc: '2026-06-04T00:15:10Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T001509Z-zorl-000.yaml
+  last_verdict: smoke_pass
+  last_reason: all smoke records, updates, and exported ZORL metadata are present
+  last_result: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/qwen3_coder_30b_a3b_zorl_smoke/20260604T001512Z-zorl-ar-zorl-000-brrjm-8zl25/smoke/summary.json
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T002324Z-zorl-000-smoke-pass.json
+  last_scored_utc: '2026-06-04T00:23:24Z'
+- id: ZORL-001
+  status: promote_retest
+  priority: 90
+  requires:
+  - ZORL-000
+  candidate: candidates/ZORL-001-countdown-modal-rollout.yaml
+  hypothesis: Modal-style rollout averaging gives ZORL a cleaner ES signal on Countdown
+    than single-rollout binary reward.
+  rationale: Existing notes show 1/8 cold to 2/8 parent-probe movement; this is the
+    current baseline to retest under stable SGL.
+  last_launched_utc: '2026-06-04T00:27:39Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T002738Z-zorl-001.yaml
+  last_verdict: promote_retest
+  last_reason: best exact 3/32 passed promote gate 3
+  last_result: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-001/20260604T002746Z-zorl-ar-zorl-001-frn85-b6dr2-trainer-only/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T053142Z-zorl-001-promote-retest.json
+  last_scored_utc: '2026-06-04T05:31:42Z'
+- id: ZORL-002
+  status: queued
+  priority: 80
+  requires:
+  - ZORL-001
+  candidate: candidates/ZORL-002-countdown-more-pairs.yaml
+  hypothesis: Increasing perturbation pairs while keeping rollout averaging improves
+    parent update direction more than deeper rollout sampling alone.
+  rationale: Tests whether ES direction coverage, not per-candidate reward granularity,
+    is limiting the current Countdown signal.
+- id: ZORL-003
+  status: queued
+  priority: 70
+  requires:
+  - ZORL-001
+  candidate: candidates/ZORL-003-countdown-momentum.yaml
+  hypothesis: Conservative SGD momentum stabilizes repeated ZORL parent updates when
+    rollout reward is noisy.
+  rationale: Password runs benefited from momentum; Countdown baseline used zero momentum.
+- id: ZORL-004
+  status: queued
+  priority: 50
+  requires:
+  - ZORL-001
+  candidate: candidates/ZORL-004-countdown-scale-retest.yaml
+  hypothesis: A longer retest of the best Countdown recipe will separate a weak ZORL
+    signal from short-run variance.
+  rationale: Run only after a prior candidate reaches at least weak_signal or promote_retest.
+- id: ZORL-OPD-000
+  status: infra_invalid
+  priority: 45
+  requires:
+  - ZORL-000
+  candidate: candidates/ZORL-OPD-000-smoke.yaml
+  hypothesis: The standalone SGLang-native ZORL path can produce nonzero parent updates
+    on OPD-format multiplication prompts.
+  rationale: Fast 2-digit smoke gate before launching the longer OPD multiplication
+    science run.
+  last_launched_utc: '2026-06-04T19:24:18Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T192417Z-zorl-opd-000.yaml
+  last_verdict: infra_invalid
+  last_reason: update_norm_positive_rows=0 < 1
+  last_result: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-OPD-000/20260604T192419Z-zorl-ar-zorl-opd-000-5hqqq-g9czb-opd_multiplication/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T192518Z-zorl-opd-000-infra-invalid.json
+  last_scored_utc: '2026-06-04T19:25:18Z'
+- id: ZORL-OPD-002
+  status: infra_invalid
+  priority: 46
+  requires:
+  - ZORL-000
+  candidate: candidates/ZORL-OPD-002-smoke-sigma005.yaml
+  hypothesis: OPD's exact-product reward needs larger LoRA-B perturbations than sigma
+    0.012 to create nonzero antithetic pair deltas.
+  rationale: OPD-000 showed candidate reward variation but zero pair deltas; sigma
+    0.05 is the smallest setting that has produced real updates in the Wordle branch.
+  last_launched_utc: '2026-06-04T19:26:27Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T192627Z-zorl-opd-002.yaml
+  last_verdict: infra_invalid
+  last_reason: update_norm_positive_rows=0 < 2
+  last_result: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-OPD-002/20260604T192628Z-zorl-ar-zorl-opd-002-cc4ms-gjf4v-opd_multiplication/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T192757Z-zorl-opd-002-infra-invalid.json
+  last_scored_utc: '2026-06-04T19:27:57Z'
+- id: ZORL-OPD-003
+  status: rejected
+  priority: 47
+  requires:
+  - ZORL-000
+  candidate: candidates/ZORL-OPD-003-smoke-shaped.yaml
+  hypothesis: Numeric-closeness shaping on OPD multiplication will produce nonzero
+    antithetic pair deltas where exact-product reward tied all pairs.
+  rationale: OPD-000 and OPD-002 had candidate reward variation but zero pair deltas;
+    shaped product closeness keeps reward verifiable while making the ES direction
+    observable.
+  last_launched_utc: '2026-06-04T19:30:58Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T193058Z-zorl-opd-003.yaml
+  last_verdict: science_reject
+  last_reason: standalone reward_gain=0.011400000000000021 exact_gain=0.30000000000000004
+    did not pass weak gate
+  last_result: experiments/zorl/results/zorl_autoresearch/ZORL-OPD-003/20260604T193059Z-zorl-ar-zorl-opd-003-wvjjn-z77hg-opd_multiplication/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T193433Z-zorl-opd-003-science-reject.json
+  last_scored_utc: '2026-06-04T19:34:33Z'
+- id: ZORL-OPD-004
+  status: infra_invalid
+  priority: 48
+  requires:
+  - ZORL-OPD-003
+  candidate: candidates/ZORL-OPD-004-shaped-lr003-rollback.yaml
+  hypothesis: Lower LR plus elitist rollback will preserve OPD numeric-shaped probe
+    gains after the nonzero update rows that ZORL-OPD-003 established.
+  rationale: OPD-003 fixed the zero-delta failure and reached four nonzero updates,
+    but its best reward gain was only 0.0114; this branch isolates optimizer stability
+    without changing task, seed, or reward.
+  last_launched_utc: '2026-06-04T19:34:59Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T193459Z-zorl-opd-004.yaml
+  last_verdict: infra_invalid
+  last_reason: update_norm_positive_rows=2 < 3
+  last_result: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-OPD-004/20260604T193500Z-zorl-ar-zorl-opd-004-rwvnj-szwgt-opd_multiplication/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T193859Z-zorl-opd-004-infra-invalid.json
+  last_scored_utc: '2026-06-04T19:38:59Z'
+- id: ZORL-OPD-005
+  status: rejected
+  priority: 49
+  requires:
+  - ZORL-OPD-003
+  candidate: candidates/ZORL-OPD-005-shaped-lr01-rollback-updatebacked.yaml
+  hypothesis: LR 0.01 plus rollback will retain OPD-003's nonzero update frequency
+    while preserving only update-backed shaped-reward improvements.
+  rationale: OPD-003 had enough update rows but no rollback; OPD-004 had rollback
+    and reward gain but too few update rows, with the best probes landing on zero-update
+    rows. This branch tests the combination and gates out probe-only variance.
+  last_launched_utc: '2026-06-04T19:39:58Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T193958Z-zorl-opd-005.yaml
+  last_verdict: science_reject
+  last_reason: best_probe_after_positive_update=false
+  last_result: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-OPD-005/20260604T193959Z-zorl-ar-zorl-opd-005-f8fl8-596pb-opd_multiplication/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T194328Z-zorl-opd-005-science-reject.json
+  last_scored_utc: '2026-06-04T19:43:28Z'
+- id: ZORL-OPD-001
+  status: queued
+  priority: 40
+  requires:
+  - ZORL-OPD-000
+  candidate: candidates/ZORL-OPD-001-opd-multiplication-3digit.yaml
+  hypothesis: Sampled-probe ZORL improves exact-product reward on OPD pause-filler
+    3-digit multiplication without teacher KL distillation.
+  rationale: Tests the handoff's ZORL-OPD path using the standalone SGLang task plugin
+    and the known-good sigma/lr/max-update-norm recipe.
+- id: ZORL-005
+  status: weak_signal
+  priority: 85
+  requires:
+  - ZORL-001
+  candidate: candidates/ZORL-005-countdown-validity-shaped.yaml
+  hypothesis: Small validity/value rollout shaping plus a trust-region cap improves
+    Countdown parent probes versus exact-only rollout reward.
+  rationale: ZORL-001 reached weak best-candidate exact scores but parent probes stayed
+    at 2/32 and outputs show malformed expression drift; test a lower-sigma clipped
+    reward-shaped recipe before a long scale retest.
+  last_launched_utc: '2026-06-04T05:31:58Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T053158Z-zorl-005.yaml
+  last_verdict: weak_zorl_signal
+  last_reason: best exact 1.75/32 improved over baseline 1
+  last_result: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-005/20260604T053204Z-zorl-ar-zorl-005-szpgk-ff6bf-trainer-only/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T080330Z-zorl-005-weak-zorl-signal.json
+  last_scored_utc: '2026-06-04T08:03:30Z'
+- id: ZORL-006
+  status: promote_retest
+  priority: 84
+  requires:
+  - ZORL-005
+  candidate: candidates/ZORL-006-countdown-validity-shaped-lrshrink.yaml
+  hypothesis: Validity/value-shaped Countdown reward with an LR-shrunk update improves
+    parent probes while avoiding the malformed-expression drift seen in ZORL-001.
+  rationale: ZORL-005 showed the deployed server ignores max_update_norm, so test
+    the same shaping with the intended update-size reduction expressed through the
+    learning-rate path that is actually honored.
+  last_launched_utc: '2026-06-04T08:03:39Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T080338Z-zorl-006.yaml
+  last_verdict: promote_retest
+  last_reason: best exact 3/32 passed promote gate 3
+  last_result: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-006/20260604T080344Z-zorl-ar-zorl-006-wpd2k-5v4cl-trainer-only/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T103449Z-zorl-006-promote-retest.json
+  last_scored_utc: '2026-06-04T10:34:49Z'
+- id: ZORL-007
+  status: rejected
+  priority: 83
+  requires:
+  - ZORL-006
+  candidate: candidates/ZORL-007-countdown-validity-tilted-lrshrink.yaml
+  hypothesis: A validity-tilted LR-shrunk Countdown reward preserves ZORL-006's parent
+    exact gain while reducing malformed expression drift.
+  rationale: ZORL-006 hit the 3/32 parent promote gate by generation 8, but parent
+    and candidate outputs still had prefix 0 and many invalid expressions. Increase
+    use-once validity shaping and reduce near-target value shaping before spending
+    more GPUs on older exact-only perturbation-coverage ideas.
+  last_launched_utc: '2026-06-04T10:35:41Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T103541Z-zorl-007.yaml
+  last_verdict: science_reject
+  last_reason: Gen1 validity-tilted shaping regressed exact signal to baseline 1/32
+    without materially improving validity, so stop before gen8.
+  last_result: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-007/20260604T103551Z-zorl-ar-zorl-007-7cnqf-q9bdx-trainer-only/job.log
+  last_scored_utc: '2026-06-04T10:56:24Z'
+- id: ZORL-008
+  status: rejected
+  priority: 82
+  requires:
+  - ZORL-006
+  candidate: candidates/ZORL-008-countdown-lrshrink-rollout8-retest.yaml
+  hypothesis: More rollout averaging on the ZORL-006 LR-shrunk recipe validates whether
+    the 3/32 parent promote signal is stable and can improve beyond the short-run
+    result.
+  rationale: ZORL-006 is the best current branch; ZORL-007 showed that increasing
+    validity shaping hurts exact signal. Retest the ZORL-006 reward balance with twice
+    the rollout averaging before exploring older exact-only perturbation ideas.
+  last_launched_utc: '2026-06-04T10:56:56Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T105656Z-zorl-008.yaml
+  last_verdict: science_reject
+  last_reason: Rollout8 retest reached only candidate 2/32 by generation 8, with no
+    new parent probe beyond 2/32, regressing versus ZORL-006's generation-8 parent
+    3/32 promote signal.
+  last_result: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-008/20260604T105704Z-zorl-ar-zorl-008-ncfl7-qxtkp-trainer-only/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T155708Z-zorl-008-weak-zorl-signal.json
+  last_scored_utc: '2026-06-04T15:57:08Z'
+- id: ZORL-009
+  status: launched
+  priority: 81
+  requires:
+  - ZORL-006
+  - ZORL-008
+  candidate: candidates/ZORL-009-countdown-lrshrink-pairs16.yaml
+  hypothesis: Spending the 4096-rollout budget on more perturbation pairs, while keeping
+    ZORL-006's LR-shrunk validity/value reward balance, restores the generation-8
+    parent promote signal that deeper rollout averaging lost.
+  rationale: ZORL-006 reached parent 3/32 by generation 8 with 8 pairs and 4 rollouts;
+    ZORL-008 doubled rollout averaging to 8 but only reached candidate 2/32 and no
+    new parent gain by generation 8. The next controlled lever is ES direction coverage,
+    not more per-candidate averaging or stronger validity shaping.
+  last_launched_utc: '2026-06-04T15:57:53Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T155753Z-zorl-009.yaml
+- id: ZORL-010
+  status: queued
+  priority: 80.5
+  requires:
+  - ZORL-009
+  candidate: candidates/ZORL-010-countdown-lrshrink-pairs16-workers16.yaml
+  hypothesis: ZORL-009's recipe is underfeeding the three-node SMG/SGL pool because
+    Countdown scoring uses only four worker threads; raising scorer concurrency to
+    16 should improve rollouts/s without changing the science recipe.
+  rationale: ZORL-009 gen1 already hit parent 3/32, but the measured scorer throughput
+    stayed near 2 rollouts/s for 4096 rollouts. This isolates a systems throughput
+    lever from the reward/pair recipe before spending overnight cycles.
+- id: ZORL-GSM8K-000
+  status: infra_invalid
+  priority: 95
+  requires:
+  - ZORL-000
+  candidate: candidates/ZORL-GSM8K-000-smoke.yaml
+  hypothesis: Native standalone ZORL on Qwen3-30B-A3B should produce nonzero parent
+    updates and an evaluable sparse exact-reward signal on a small GSM8K slice.
+  rationale: Countdown is a weak science target; GSM8K is verifiable, cached locally,
+    and already has a task plugin in the standalone SGLang-native path.
+  last_launched_utc: '2026-06-04T18:30:36Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T183036Z-zorl-gsm8k-000.yaml
+  last_verdict: infra_invalid
+  last_reason: update_norm_positive_rows=0 < 1
+  last_result: experiments/zorl/results/zorl_autoresearch/ZORL-GSM8K-000/20260604T183039Z-zorl-ar-zorl-gsm8k-000-l86t6-rvbzc-gsm8k/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T183340Z-zorl-gsm8k-000-infra-invalid.json
+  last_scored_utc: '2026-06-04T18:33:40Z'
+- id: ZORL-GSM8K-001
+  status: queued
+  priority: 89
+  requires:
+  - ZORL-GSM8K-000
+  candidate: candidates/ZORL-GSM8K-001-r4-seed1234-sgl047.yaml
+  hypothesis: Qwen3-30B-A3B rank-4 B-only ZORL can improve GSM8K parent exact probes
+    over cold-start with the sigma/lr/max-update-norm recipe validated in standalone
+    notes.
+  rationale: Primary seed on direct SGLang worker 047; parent probe improvement is
+    the promotion metric.
+- id: ZORL-GSM8K-002
+  status: queued
+  priority: 89
+  requires:
+  - ZORL-GSM8K-000
+  candidate: candidates/ZORL-GSM8K-002-r4-seed2234-sgl001.yaml
+  hypothesis: A second independent seed on a different direct SGLang worker should
+    reproduce any GSM8K parent-probe signal if the effect is real.
+  rationale: Runs independently on worker 001 because native ZORL session state is
+    worker-local.
+- id: ZORL-GSM8K-003
+  status: queued
+  priority: 89
+  requires:
+  - ZORL-GSM8K-000
+  candidate: candidates/ZORL-GSM8K-003-r4-seed3234-sgl117.yaml
+  hypothesis: A third independent seed on worker 117 should separate real GSM8K ZORL
+    improvement from seed noise.
+  rationale: Completes the three-worker rank-4 GSM8K seed bundle.
+- id: ZORL-GSM8K-010
+  status: queued
+  priority: 65
+  requires:
+  - ZORL-GSM8K-001
+  candidate: candidates/ZORL-GSM8K-010-r4-train16-sgl047.yaml
+  hypothesis: Increasing GSM8K train examples from 8 to 16 improves the ES reward
+    direction without increasing LoRA population size.
+  rationale: Runs after the first primary GSM8K result as a controlled coverage branch.
+- id: ZORL-GSM8K-011
+  status: queued
+  priority: 64
+  requires:
+  - ZORL-GSM8K-001
+  candidate: candidates/ZORL-GSM8K-011-r4-sampled-probe-sgl047.yaml
+  hypothesis: If greedy probes are sticky, sampled parent probes will reveal whether
+    GSM8K candidate reward movement reflects real distributional improvement.
+  rationale: Diagnostic branch only; exact greedy improvement remains the cleanest
+    promotion metric.
+- id: ZORL-GSM8K-020
+  status: weak_signal
+  priority: 94
+  requires:
+  - ZORL-000
+  candidate: candidates/ZORL-GSM8K-020-shaped-smoke.yaml
+  hypothesis: Numeric-distance GSM8K reward shaping gives native ZORL a nonzero ES
+    direction while preserving exact-match as the real success metric.
+  rationale: ZORL-GSM8K-000 completed without platform errors but every exact-reward
+    candidate scored zero, producing zero update norm for all steps.
+  last_launched_utc: '2026-06-04T18:33:45Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T183345Z-zorl-gsm8k-020.yaml
+  last_verdict: weak_zorl_signal
+  last_reason: standalone reward_gain=0.009699999999999986 exact_gain=0.0 passed weak
+    gate
+  last_result: experiments/zorl/results/zorl_autoresearch/ZORL-GSM8K-020/20260604T183352Z-zorl-ar-zorl-gsm8k-020-dn6tj-tl5lr-gsm8k/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T183739Z-zorl-gsm8k-020-weak-zorl-signal.json
+  last_scored_utc: '2026-06-04T18:37:39Z'
+- id: ZORL-GSM8K-021
+  status: rejected
+  priority: 88
+  requires:
+  - ZORL-GSM8K-020
+  candidate: candidates/ZORL-GSM8K-021-shaped-r4-seed1234-sgl047.yaml
+  hypothesis: Shaped GSM8K rewards on worker 047 should produce positive update norms
+    and improve parent reward, with exact count monitored as the promotion metric.
+  rationale: Primary shaped seed after the shaped smoke verifies nonzero update flow.
+  last_launched_utc: '2026-06-04T18:37:46Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T183746Z-zorl-gsm8k-021.yaml
+  last_verdict: science_reject
+  last_reason: Stopped after four observed steps because shaped rewards were nonzero
+    but every antithetic update norm was zero; branch to 8-pair primaries.
+- id: ZORL-GSM8K-022
+  status: rejected
+  priority: 88
+  requires:
+  - ZORL-GSM8K-020
+  candidate: candidates/ZORL-GSM8K-022-shaped-r4-seed2234-sgl001.yaml
+  hypothesis: A second shaped GSM8K seed on worker 001 should reproduce update/reward
+    movement if the shaped signal is real.
+  rationale: Independent direct-worker replica for the shaped GSM8K branch.
+  last_launched_utc: '2026-06-04T18:37:46Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T183746Z-zorl-gsm8k-022.yaml
+  last_verdict: science_reject
+  last_reason: Stopped after four observed steps because shaped rewards were nonzero
+    but every antithetic update norm was zero; branch to 8-pair primaries.
+- id: ZORL-GSM8K-023
+  status: rejected
+  priority: 88
+  requires:
+  - ZORL-GSM8K-020
+  candidate: candidates/ZORL-GSM8K-023-shaped-r4-seed3234-sgl117.yaml
+  hypothesis: A third shaped GSM8K seed on worker 117 should separate real movement
+    from seed and worker noise.
+  rationale: Completes the three-worker shaped GSM8K seed bundle.
+  last_launched_utc: '2026-06-04T18:37:46Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T183746Z-zorl-gsm8k-023.yaml
+  last_verdict: science_reject
+  last_reason: Stopped after four observed steps because shaped rewards were nonzero
+    but every antithetic update norm was zero; branch to 8-pair primaries.
+- id: ZORL-GSM8K-024
+  status: rejected
+  priority: 87
+  requires:
+  - ZORL-GSM8K-020
+  candidate: candidates/ZORL-GSM8K-024-shaped-pairs8-seed1234-sgl047.yaml
+  hypothesis: The shaped GSM8K signal that produced positive updates in the 8-pair
+    smoke will continue to update when scaled to 30 steps and 128 eval examples.
+  rationale: Keeps train size and pair count from the successful smoke while testing
+    a longer run on worker 047.
+  last_launched_utc: '2026-06-04T18:44:30Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T184430Z-zorl-gsm8k-024.yaml
+  last_verdict: science_reject
+  last_reason: Stopped after five observed steps because 2048-token rollouts produced
+    zero update norm; branch to the smoke-matching 1024-token rollout setting.
+- id: ZORL-GSM8K-025
+  status: rejected
+  priority: 87
+  requires:
+  - ZORL-GSM8K-020
+  candidate: candidates/ZORL-GSM8K-025-shaped-pairs8-seed2234-sgl001.yaml
+  hypothesis: The 8-pair shaped GSM8K update signal should reproduce on worker 001.
+  rationale: Independent seed/worker replica for the 8-pair branch.
+  last_launched_utc: '2026-06-04T18:44:30Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T184430Z-zorl-gsm8k-025.yaml
+  last_verdict: science_reject
+  last_reason: Stopped after five observed steps because 2048-token rollouts produced
+    zero update norm; branch to the smoke-matching 1024-token rollout setting.
+- id: ZORL-GSM8K-026
+  status: rejected
+  priority: 87
+  requires:
+  - ZORL-GSM8K-020
+  candidate: candidates/ZORL-GSM8K-026-shaped-pairs8-seed3234-sgl117.yaml
+  hypothesis: The 8-pair shaped GSM8K update signal should reproduce on worker 117.
+  rationale: Third independent seed/worker replica for the 8-pair branch.
+  last_launched_utc: '2026-06-04T18:44:30Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T184430Z-zorl-gsm8k-026.yaml
+  last_verdict: science_reject
+  last_reason: Stopped after five observed steps because 2048-token rollouts produced
+    zero update norm; branch to the smoke-matching 1024-token rollout setting.
+- id: ZORL-GSM8K-027
+  status: rejected
+  priority: 86
+  requires:
+  - ZORL-GSM8K-020
+  candidate: candidates/ZORL-GSM8K-027-shaped-pairs8-tok1024-seed1234-sgl047.yaml
+  hypothesis: The 1024-token shaped 8-pair setup that updated in smoke will continue
+    updating when scaled to 30 steps and 128 eval examples.
+  rationale: Tests whether the zero-update long branch was caused by the 2048-token
+    rollout setting.
+  last_launched_utc: '2026-06-04T18:48:02Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T184802Z-zorl-gsm8k-027.yaml
+  last_verdict: science_reject
+  last_reason: Stopped after five observed steps because 128-example probe/eval setup
+    still produced zero update norm; branch to exact smoke-scale long run.
+- id: ZORL-GSM8K-028
+  status: rejected
+  priority: 86
+  requires:
+  - ZORL-GSM8K-020
+  candidate: candidates/ZORL-GSM8K-028-shaped-pairs8-tok1024-seed2234-sgl001.yaml
+  hypothesis: The 1024-token shaped 8-pair setup should reproduce on worker 001.
+  rationale: Independent seed/worker replica for the smoke-matching branch.
+  last_launched_utc: '2026-06-04T18:48:02Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T184802Z-zorl-gsm8k-028.yaml
+  last_verdict: science_reject
+  last_reason: Stopped after five observed steps because 128-example probe/eval setup
+    still produced zero update norm; branch to exact smoke-scale long run.
+- id: ZORL-GSM8K-029
+  status: rejected
+  priority: 86
+  requires:
+  - ZORL-GSM8K-020
+  candidate: candidates/ZORL-GSM8K-029-shaped-pairs8-tok1024-seed3234-sgl117.yaml
+  hypothesis: The 1024-token shaped 8-pair setup should reproduce on worker 117.
+  rationale: Third independent seed/worker replica for the smoke-matching branch.
+  last_launched_utc: '2026-06-04T18:48:02Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T184802Z-zorl-gsm8k-029.yaml
+  last_verdict: science_reject
+  last_reason: Stopped after five observed steps because 128-example probe/eval setup
+    still produced zero update norm; branch to exact smoke-scale long run.
+- id: ZORL-GSM8K-030
+  status: rejected
+  priority: 85
+  requires:
+  - ZORL-GSM8K-020
+  candidate: candidates/ZORL-GSM8K-030-shaped-smokescale-long-sgl047.yaml
+  hypothesis: The exact smoke-scale shaped GSM8K setup will continue producing positive
+    update norms when extended from 6 to 30 steps.
+  rationale: Isolates the cause of zero-update long branches by keeping eval size,
+    scorer workers, token length, train size, and probe interval identical to the
+    successful smoke.
+  last_launched_utc: '2026-06-04T18:51:40Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T185140Z-zorl-gsm8k-030.yaml
+  last_verdict: science_reject
+  last_reason: standalone reward_gain=0.0 exact_gain=0.0 did not pass weak gate
+  last_result: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-GSM8K-030/20260604T185141Z-zorl-ar-zorl-gsm8k-030-v8mtw-lxmzz-gsm8k/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T185710Z-zorl-gsm8k-030-science-reject.json
+  last_scored_utc: '2026-06-04T18:57:10Z'
+- id: ZORL-WORDLE-000
+  status: infra_invalid
+  priority: 35
+  requires:
+  - ZORL-GSM8K-020
+  - ZORL-OPD-000
+  candidate: candidates/ZORL-WORDLE-000-smoke.yaml
+  hypothesis: The standalone native ZORL loop can drive a multi-turn shaped Wordle
+    task without breaking session, LoRA, or scoring invariants.
+  rationale: Wordle is lower priority than GSM8K/OPD because composite reward can
+    move without solved-rate improvement.
+  last_launched_utc: '2026-06-04T18:59:20Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T185920Z-zorl-wordle-000.yaml
+  last_verdict: infra_invalid
+  last_reason: update_norm_positive_rows=0 < 2
+  last_result: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-000/20260604T185921Z-zorl-ar-zorl-wordle-000-bm4c5-9fcgg-wordle/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T190220Z-zorl-wordle-000-infra-invalid.json
+  last_scored_utc: '2026-06-04T19:02:20Z'
+- id: ZORL-WORDLE-001
+  status: queued
+  priority: 34
+  requires:
+  - ZORL-WORDLE-000
+  candidate: candidates/ZORL-WORDLE-001-primary.yaml
+  hypothesis: After the multi-turn smoke passes, a larger Wordle run can improve solved-rate
+    while preserving format-rate.
+  rationale: Promotion requires exact solved-rate movement, not just shaped reward.
+- id: ZORL-WORDLE-002
+  status: infra_invalid
+  priority: 36
+  requires:
+  - ZORL-WORDLE-000
+  candidate: candidates/ZORL-WORDLE-002-aandb-sigma005-smoke.yaml
+  hypothesis: Wordle needs higher-variance perturbations than GSM8K because short
+    tagged guesses tie within antithetic pairs at sigma 0.012 B-only.
+  rationale: ZORL-WORDLE-000 produced shaped reward variation across candidates but
+    zero pairwise deltas; this branch tests whether A+B perturbations and sigma 0.05
+    produce nonzero updates before scaling the task.
+  last_launched_utc: '2026-06-04T19:02:31Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T190231Z-zorl-wordle-002.yaml
+  last_verdict: infra_invalid
+  last_reason: update_norm_positive_rows=0 < 2
+  last_result: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-002/20260604T190235Z-zorl-ar-zorl-wordle-002-nkf7z-lh26m-wordle/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T190501Z-zorl-wordle-002-infra-invalid.json
+  last_scored_utc: '2026-06-04T19:05:01Z'
+- id: ZORL-WORDLE-003
+  status: strong_signal
+  priority: 37
+  requires:
+  - ZORL-GSM8K-020
+  - ZORL-OPD-000
+  candidate: candidates/ZORL-WORDLE-003-bonly-sigma005-smoke.yaml
+  hypothesis: B-only Wordle perturbations need larger sigma and sampling temperature
+    to create nonzero antithetic pair deltas without destroying parseable guesses.
+  rationale: A+B sigma 0.05 collapsed candidate reward to zero; this isolates perturbation
+    magnitude while keeping the less destructive B-only path.
+  last_launched_utc: '2026-06-04T19:05:37Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T190537Z-zorl-wordle-003.yaml
+  last_verdict: strong_zorl_signal
+  last_reason: standalone reward_gain=0.23379999999999998 exact_gain=0.0 passed strong
+    gate
+  last_result: experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-003/20260604T190538Z-zorl-ar-zorl-wordle-003-zspcv-nsfls-wordle/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T191058Z-zorl-wordle-003-strong-zorl-signal.json
+  last_scored_utc: '2026-06-04T19:10:58Z'
+- id: ZORL-WORDLE-004
+  status: infra_invalid
+  priority: 38
+  requires:
+  - ZORL-WORDLE-003
+  candidate: candidates/ZORL-WORDLE-004-bonly-sigma005-lr003-rollback.yaml
+  hypothesis: Lower LR plus elitist rollback will preserve Wordle's early shaped probe
+    gain and keep pair deltas nonzero longer than the two-update window seen in ZORL-WORDLE-003.
+  rationale: ZORL-WORDLE-003 established a real ZORL update path on Wordle but later
+    generations collapsed to zero pair deltas; stabilization comes before larger train/eval
+    scaling.
+  last_launched_utc: '2026-06-04T19:11:24Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T191123Z-zorl-wordle-004.yaml
+  last_verdict: infra_invalid
+  last_reason: update_norm_positive_rows=0 < 3
+  last_result: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-004/20260604T191130Z-zorl-ar-zorl-wordle-004-l677s-rqvgm-wordle/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T191524Z-zorl-wordle-004-infra-invalid.json
+  last_scored_utc: '2026-06-04T19:15:24Z'
+- id: ZORL-WORDLE-005
+  status: infra_invalid
+  priority: 39
+  requires:
+  - ZORL-WORDLE-003
+  candidate: candidates/ZORL-WORDLE-005-bonly-sigma005-lr003-seed3234.yaml
+  hypothesis: On the ZORL-WORDLE-003 split, lower LR plus elitist rollback will keep
+    the early shaped-reward improvement while reducing later zero-delta collapse.
+  rationale: ZORL-WORDLE-004 changed both optimizer settings and seed; this retest
+    isolates optimizer/rollback behavior on the known responsive split.
+  last_launched_utc: '2026-06-04T19:15:37Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T191537Z-zorl-wordle-005.yaml
+  last_verdict: infra_invalid
+  last_reason: update_norm_positive_rows=1 < 3
+  last_result: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-005/20260604T191538Z-zorl-ar-zorl-wordle-005-mk877-8h5g7-wordle/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T191937Z-zorl-wordle-005-infra-invalid.json
+  last_scored_utc: '2026-06-04T19:19:37Z'
+- id: ZORL-WORDLE-006
+  status: infra_invalid
+  priority: 40
+  requires:
+  - ZORL-WORDLE-003
+  candidate: candidates/ZORL-WORDLE-006-bonly-sigma005-train16.yaml
+  hypothesis: More Wordle train targets per generation will reduce antithetic pair
+    ties and keep the B-only sigma 0.05 update path active for more steps.
+  rationale: W003 found a real update signal but it collapsed after two updates; W005
+    showed rollback/lower LR alone did not solve sparsity, so the next variable is
+    reward averaging over more targets.
+  last_launched_utc: '2026-06-04T19:20:38Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T192038Z-zorl-wordle-006.yaml
+  last_verdict: infra_invalid
+  last_reason: update_norm_positive_rows=0 < 3
+  last_result: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-006/20260604T192044Z-zorl-ar-zorl-wordle-006-xkhlr-chm9f-wordle/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T192438Z-zorl-wordle-006-infra-invalid.json
+  last_scored_utc: '2026-06-04T19:24:38Z'
+- id: ZORL-WORDLE-007
+  status: weak_signal
+  priority: 50
+  requires:
+  - ZORL-WORDLE-003
+  candidate: candidates/ZORL-WORDLE-007-opsd-tf-smoke.yaml
+  hypothesis: Wordle OPSD-style teacher-forced scoring on hinted solver traces will
+    give ZORL dense nonzero pair deltas without depending on sparse solved-rate rollout
+    reward.
+  rationale: W003 showed Wordle can produce a real ZORL update path under shaped rollout
+    reward; this branch replaces rollout reward with teacher-forced logprob feedback
+    from a hinted trace.
+  last_launched_utc: '2026-06-04T20:18:52Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T201852Z-zorl-wordle-007.yaml
+  last_verdict: weak_zorl_signal
+  last_reason: standalone reward_gain=0.0008999999999999998 exact_gain=0.0 passed
+    weak gate
+  last_result: experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-007/20260604T201853Z-zorl-ar-zorl-wordle-007-7h4g6-hkcmf-wordle/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T202043Z-zorl-wordle-007-weak-zorl-signal.json
+  last_scored_utc: '2026-06-04T20:20:43Z'
+- id: ZORL-WORDLE-008
+  status: strong_signal
+  priority: 49
+  requires:
+  - ZORL-WORDLE-007
+  candidate: candidates/ZORL-WORDLE-008-opsd-tf-long.yaml
+  hypothesis: A longer Wordle OPSD teacher-forced run will monotonically improve held-out
+    hinted-trace logprob when rollback protects against bad ES steps.
+  rationale: Launch after the OPSD smoke validates SGLang input-logprob scoring and
+    nonzero update rows; this is the long convergence branch requested for dense teacher
+    feedback.
+  last_launched_utc: '2026-06-04T20:20:56Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260604T202056Z-zorl-wordle-008.yaml
+  last_verdict: strong_zorl_signal
+  last_reason: standalone reward_gain=0.025799999999999997 exact_gain=0.0 passed strong
+    gate
+  last_result: experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-008/20260604T202057Z-zorl-ar-zorl-wordle-008-877l5-kc6sz-wordle/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T204823Z-zorl-wordle-008-strong-zorl-signal.json
+  last_scored_utc: '2026-06-04T20:48:23Z'
+- id: ZORL-GSM8K-HINTED-000
+  status: draft
+  priority: 10
+  requires:
+  - ZORL-GSM8K-001
+  candidate: candidates/ZORL-GSM8K-HINTED-000-template.yaml
+  hypothesis: Teacher-verified hints in the context window can make the GSM8K reward
+    landscape easier for ZORL while keeping reward computation verifiable.
+  rationale: Draft only until a teacher capability pass writes the fixed hints file
+    referenced by the candidate.
+- id: ZORL-WORDLE-009
+  status: weak_signal
+  priority: 48
+  requires:
+  - ZORL-WORDLE-008
+  candidate: candidates/ZORL-WORDLE-009-opsd-tf-smg-smoke.yaml
+  hypothesis: Replicating native ZORL state to four TP=2 SGLang workers while routing
+    teacher-forced scoring through SMG should preserve the Wordle OPSD update path
+    and remove the single pinned-worker bottleneck.
+  rationale: W008 validated the teacher-forced Wordle signal on one worker; W009 is
+    the infrastructure smoke for the requested four-replica SMG topology.
+  last_verdict: weak_zorl_signal
+  last_reason: standalone reward_gain=0.0003999999999999993 exact_gain=0.0 passed
+    weak gate
+  last_result: experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-009/20260604T205358Z-zorl-ar-zorl-wordle-009-ml97k-qfjfv-wordle/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260604T205511Z-zorl-wordle-009-weak-zorl-signal.json
+  last_scored_utc: '2026-06-04T20:55:11Z'
+- id: ZORL-WORDLE-010
+  status: queued
+  priority: 47
+  requires:
+  - ZORL-WORDLE-009
+  candidate: candidates/ZORL-WORDLE-010-opsd-tf-smg-long.yaml
+  hypothesis: The W008 Wordle OPSD teacher-forced signal should reproduce at production
+    length when native ZORL state is replicated to all four TP=2 workers and scoring
+    traffic is routed through SMG.
+  rationale: W008 gave the strong single-worker signal; W009 verified the SMG topology.
+    W010 is the requested prod-length run on the routed serving pool.
+- id: ZORL-WORDLE-011
+  status: queued
+  priority: 46
+  requires:
+  - ZORL-WORDLE-009
+  candidate: candidates/ZORL-WORDLE-011-opsd-tf-sharded-smoke.yaml
+  hypothesis: Sharded pair materialization plus direct owner scoring should preserve
+    the Wordle OPSD teacher-forced update path while allowing global population to
+    exceed a single worker's loaded-LoRA cap.
+  rationale: This is the first sharded-population smoke after replicated SMG routing;
+    it exercises owner routing before any population-256 or population-320 science
+    run.
+- id: ZORL-WORDLE-012
+  status: promote_retest
+  priority: 45
+  requires:
+  - ZORL-WORDLE-011
+  candidate: candidates/ZORL-WORDLE-012-opsd-tf-sharded-pop256.yaml
+  hypothesis: A four-worker sharded population of 256 candidate LoRAs should preserve
+    global parent synchronization and increase the useful ES search breadth for Wordle
+    OPSD teacher-forced scoring.
+  rationale: W011 proved the sharded correctness path on two workers. W012 is the
+    first all-four-worker population-256 scale probe before attempting population
+    320.
+  last_verdict: promote_retest
+  last_reason: standalone reward_gain=0.004499999999999999 exact_gain=0.0 passed promote
+    gate
+  last_result: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-WORDLE-012/20260605T004434Z-zorl-ar-zorl-wordle-012-c2vdr-p4b8q-wordle/job.log
+  last_scorecard: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/scorecards/20260605T010654Z-zorl-wordle-012-promote-retest.json
+  last_scored_utc: '2026-06-05T01:06:54Z'
+- id: ZORL-WORDLE-013
+  status: launched
+  priority: 44
+  requires:
+  - ZORL-WORDLE-012
+  candidate: candidates/ZORL-WORDLE-013-opsd-tf-sharded-pop1024-resampled.yaml
+  hypothesis: A sixteen-worker sharded population of 1024 candidate LoRAs, combined
+    with a 512-example train pool and deterministic per-step resampling, should preserve
+    the W012 local-worker load while reducing the fixed-train-set artifact.
+  rationale: W012 kept the sharded update path healthy at population 256 but reused
+    only 16 train examples each step. W013 scales the global population and makes
+    the train batch change every step for a longer offline run.
+  last_launched_utc: '2026-06-05T01:08:23Z'
+  last_manifest: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/renders/20260605T010823Z-zorl-wordle-013.yaml

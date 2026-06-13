@@ -1,0 +1,83 @@
+id: MULTOPSD-EGGROLL-35B-STAT512
+kind: standalone_mult_sft_es_eggroll_stationary64
+base_manifest: k8s/qwen3-coder-30b-a3b-zorl-standalone-client-job.yaml
+container: zorl-client
+score_source: standalone_zorl_log
+result_root: experiments/zorl/results/zorl_autoresearch/MULTOPSD-EGGROLL-35B-STAT512
+env:
+  RESULT_ROOT: /workspace/home/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/MULTOPSD-EGGROLL-35B-STAT512
+  MODEL_PATH: Qwen/Qwen3.6-35B-A3B
+  ADAPTER_DIR: /shared/zorl/init-adapters/qwen3_6-35b-a3b-r16-eggroll-hybridattn
+  # Pool C: the session-owned 8-replica TP=2 pool (fresh/pristine base load).
+  INFER_URL: http://zorl-ar-sglang-i-0.zorl-ar-sglang-i-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-i-1.zorl-ar-sglang-i-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-i-2.zorl-ar-sglang-i-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-i-3.zorl-ar-sglang-i-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-i-4.zorl-ar-sglang-i-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-i-5.zorl-ar-sglang-i-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-i-6.zorl-ar-sglang-i-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-i-7.zorl-ar-sglang-i-headless.apanda.svc.cluster.local:30000
+  POPULATION_SHARDING: pair_shard
+  NUM_SHARDS: auto
+  # 16 pairs x 8 shards = 128 pairs / 256 candidates -> 32 LoRAs/replica (no
+  # churn). Stationary descent was proven at 40 pairs, so 128 is ample, and it
+  # halves step time vs 256.
+  PAIRS_PER_SHARD: "16"
+  CANDIDATE_ROUTING: owner
+  PRELOAD_CANDIDATES: "0"
+  TASK: mult
+  SCORE_MODE: sft
+  # Cost model: step time scales with distinct-LoRA applications (per-expert
+  # SGMV), i.e. requests-per-candidate. batch=32 -> 2 requests per candidate
+  # for the fixed 64 examples. Sizing: 3 workers/owner x 32 seqs = 96 in-flight
+  # seqs <= effective mrr~110, 3 distinct LoRAs <= max-loras-per-batch=32.
+  # (Wordle's "batch 16 unstable" was 64 global workers with NO per-owner
+  # semaphore = 1024 in-flight seqs; the per-owner cap is what makes this safe.)
+  TEACHER_FORCED_BATCH_SIZE: "32"
+  # MANDATORY with batched scoring: without trim the input-logprob logits
+  # gather materializes [seqs x positions x vocab] fp32; 96 in-flight seqs x
+  # 39 positions = 2.3 GiB, which OOM-crashed all 8 replicas simultaneously at
+  # mem-fraction 0.90 (first STAT64 attempt, 2026-06-11). With trim (answer
+  # suffix + 8 margin = ~16 positions) the same wave is ~0.9 GiB.
+  TEACHER_FORCED_LOGPROB_TRIM: "1"
+  SCORE_MAX_WORKERS: "64"
+  SCORE_MAX_WORKERS_PER_OWNER: "3"
+  SCORE_JOB_ORDER: owner_round_robin
+  STEPS: "100000"
+  MAX_RUNTIME_SECONDS: "43200"
+  B_SIGMA: "0.012"
+  LEARNING_RATE: "0.03"
+  MAX_UPDATE_NORM: "20000"
+  PERTURBATION_MODE: b_only
+  ELITIST_ROLLBACK: "0"
+  MERGE_EVERY_STEPS: "1"
+  SEED: "9240"
+  # THE experiment: a FIXED 64-example train set. ES provably descends a
+  # stationary objective (the fixed-8 run: SFT loss -0.281 -> -0.224 over 90
+  # steps, but the probe stayed flat = it memorized 8 answers). At 64 fixed
+  # examples the cheapest descent direction should shift from per-answer
+  # memorization toward the shared multiplication circuit -> a held-out probe
+  # rise here = ES extracts a GENERALIZING direction.
+  TRAIN_SIZE: "512"
+  TRAIN_POOL_SIZE: "1024"
+  RESAMPLE_TRAIN_EACH_STEP: "0"
+  EVAL_SIZE: "128"
+  ROLLOUTS_PER_PUZZLE: "1"
+  ROLLOUT_TEMPERATURE: "0.7"
+  ROLLOUT_MAX_NEW_TOKENS: "64"
+  EXPORT_INTERVAL: "32"
+  PROBE_INTERVAL: "5"
+  PROBE_TEMPERATURE: "0.0"
+  PROBE_N: "1"
+  LORA_RANK: "16"
+  LORA_ALPHA: "16"
+  WANDB_PROJECT: zorl
+  WANDB_NAME: MULTOPSD-EGGROLL-35B-STAT512
+  WANDB_GROUP: MULTOPSD-EGGROLL-35B
+  WANDB_JOB_TYPE: zorl-standalone-mult
+score_gates:
+  expected_total: 128
+  min_steps: 10
+  min_update_norm_positive_rows: 16
+  weak_exact_gain: 1
+  promote_exact_gain: 2
+  strong_exact_gain: 4
+  weak_reward_gain: 0.001
+  promote_reward_gain: 0.003
+  strong_reward_gain: 0.008
+notes:
+  - "STAT512: the train-set scaling ladder point (STAT64 -> STAT256 -> 512), proven raw recipe (lr 0.03, z-score, merge-1) unchanged for comparability. Historical: 4x train set gave ~2.5x generalizing share + higher ceiling; this tests whether the curve continues toward the 0.93 gradient reference. ~16 reqs/cand/step; expect ~80-100s/step on virtual-experts kernels."
+  - One ZORL client per pool at a time.

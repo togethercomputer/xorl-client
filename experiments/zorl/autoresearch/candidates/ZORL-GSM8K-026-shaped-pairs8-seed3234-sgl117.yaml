@@ -1,0 +1,40 @@
+id: ZORL-GSM8K-026
+kind: standalone_gsm8k_numeric_shaped_pairs8_seed3234_sgl117
+base_manifest: k8s/qwen3-coder-30b-a3b-zorl-standalone-client-job.yaml
+container: zorl-client
+score_source: standalone_zorl_log
+result_root: experiments/zorl/results/zorl_autoresearch/ZORL-GSM8K-026
+env:
+  RESULT_ROOT: /workspace/home/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-GSM8K-026
+  INFER_URL: http://zorl-ar-sglang-117.apanda.svc.cluster.local:30000
+  TASK: gsm8k
+  ZORL_GSM8K_REWARD_MODE: numeric_shaped
+  STEPS: "30"
+  NUM_PAIRS: "8"
+  B_SIGMA: "0.012"
+  LEARNING_RATE: "0.01"
+  MAX_UPDATE_NORM: "20000"
+  SEED: "3234"
+  TRAIN_SIZE: "8"
+  EVAL_SIZE: "128"
+  ROLLOUTS_PER_PUZZLE: "1"
+  ROLLOUT_TEMPERATURE: "0.6"
+  ROLLOUT_MAX_NEW_TOKENS: "2048"
+  SCORE_MAX_WORKERS: "32"
+  PROBE_INTERVAL: "5"
+  PROBE_TEMPERATURE: "0.0"
+  PROBE_N: "1"
+  LORA_RANK: "4"
+  LORA_ALPHA: "4"
+score_gates:
+  expected_total: 128
+  min_steps: 10
+  min_update_norm_positive_rows: 4
+  weak_exact_gain: 2
+  promote_exact_gain: 5
+  strong_exact_gain: 10
+  weak_reward_gain: 0.005
+  promote_reward_gain: 0.02
+  strong_reward_gain: 0.05
+notes:
+  - 8-pair shaped GSM8K seed replica on direct SGLang worker 117.

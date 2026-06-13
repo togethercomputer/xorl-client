@@ -1,0 +1,74 @@
+id: MULTOPSD-EGGROLL-35B-TFB8
+kind: standalone_mult_sft_es_eggroll_batched
+base_manifest: k8s/qwen3-coder-30b-a3b-zorl-standalone-client-job.yaml
+container: zorl-client
+score_source: standalone_zorl_log
+result_root: experiments/zorl/results/zorl_autoresearch/MULTOPSD-EGGROLL-35B-TFB8
+env:
+  RESULT_ROOT: /workspace/home/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/MULTOPSD-EGGROLL-35B-TFB8
+  MODEL_PATH: Qwen/Qwen3.6-35B-A3B
+  ADAPTER_DIR: /shared/zorl/init-adapters/qwen3_6-35b-a3b-r16-eggroll-hybridattn
+  # Override INFER_URL at launch to the healthy replica subset (drop CSI-stuck pods).
+  INFER_URL: http://zorl-ar-sglang-0.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-1.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-2.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-3.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-5.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-7.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-8.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-9.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-10.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-11.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-12.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-13.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-14.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-15.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000
+  POPULATION_SHARDING: pair_shard
+  NUM_SHARDS: auto
+  PAIRS_PER_SHARD: "64"
+  CANDIDATE_ROUTING: owner
+  PRELOAD_CANDIDATES: "0"
+  TASK: mult
+  SCORE_MODE: sft
+  # THE efficiency fix (runbook §5.4): all 8 of a candidate's examples in ONE
+  # request -> the LoRA is applied once per 8 examples -> ~8x fewer
+  # distinct-LoRA forwards. Validated shape on the Wordle pop1024 run
+  # (batch 16 was unstable; 8 is the proven setting).
+  TEACHER_FORCED_BATCH_SIZE: "8"
+  # MANDATORY: 12 workers x 8 seqs x 39 positions x vocab fp32 = ~2.2 GiB
+  # logits gather = the exact OOM that killed pool C's first STAT64 attempt.
+  # Trim cuts positions 39 -> ~16.
+  TEACHER_FORCED_LOGPROB_TRIM: "1"
+  # Sized for batch=8: 12 in-flight batch-requests/owner = 96 seqs <= effective
+  # mrr~110, and 12 distinct LoRAs < max-loras-per-batch=32. (The old 32 was
+  # sized for batch=1.)
+  SCORE_MAX_WORKERS: "512"
+  SCORE_MAX_WORKERS_PER_OWNER: "12"
+  SCORE_JOB_ORDER: owner_round_robin
+  STEPS: "100000"
+  MAX_RUNTIME_SECONDS: "43200"
+  B_SIGMA: "0.012"
+  LEARNING_RATE: "0.03"
+  MAX_UPDATE_NORM: "20000"
+  PERTURBATION_MODE: b_only
+  ELITIST_ROLLBACK: "0"
+  MERGE_EVERY_STEPS: "1"
+  SEED: "9234"
+  TRAIN_SIZE: "8"
+  TRAIN_POOL_SIZE: "512"
+  RESAMPLE_TRAIN_EACH_STEP: "1"
+  EVAL_SIZE: "128"
+  ROLLOUTS_PER_PUZZLE: "1"
+  ROLLOUT_TEMPERATURE: "0.7"
+  ROLLOUT_MAX_NEW_TOKENS: "64"
+  EXPORT_INTERVAL: "32"
+  PROBE_INTERVAL: "10"
+  PROBE_TEMPERATURE: "0.0"
+  PROBE_N: "1"
+  LORA_RANK: "16"
+  LORA_ALPHA: "16"
+  WANDB_PROJECT: zorl
+  WANDB_NAME: MULTOPSD-EGGROLL-35B-TFB8
+  WANDB_GROUP: MULTOPSD-EGGROLL-35B
+  WANDB_JOB_TYPE: zorl-standalone-mult
+score_gates:
+  expected_total: 128
+  min_steps: 10
+  min_update_norm_positive_rows: 16
+  weak_exact_gain: 1
+  promote_exact_gain: 2
+  strong_exact_gain: 4
+  weak_reward_gain: 0.001
+  promote_reward_gain: 0.003
+  strong_reward_gain: 0.008
+notes:
+  - Batched-scoring (TEACHER_FORCED_BATCH_SIZE=8) continuation of the resampled pop~2k SFT-ES run (runbook section 12.1+12.3). Expect ~60s/step vs 490s at batch=1; everything else matches the SFT-EGGROLL-35B-pop2k recipe (sigma 0.012, lr 0.03, EggRoll merge every step, owner routing).
+  - Continues from whatever base the pool serves (if launched without a pool restart the base carries the previous run's merged steps - that is a warm continuation of the SAME optimization, and the step-0 probe re-measures the true starting baseline).
+  - One ZORL client per pool at a time.

@@ -1,0 +1,133 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    experiment-group: zorl
+    autoresearch-id: zorl-000
+    app: zorl-ar-zorl-000
+  generateName: zorl-ar-zorl-000-
+  annotations:
+    autoresearch.together.ai/id: ZORL-000
+    autoresearch.together.ai/rendered_utc: '2026-06-04T00:02:37Z'
+    autoresearch.together.ai/candidate: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/candidates/ZORL-000-smoke.yaml
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: zorl-ar-zorl-000
+        team: turbo
+        experiment-group: zorl
+        experiment-variant: smoke
+        autoresearch-id: zorl-000
+    spec:
+      restartPolicy: Never
+      priorityClassName: normal
+      runtimeClassName: nvidia
+      hostNetwork: false
+      hostIPC: true
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        node-group: default
+        node-pool: compute
+      tolerations:
+      - key: node-group
+        operator: Equal
+        value: default
+        effect: NoSchedule
+      volumes:
+      - name: shared
+        persistentVolumeClaim:
+          claimName: shared-data
+      - name: workspace-home
+        persistentVolumeClaim:
+          claimName: home-apanda
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 64Gi
+      containers:
+      - name: zorl-smoke
+        image: nvcr.io/nvidia/pytorch:26.02-py3
+        workingDir: /workspace/home/xorl-apanda-dev-zorl-consolidated
+        securityContext:
+          privileged: true
+        env:
+        - name: HOME
+          value: /workspace/home
+        - name: HF_HOME
+          value: /workspace/home/.cache/huggingface
+        - name: HF_HUB_DISABLE_XET
+          value: '1'
+        - name: TRANSFORMERS_CACHE
+          value: /workspace/home/.cache/huggingface/transformers
+        - name: TOKENIZERS_PARALLELISM
+          value: 'false'
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: expandable_segments:True
+        - name: NCCL_IB_DISABLE
+          value: '0'
+        - name: NCCL_NET_GDR_LEVEL
+          value: '2'
+        - name: NCCL_IB_HCA
+          value: mlx5
+        - name: NCCL_SOCKET_IFNAME
+          value: ^lo,docker
+        - name: NCCL_DEBUG
+          value: WARN
+        - name: AUTORESEARCH_ID
+          value: ZORL-000
+        - name: AUTORESEARCH_CANDIDATE
+          value: /home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/autoresearch/candidates/ZORL-000-smoke.yaml
+        volumeMounts:
+        - name: shared
+          mountPath: /shared
+        - name: workspace-home
+          mountPath: /workspace/home
+        - name: shm
+          mountPath: /dev/shm
+        resources:
+          requests:
+            nvidia.com/gpu: 8
+          limits:
+            nvidia.com/gpu: 8
+        command:
+        - /bin/bash
+        - -lc
+        - "set -euo pipefail\n\nREPO_ROOT=/workspace/home/xorl-apanda-dev-zorl-consolidated\n\
+          PYTHON_BIN=/workspace/home/xorl-internal/.venv/bin/python\nCONFIG_PATH=\"\
+          ${REPO_ROOT}/experiments/zorl/configs/qwen3_coder_30b_a3b_zorl_smoke.yaml\"\
+          \nSCRIPT_PATH=\"${REPO_ROOT}/experiments/zorl/run_coderforge_zorl_smoke.py\"\
+          \nDATASET_PATH=\"/workspace/home/xorl-internal/experiments/local_benchmark/dataset_cache/prepared_dataset_tail20480_filtered_reward1\"\
+          \nRESULT_ROOT=\"${REPO_ROOT}/experiments/zorl/results/qwen3_coder_30b_a3b_zorl_smoke\"\
+          \n\nAPI_PORT=26020\nWORKER_PORT=25576\nMASTER_PORT=29590\nNUM_SESSIONS=2\n\
+          STEPS=2\nBATCH_SIZE=1\nLEARNING_RATE=5e-4\nGRADIENT_CLIP=1.0\nLORA_RANK=32\n\
+          LORA_ALPHA=32\nZORL_B_SIGMA=0.01\nZORL_NUM_PAIRS=4\nZORL_REFRESH_INTERVAL=8\n\
+          ZORL_SEED=1234\n\nRUN_ID=\"$(date -u +%Y%m%dT%H%M%SZ)-${HOSTNAME}\"\nRUN_DIR=\"\
+          ${RESULT_ROOT}/${RUN_ID}\"\nmkdir -p \"${RUN_DIR}\" \"${HF_HOME}\"\n\nexport\
+          \ PYTHONPATH=\"${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}\"\nexport PATH=\"\
+          /workspace/home/xorl-internal/.venv/bin:${PATH}\"\n\nexec > >(tee -a \"\
+          ${RUN_DIR}/job.log\") 2>&1\n\necho \"run_id=${RUN_ID}\"\necho \"run_dir=${RUN_DIR}\"\
+          \necho \"api_port=${API_PORT}\"\necho \"worker_port=${WORKER_PORT}\"\necho\
+          \ \"master_port=${MASTER_PORT}\"\necho \"dataset_path=${DATASET_PATH}\"\n\
+          echo \"git_head=$(git -C \"${REPO_ROOT}\" rev-parse HEAD 2>/dev/null ||\
+          \ echo unknown)\"\necho \"git_status_begin\"\ngit -C \"${REPO_ROOT}\" status\
+          \ --short || true\necho \"git_status_end\"\n\n\"${PYTHON_BIN}\" -u -m xorl.server.launcher\
+          \ \\\n  --mode auto \\\n  --config \"${CONFIG_PATH}\" \\\n  --api-port \"\
+          ${API_PORT}\" \\\n  --worker-address \"tcp://0.0.0.0:${WORKER_PORT}\" \\\
+          \n  --master-port \"${MASTER_PORT}\" \\\n  --log-level INFO \\\n  --server.output_dir\
+          \ \"${RUN_DIR}/server_output\" \\\n  --server.worker_bind_address \"tcp://0.0.0.0:${WORKER_PORT}\"\
+          \ \\\n  > \"${RUN_DIR}/server.log\" 2>&1 &\n\nSERVER_PID=$!\n\ncleanup()\
+          \ {\n  if kill -0 \"${SERVER_PID}\" >/dev/null 2>&1; then\n    kill \"${SERVER_PID}\"\
+          \ || true\n    wait \"${SERVER_PID}\" || true\n  fi\n}\ntrap cleanup EXIT\n\
+          \n\"${PYTHON_BIN}\" -u \"${SCRIPT_PATH}\" \\\n  --train-url \"http://127.0.0.1:${API_PORT}\"\
+          \ \\\n  --model \"Qwen/Qwen3-Coder-30B-A3B-Instruct\" \\\n  --output-dir\
+          \ \"${RUN_DIR}/smoke\" \\\n  --server-output-dir \"${RUN_DIR}/server_output\"\
+          \ \\\n  --dataset-path \"${DATASET_PATH}\" \\\n  --run-id \"zorl-${RUN_ID}\"\
+          \ \\\n  --num-sessions \"${NUM_SESSIONS}\" \\\n  --steps \"${STEPS}\" \\\
+          \n  --batch-size \"${BATCH_SIZE}\" \\\n  --learning-rate \"${LEARNING_RATE}\"\
+          \ \\\n  --lora-rank \"${LORA_RANK}\" \\\n  --lora-alpha \"${LORA_ALPHA}\"\
+          \ \\\n  --zorl-b-sigma \"${ZORL_B_SIGMA}\" \\\n  --zorl-num-pairs \"${ZORL_NUM_PAIRS}\"\
+          \ \\\n  --zorl-refresh-interval \"${ZORL_REFRESH_INTERVAL}\" \\\n  --zorl-seed\
+          \ \"${ZORL_SEED}\"\n"

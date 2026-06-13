@@ -1,0 +1,40 @@
+id: ZORL-OPD-002
+kind: standalone_opd_multiplication_smoke_sigma005
+base_manifest: k8s/qwen3-coder-30b-a3b-zorl-standalone-client-job.yaml
+container: zorl-client
+score_source: standalone_zorl_log
+result_root: experiments/zorl/results/zorl_autoresearch/ZORL-OPD-002
+env:
+  RESULT_ROOT: /workspace/home/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/ZORL-OPD-002
+  INFER_URL: http://zorl-ar-sglang-117.apanda.svc.cluster.local:30000
+  TASK: opd_multiplication
+  ZORL_OPD_DIGITS: "2"
+  STEPS: "6"
+  NUM_PAIRS: "8"
+  B_SIGMA: "0.05"
+  LEARNING_RATE: "0.01"
+  MAX_UPDATE_NORM: "20000"
+  PERTURBATION_MODE: b_only
+  SEED: "2234"
+  TRAIN_SIZE: "8"
+  EVAL_SIZE: "16"
+  ROLLOUT_TEMPERATURE: "0.6"
+  ROLLOUT_MAX_NEW_TOKENS: "24"
+  SCORE_MAX_WORKERS: "32"
+  PROBE_INTERVAL: "1"
+  PROBE_TEMPERATURE: "0.6"
+  PROBE_N: "8"
+  LORA_RANK: "4"
+  LORA_ALPHA: "4"
+score_gates:
+  expected_total: 16
+  min_steps: 3
+  min_update_norm_positive_rows: 2
+  weak_exact_gain: 1
+  promote_exact_gain: 2
+  strong_exact_gain: 4
+  weak_reward_gain: 0.02
+  promote_reward_gain: 0.06
+  strong_reward_gain: 0.12
+notes:
+  - Branches from OPD-000 zero-pair-delta smoke; raises sigma to match the Wordle setting that produced real updates while staying on 2-digit OPD.

@@ -1,0 +1,21 @@
+{
+  "metrics": {
+    "expected_records": 4,
+    "exports": 2,
+    "num_sessions": 2,
+    "pair_delta_abs_mean": 1.1807201076408091e-05,
+    "records": 4,
+    "result_file": "/home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/qwen3_coder_30b_a3b_zorl_smoke/20260604T001512Z-zorl-ar-zorl-000-brrjm-8zl25/smoke/summary.json",
+    "run_id": "zorl-20260604T001512Z-zorl-ar-zorl-000-brrjm-8zl25",
+    "steps": 2,
+    "update_norm_max": 6607.274754144693,
+    "update_norm_min": 6523.921703362293,
+    "update_norm_positive_rows": 4,
+    "zorl_exports_ok": true
+  },
+  "reason": "all smoke records, updates, and exported ZORL metadata are present",
+  "result": "/home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/qwen3_coder_30b_a3b_zorl_smoke/20260604T001512Z-zorl-ar-zorl-000-brrjm-8zl25/smoke/summary.json",
+  "run_dir": "/home/apanda/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/qwen3_coder_30b_a3b_zorl_smoke/20260604T001512Z-zorl-ar-zorl-000-brrjm-8zl25",
+  "score_source": "smoke_summary",
+  "verdict": "smoke_pass"
+}

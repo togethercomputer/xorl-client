@@ -1,0 +1,64 @@
+id: MULTOPSD-004
+kind: standalone_mult_nofiller_opsd_kl_fullvocab_singleshot_es
+base_manifest: k8s/qwen3-coder-30b-a3b-zorl-standalone-client-job.yaml
+container: zorl-client
+score_source: standalone_zorl_log
+result_root: experiments/zorl/results/zorl_autoresearch/MULTOPSD-004
+env:
+  RESULT_ROOT: /workspace/home/xorl-apanda-dev-zorl-consolidated/experiments/zorl/results/zorl_autoresearch/MULTOPSD-004
+  INFER_URL: http://zorl-ar-sglang-0.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-1.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-2.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-3.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-4.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-5.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-6.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-7.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-8.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-9.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-10.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-11.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-12.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-13.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-14.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-15.zorl-ar-sglang-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-b-0.zorl-ar-sglang-b-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-b-2.zorl-ar-sglang-b-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-b-3.zorl-ar-sglang-b-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-b-4.zorl-ar-sglang-b-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-b-5.zorl-ar-sglang-b-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-b-6.zorl-ar-sglang-b-headless.apanda.svc.cluster.local:30000 http://zorl-ar-sglang-b-7.zorl-ar-sglang-b-headless.apanda.svc.cluster.local:30000
+  POPULATION_SHARDING: pair_shard
+  NUM_SHARDS: auto
+  PAIRS_PER_SHARD: "35"
+  CANDIDATE_ROUTING: owner
+  PRELOAD_CANDIDATES: "0"
+  TASK: mult
+  SCORE_MODE: opsd_kl_full
+  OPSD_KL_MODE: forward_kl_full
+  OPSD_KL_VOCAB_CHUNK_SIZE: "32768"
+  STEPS: "100000"
+  MAX_RUNTIME_SECONDS: "43200"
+  NUM_PAIRS: "800"
+  B_SIGMA: "0.05"
+  LEARNING_RATE: "0.01"
+  MAX_UPDATE_NORM: "20000"
+  PERTURBATION_MODE: b_only
+  ELITIST_ROLLBACK: "1"
+  SEED: "9234"
+  TRAIN_SIZE: "16"
+  TRAIN_POOL_SIZE: "512"
+  RESAMPLE_TRAIN_EACH_STEP: "1"
+  EVAL_SIZE: "128"
+  ROLLOUTS_PER_PUZZLE: "1"
+  ROLLOUT_TEMPERATURE: "0.7"
+  ROLLOUT_MAX_NEW_TOKENS: "64"
+  SCORE_MAX_WORKERS: "512"
+  SCORE_MAX_WORKERS_PER_OWNER: "16"
+  SCORE_JOB_ORDER: owner_round_robin
+  EXPORT_INTERVAL: "32"
+  PROBE_INTERVAL: "10"
+  PROBE_TEMPERATURE: "0.0"
+  PROBE_N: "1"
+  LORA_RANK: "4"
+  LORA_ALPHA: "4"
+  WANDB_PROJECT: zorl
+  WANDB_NAME: MULTOPSD-004
+  WANDB_GROUP: MULTOPSD-004
+  WANDB_JOB_TYPE: zorl-standalone-mult
+score_gates:
+  expected_total: 128
+  min_steps: 10
+  min_update_norm_positive_rows: 16
+  weak_exact_gain: 1
+  promote_exact_gain: 2
+  strong_exact_gain: 4
+  weak_reward_gain: 0.001
+  promote_reward_gain: 0.003
+  strong_reward_gain: 0.008
+notes:
+  - Rank-4 large-population overnight ES port of the no-filler OPSD (single-shot) 4x4-multiplication recipe. Reverts the rank-32 capacity experiment (MULTOPSD-003) back to the stable rank-4 LoRA where the SGLang LoRA kernel fits and a large population can be loaded. Student input is the chat-template user turn plus the literal Answer cue (no CoT, no filler), and it samples the answer directly. Teacher input is the same user turn with the precomputed CoT inserted as private scratch before the same Answer cue (self-distill, same base weights). Full-vocab forward KL is scored server-side over the student-sampled answer positions only.
+  - TASK=mult, SCORE_MODE=opsd_kl_full, single-shot (OPSD_MULTI_TURN omitted, so it defaults to 0 - this is NOT multi-turn). LoRA rank/alpha back to 4. ADAPTER_DIR is intentionally NOT set so the base manifest defaults to /shared/zorl/init-adapters/qwen3-30b-a3b-r4 and reuses the existing rank-4 init adapter (already present with r=4 alpha=4).
+  - Full combined pool of 23 good sglang replicas (pool A zorl-ar-sglang 0..15 plus pool B zorl-ar-sglang-b 0,2..7; b-1 EXCLUDED as flaky). pair_shard sharding with NUM_SHARDS=auto resolves to 23 shards (one per URL). PAIRS_PER_SHARD=35 OVERRIDES NUM_PAIRS at runtime so effective num_pairs becomes 35x23=805, population 2x805=1610 candidates, 70 candidates per replica (2x35) which stays under the reverted rank-4 LoRA pool cap of max-loaded-loras=80 with margin. (NUM_PAIRS=800 in this file is informational only; PAIRS_PER_SHARD wins.)
+  - Decent training samples - TRAIN_SIZE bumped 8 to 16 with RESAMPLE_TRAIN_EACH_STEP=1 over a TRAIN_POOL_SIZE=512 pool, so each step draws a fresh 16-puzzle batch from the pool. PROBE_TEMPERATURE=0.0 reads GREEDY direct accuracy every PROBE_INTERVAL=10 steps; EVAL_SIZE=128. Cold base-30B greedy headroom is direct_accuracy near 0.03 so watch the probe exact_count climb from the cold floor.
+  - Overnight durability - MAX_RUNTIME_SECONDS=43200 (12h) wall cap, STEPS=100000 (effectively unbounded so the wall cap stops it), EXPORT_INTERVAL=32 writes a best export periodically for warm-resume. Pair this candidate with the supervise_overnight.sh watcher which warm-resumes from the latest exports/best after any crash.
+  - Pool note - only ONE ZORL client can run on these pools at a time. Do not launch while another client holds the pool.
