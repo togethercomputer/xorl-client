@@ -208,6 +208,36 @@ Reaching 10% on OPD specifically is hard (full-vocab KL + teacher-matching are
 inherent overhead the clean CE trainer doesn't pay), but 2-4% is reachable by
 stacking levers 1-3, and the no-dummy 1-node real-throughput win is already real.
 
+## 1-node OPD MFU: loss-mode + batch-scaling sweep (2026-06-14)
+
+All on the unblocked 1-node trainer (dispatch fix + expandable), full OPD fb:
+
+| config | fb s (steady) | tok/s/GPU | ~MFU |
+|---|---|---|---|
+| 64-sample, streaming KL | 11.4 | 770 | 1.40% |
+| 64-sample, **torch_compile KL** | 10.4 | 846 | ~1.53% |
+| 128-sample (repeat2), torch_compile KL | 17.3 | ~1017 | ~1.84% |
+
+- **torch_compile KL** is ~9% faster than streaming and fits (expandable headroom) —
+  a real loss-mode win, and it doesn't recompute the lm-head 3× the way streaming
+  does. (Keeps lm_head_fp32=true per the memory steer.)
+- **Batch scaling helps but saturates:** 2× data → 1.66× time → 1.2× throughput
+  (fixed costs amortized). Fit: time ≈ 3.5 + 6.9·N for N×64 samples → **asymptotic
+  MFU ≈ 2.3%** even at infinite batch. The marginal per-token cost is the wall.
+
+**Honest ceiling:** the per-token OPD model fwd/bwd is ~2-3% MFU on 1-node, capped by
+MoE EP all-to-all comms (the Wordle agent profiled ~50% of device time there) +
+the full-vocab streaming KL + the `recompute_before_dispatch` backward (52% of fb).
+The clean-trainer 10.6% is the MODEL ceiling (plain CE, optimized config, bigger
+M/rank); OPD's full distillation fb (teacher-match + full-vocab KL + OPRD + recompute)
+inherently pays more and lands ~2-3% at this scale. Untested biggest lever:
+`no_recompute` (removes ~3s recompute) — memory-permitting; expect ~2.1% at 64-sample.
+
+**What IS won at 1 node:** the dispatch deadlock is fixed, the fb runs end-to-end,
+and eliminating the 4-node 85% dummy waste gives **~1.5× better real throughput/GPU**
+(770 vs ~513). To actually reach ~10% needs the MoE-EP-all-to-all comms work
+(Wordle track) and/or `no_recompute`, not more OPD-loss tuning.
+
 ## Net status + next steps
 
 - The one clean compute reproduced the **1.89 GiB fp32 lm-head `grad_weight` OOM**
