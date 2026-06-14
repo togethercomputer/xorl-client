@@ -135,6 +135,41 @@ teacher instead of recomputing; the lm-head memory/KL work); (4) `mbs4`-style
 dense microbatching like the winning sweep config. The standalone-trainer sweep is
 the right Tier-0 ceiling probe and should be the MFU reference going forward.
 
+## ✅ FIXED: the rank-0 fb dispatch deadlock (2026-06-14)
+
+Root cause: `AsyncRouterChannel` (API→orchestrator and orchestrator→rank0) had **no
+`ROUTER_MANDATORY`**, so a send to a DEALER identity that was briefly unroutable
+right after (re)connect was **silently dropped**. A dropped `forward_backward`
+command meant rank 0 never broadcast it, the workers blocked forever in
+`broadcast_object_list`, and the caller awaited a response that never came
+(intermittent: `register_session` worked, fb usually stalled, occasionally ran).
+
+Fix (engine `27b1694b`, branch `throughput/opd-lmhead-moe-gemm-20260614`):
+`zmq_channels.py` `AsyncRouterChannel` now sets `ROUTER_MANDATORY=1` (raise
+EHOSTUNREACH instead of dropping) and retries the send with exponential backoff
+(5ms→100ms, up to 30s) until the peer is routable. Only unroutable sends (latent
+silent-drop bugs) are affected; working sends/4-node path unchanged.
+
+**Validated on the 1-node trainer:** the fix engaged (2 "identity not routable yet"
+retries at startup) and a 16-sample fb replay then **completed 5/5 iterations
+reliably** (previously stalled at 0% GPU). First real 1-node OPD per-phase fb
+breakdown (16 samples, pack2304, steady):
+
+| phase | s |
+|---|---|
+| server_forward_backward | ~2.1 |
+| model_forward | 0.33–0.49 |
+| backward | ~0.65 |
+| **clear_gradients** | **~0.50 (≈24% of fb)** |
+| loss_compute | ~0.08 |
+| oprd_teacher_forward | 0.0 (cache hit) |
+
+New lever surfaced: **clear_gradients is a ~0.5 s FIXED cost** (zeroing the
+[248320,2048] fp32 lm-head grad each step — also ~0.59 s at 4-node) → check
+`set_to_none`/skip-rezero. Remaining 1-node blocker for the FULL 64-sample batch is
+the 1.90 GiB fp32 lm-head grad OOM (lowmem keeps fp32 so it doesn't shrink the grad
+buffer) → pursue a fused-quack loss mode (keep lm_head fp32) per the memory steer.
+
 ## Net status + next steps
 
 - The one clean compute reproduced the **1.89 GiB fp32 lm-head `grad_weight` OOM**
