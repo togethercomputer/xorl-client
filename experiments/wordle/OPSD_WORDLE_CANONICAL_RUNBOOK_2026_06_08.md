@@ -1,12 +1,53 @@
 # OPSD Wordle Gradient Baseline Canonical Runbook
 
-Last refreshed: 2026-06-13 PM (HANDOFF — corrected science: mode-collapse not OPSD-dead; forward-KL + reason-first is the live hypothesis)
+Last refreshed: 2026-06-14 (post-consolidation — NEW HOMES + next-agent start below; science unchanged)
 
-> **READ ORDER**: "🎯 HANDOFF — START HERE" immediately below is the single current
-> source of truth. The dated "⭐⭐ FINDING" sections under it are the chronological ledger
-> (note the THIRD FINDING's "OPSD structurally stuck" was CORRECTED — see START HERE).
-> Infra/gate/monitor command sections lower down are still valid. Legacy 30B sections at
-> the bottom are reference.
+> **READ ORDER**: "📦 CONSOLIDATED — NEW HOMES" immediately below tells you WHERE everything now
+> lives and how to start. Then "🆕 HANDOFF — START HERE" + "⭐⭐ PROBE RESULT" are the science
+> source of truth (the dated "⭐⭐ FINDING" ledger under them is chronological; note the THIRD
+> FINDING's "OPSD structurally stuck" was CORRECTED). Infra/gate/monitor sections lower down are
+> still valid. Legacy 30B sections at the bottom are reference.
+
+---
+## 📦 CONSOLIDATED — NEW HOMES + NEXT-AGENT START (2026-06-14)
+
+The Wordle work was split across three consolidated repos (the old single run-worktree
+`xorl-opsd-wordle-apanda-dev-run-20260607` is being retired; its ~1.9T `results/` relocates to
+`/shared/apanda/` once that worktree goes idle).
+
+| What | Home (repo / branch) | Path |
+|---|---|---|
+| **Harness + science** (THIS runbook, trainers, eval, probes, generators, tests) | **`xorl-client-internal` `apanda-dev`** | `experiments/wordle/` |
+| **k8s manifests + trainer configs** | **`xorl-infra-internal`** (PR #1 → main) | `k8s/zorl/`, `configs/` |
+| **Engine** (imported as `xorl`; OPD loss, server, FSDP/EP) | **`xorl-internal` `apanda-dev`** (consolidated trunk, OPD B1 #370/#372 landed) | `src/xorl/` |
+| **Run artifacts** (gold data, checkpoints, eval transcripts) | **`/shared/apanda/`** (after relocation; pre-relocation still in the old worktree `experiments/zorl/results/`) | — |
+
+**→ Instantiate the next Wordle agent from `xorl-client-internal`, branch `apanda-dev`** (currently
+contains all 4 harnesses; the Wordle code is under `experiments/wordle/`). Branch a fresh
+`exp/wordle-<topic>` off it. Its venv must import the **`xorl` engine from `xorl-internal` `apanda-dev`**
+(the consolidated trunk) plus `xorl_client`. Pull k8s/configs from **`xorl-infra`**.
+
+**Data the next agent needs** (locate under `/shared/apanda/` post-relocation; currently at
+`…run-20260607/experiments/zorl/results/`):
+- Broad algo-think SFT gold: `wordle_gold_sft/algo_think_v2_broad_20260613T215318Z/gold.jsonl`
+  (15,986 turns, full word-list coverage, seed-777 floor-eval targets held out).
+- SFT-48 warm-start ckpt: `opsd_wordle_native_baseline/20260612T160347Z-…sft_gold/server_output/weights/default/step-000048`.
+- Reason-first CoT cache (weak target, see PROBE RESULT): `wordle_teacher_cot/q36_cot_cache_v0_*`.
+
+**Serving stack — leave warm** (perf/other agents may share it): `opsd-wordle-q36-sglang-0/1` (TP=2),
+teacher `opsd-wordle-q36-teacher-sglang`, gateway `opsd-wordle-q36-smg`. The teacher endpoint serves
+base Qwen3.6-35B-A3B and is reachable over cluster DNS for offline probes (no GPU job needed —
+that's how the PROBE RESULT below was produced).
+
+**Immediate next experiments (ranked, all set up):**
+1. **Retrieval-targeted SFT** (`…-algosft-4gpu.yaml` + the broad gold) — the live hypothesis. KNOWN
+   ISSUE: hangs at the first `forward_backward` (4-GPU EP=4 + fp8 + compiled CE; cold eval=0.443 OK).
+   Resume with **`enable_fp8_training: false` and/or `ce_mode: compiled`→eager first**, 60-min PG
+   timeout, watch the first MoE alltoall. Gate: step-1 loss must drop below 0.443; then floor-eval
+   saved ckpts on the HELD-OUT targets (does retrieval generalize or memorize?).
+2. **GRPO** (`train_grpo_wordle.py`) — STILL BLOCKED: `xorl_client.rl` is not present in
+   `xorl-client-internal apanda-dev` (verified 2026-06-14). Install/port `xorl_client.rl.{advantages,
+   datums}` to unblock. GRPO is the fallback if SFT confabulates (reward verifies the guess, can't fake).
 
 ---
 ## 🆕 HANDOFF — START HERE (2026-06-13 EVENING, science-focused agent)
