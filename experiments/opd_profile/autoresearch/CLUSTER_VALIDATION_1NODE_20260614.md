@@ -170,6 +170,44 @@ New lever surfaced: **clear_gradients is a ~0.5 s FIXED cost** (zeroing the
 the 1.90 GiB fp32 lm-head grad OOM (lowmem keeps fp32 so it doesn't shrink the grad
 buffer) → pursue a fused-quack loss mode (keep lm_head fp32) per the memory steer.
 
+## ✅ FULL 64-sample 1-node OPD fb RUNS (dispatch fix + expandable_segments), 2026-06-14
+
+With engine `27b1694b` (dispatch fix) AND `expandable_segments:True`, the full
+64-sample fb now **completes 5/5 reliably, NO OOM, GPU util peaks 94%**. The
+earlier "expandable_segments hangs" was the dispatch deadlock masking it — once the
+fb actually dispatches, expandable reclaims the ~2 GiB reserved-but-unallocated
+fragmentation and the 1.90 GiB fp32 lm-head grad fits. **So 1-node OPD is unblocked
+end-to-end** (no lm_head_fp32=false, no lowmem even needed for the fit — though both
+remain valid; expandable was the missing piece).
+
+First authoritative full-batch 1-node measurement (pack2304, dp=8, 0 dummy):
+
+| metric | value |
+|---|---|
+| server_forward_backward_s | **~11.4 s** (steady) |
+| reconstructed logical MFU | **1.40%** |
+| executed tok/s/GPU | 770 (all real, 0 dummy) |
+| real student tok/s/GPU | 758 |
+
+Per-phase (steady): model_fwd 3.1 s, **backward 5.85 s (52%)**, loss 1.23 s,
+kl 1.0 s, **clear_gradients 1.49 s (13%)**, oprd_teacher_forward 0.0 (cache hit).
+
+**vs 4-node** (1.37% MFU, but 85% dummy waste → ~513 real tok/s/GPU): 1-node gives
+**~1.5× better REAL throughput/GPU** by eliminating dummy waste — confirming the
+feeding analysis. But 1.40% is still 7.5× below the clean-trainer 10.6% ceiling.
+The gap is OPD-specific overhead on the model fwd/bwd, in priority order:
+1. **backward 5.85 s (52%)** — `recompute_before_dispatch` recomputes the forward in
+   backward (~+3.1 s). `no_recompute` would cut it but needs more activation memory.
+2. **clear_gradients 1.49 s (13%)** — zeroing the 1.90 GiB lm-head grad each step;
+   `set_to_none` avoids it.
+3. **KL+loss ~2.2 s (19%)** — full-vocab streaming KL recomputes the lm-head 3×;
+   a fused KL would cut it.
+4. **Bigger batch** — at 70400 tok the MoE M≈2200 (~44% GEMM) is fine, but fixed
+   costs (clear-grad) aren't amortized; more prompts/step raises MFU.
+Reaching 10% on OPD specifically is hard (full-vocab KL + teacher-matching are
+inherent overhead the clean CE trainer doesn't pay), but 2-4% is reachable by
+stacking levers 1-3, and the no-dummy 1-node real-throughput win is already real.
+
 ## Net status + next steps
 
 - The one clean compute reproduced the **1.89 GiB fp32 lm-head `grad_weight` OOM**
