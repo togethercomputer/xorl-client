@@ -1,6 +1,32 @@
 # CANONICAL SCIENCE RUNBOOK — OPD / OPRD prefill-time-compute
 
-The scientific findings + how to measure them correctly. Operations are in `CANONICAL_INFRA_RUNBOOK.md`. Last updated **2026-06-13 ~22:45Z** (samples-driven failure-mode diagnosis — §1f: the wall is single-pass computational DEPTH, not the objective; the live new direction is value-grounded PREFILL compute, RiM-style, now running. Full diagnosis: `FAILURE_MODE_FROM_SAMPLES_2026_06_13.md`. Prior: lever-1 × OPRD-coef wave §1e.).
+> ## ▶ NEXT-AGENT START HERE (post-consolidation, 2026-06-14)
+>
+> **This is the canonical science home now.** After the 2026-06-13/14 consolidation the OPD/prefill
+> harness lives in **`xorl-client` (branch `apanda-dev`), `experiments/opd_profile/`** — instantiate the
+> next agent **from `/home/apanda/xorl-client`** (this checkout; `xorl-client-chat-completions` is a
+> symlink to it). The OPD client + the `opd_correct_prefix_only` CPF knob are in `examples/on_policy_distillation.py`.
+> To *launch OPD-stack training* you also need: the **engine** = `xorl-internal` `apanda-dev` (OPD landed via
+> B1 #370/#372 — use a fresh checkout, NOT the deprecated `xorl-apanda-dev-opd-port`); **k8s/configs/generator**
+> = `xorl-infra` (PR #1); the live stack is `er-opd-q36-35b-slots` (infra runbook).
+>
+> **Read first:** `experiments/opd_profile/FAILURE_MODE_FROM_SAMPLES_2026_06_13.md` (the samples-driven
+> diagnosis) + §1f + §7 below. **One-line state:** the wall is single-pass computational **DEPTH** (`|gold|≥10k`
+> solved 0× across every run; the model regresses magnitude, not value) — every on-policy distillation objective
+> (KL/OPRD/SFT, any coef/temp) hits it. The **live new direction** is value-grounded **PREFILL compute** (RiM-style).
+>
+> **⚡ FIRST ACTION — the decisive experiment is RUNNING (separate repo):** RiM value-grounded prefill on ops6,
+> in **`/home/apanda/xorl-rim-repro`, `experiments/rim/`** (Qwen3-30B-A3B; see `ARITH_EXPERIMENT_NOTE.md` there).
+> Two budget-matched arms (RiM grounded blocks vs SFT-no-CoT) launched 2026-06-13 ~22:00Z, ~5.5h wall.
+> Check pods `rim-qwen3-30b-arith-{rim,baseline}`; results land in `experiments/rim/results/*/eval_*.jsonl`.
+> **Analyze:** `python experiments/rim/analyze_arith_eval.py results/rim-qwen3-30b-arith-rim results/rim-qwen3-30b-arith-baseline`.
+> **Decision gate = per-`|gold|`-bucket accuracy, NOT aggregate** (gold=0 attractor masks the hard buckets):
+> does RiM lift `|gold|≥1k`/`≥10k`? If yes → first prefill-compute signal on a depth-limited task → port to
+> Q3.6-35B. If no → prefill compute at this depth is genuinely hard → curriculum / process supervision.
+> Record the verdict in §7 item 6. (Also queued, lower priority: confirm §1f.3's prediction that CPF/ARITH-021
+> ties SFT because correct samples skew small-magnitude.)
+
+The scientific findings + how to measure them correctly. Operations are in `CANONICAL_INFRA_RUNBOOK.md`. Last updated **2026-06-14 ~0Xz** (post-consolidation: canonical home = `xorl-client` apanda-dev; next-agent orientation block added above. Prior **2026-06-13 ~22:45Z**: samples-driven failure-mode diagnosis §1f — the wall is single-pass computational DEPTH; the live new direction is value-grounded PREFILL compute, RiM-style, running. Full diagnosis: `FAILURE_MODE_FROM_SAMPLES_2026_06_13.md`. Prior: lever-1 × OPRD-coef wave §1e.).
 
 > **VALIDITY BANNER:** between the sglang worktree drift (~2026-06-08) and the 2026-06-10 fixes, EVERY chat-sampled run trained and evaluated under up to three serving bugs (think-open rendering + train/sample context mismatch + batched-decode KV corruption — infra runbook §9b). This includes the **entire 5×5 / PTC-300-series campaign**: its conclusions (§2's 5×5 decay, §4's K=C results) are SUSPECT until re-validated on the fixed stack. The 4×4 line was re-validated cleanly on 2026-06-10 (§1a).
 >
