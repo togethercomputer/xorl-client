@@ -238,6 +238,27 @@ and eliminating the 4-node 85% dummy waste gives **~1.5× better real throughput
 (770 vs ~513). To actually reach ~10% needs the MoE-EP-all-to-all comms work
 (Wordle track) and/or `no_recompute`, not more OPD-loss tuning.
 
+## no_recompute: OOMs at full batch (recompute is memory-necessary), 2026-06-14
+
+`enable_gradient_checkpointing: false` (no_recompute) on the full 64-batch:
+computed at 100% util for ~2 min, then **OOMed/crashed** (server died). So the
+`recompute_before_dispatch` backward (52% of fb) is **not removable at the full
+batch** — without recompute, all activations are held and it OOMs even with
+expandable. Trade-off is hard: batch-fits (recompute, +52% backward) XOR
+no-recompute (smaller batch, low MFU). So the 52% backward overhead is structural
+at this batch size; the only way around it is a smaller microbatch with
+no_recompute (low MFU) or activation offload (which adds CPU<->GPU transfer).
+
+### Final 1-node MFU verdict
+OPD's 1-node forward_backward is **~1.4–1.9% MFU (asymptote ~2.3%)**, structurally
+capped by: MoE-EP all-to-all comms (~50% of model device time, Wordle profile) +
+full-vocab streaming KL + the memory-necessary recompute backward. **10% is the
+clean-CE-trainer MODEL ceiling, not reachable by OPD's distillation fb** at this
+scale without (a) reducing MoE-EP all-to-all cost (Wordle track) and (b) a
+recompute-free + memory-efficient KL path. The concrete, banked 1-node wins:
+**dispatch deadlock fixed** + **no dummy waste → ~1.5× real throughput/GPU vs
+4-node** + **torch_compile KL +9%**.
+
 ## Net status + next steps
 
 - The one clean compute reproduced the **1.89 GiB fp32 lm-head `grad_weight` OOM**
