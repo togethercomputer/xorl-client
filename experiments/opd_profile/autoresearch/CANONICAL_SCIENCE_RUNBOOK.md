@@ -2,10 +2,11 @@
 
 > ## ▶ NEXT-AGENT START HERE (post-consolidation, 2026-06-14)
 >
-> **This is the canonical science home now.** After the 2026-06-13/14 consolidation the OPD/prefill
-> harness lives in **`xorl-client` (branch `apanda-dev`), `experiments/opd_profile/`** — instantiate the
-> next agent **from `/home/apanda/xorl-client`** (this checkout; `xorl-client-chat-completions` is a
-> symlink to it). The OPD client + the `opd_correct_prefix_only` CPF knob are in `examples/on_policy_distillation.py`.
+> **You are in the next-agent home: `/home/apanda/xorl-opd-prefill`** (a dedicated `xorl-client` worktree on
+> branch **`exp/opd-prefill`**, off the consolidated `apanda-dev`). The OPD/prefill harness is here in
+> `experiments/opd_profile/`; the OPD client + the `opd_correct_prefix_only` CPF knob are in
+> `examples/on_policy_distillation.py`. Commit your runbook verdicts / new candidates on `exp/opd-prefill`
+> (do NOT use the shared `/home/apanda/xorl-client` checkout — that's the consolidation/wordle branch).
 > To *launch OPD-stack training* you also need: the **engine** = `xorl-internal` `apanda-dev` (OPD landed via
 > B1 #370/#372 — use a fresh checkout, NOT the deprecated `xorl-apanda-dev-opd-port`); **k8s/configs/generator**
 > = `xorl-infra` (PR #1); the live stack is `er-opd-q36-35b-slots` (infra runbook).
