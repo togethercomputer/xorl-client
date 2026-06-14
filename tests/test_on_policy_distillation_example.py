@@ -1211,6 +1211,42 @@ def test_opd_loss_payload_rejects_unshifted_cache_indices():
         opd._opd_loss_data([[10, 11, 12, 13]], [[20, 21, 22, 23]])
 
 
+def test_correct_prefix_only_masks_incorrect_and_unknown_samples():
+    # science runbook §7.1: supervise only verified-correct on-policy samples.
+    opd = _load_example()
+
+    data = opd._opd_loss_data(
+        [[10, 11, 12, 13], [10, 11, 12, 13], [10, 11, 12, 13]],
+        [[20, 21, 22], [20, 21, 22], [20, 21, 22]],
+        sample_ok_by_sample=[1, 0, -1],
+        correct_prefix_only=True,
+    )
+
+    # correct sample (ok=1): targets preserved
+    assert data[0]["loss_fn_inputs"]["target_tokens"] == [11, 12, 13]
+    # wrong sample (ok=0): fully masked out of the loss
+    assert data[1]["loss_fn_inputs"]["target_tokens"] == [-100, -100, -100]
+    # unknown sample (ok=-1): also masked (only verified-correct survives)
+    assert data[2]["loss_fn_inputs"]["target_tokens"] == [-100, -100, -100]
+
+
+def test_correct_prefix_only_off_is_a_no_op():
+    # Default (flag off): correctness flags are diagnostics-only, no masking.
+    opd = _load_example()
+
+    data = opd._opd_loss_data(
+        [[10, 11, 12, 13], [10, 11, 12, 13]],
+        [[20, 21, 22], [20, 21, 22]],
+        sample_ok_by_sample=[1, 0],
+        correct_prefix_only=False,
+    )
+
+    assert data[0]["loss_fn_inputs"]["target_tokens"] == [11, 12, 13]
+    assert data[1]["loss_fn_inputs"]["target_tokens"] == [11, 12, 13]
+    # the correctness flag is still emitted for the split-KL diagnostics
+    assert data[1]["loss_fn_inputs"]["opd_sample_ok"] == [0, 0, 0]
+
+
 def test_loss_mean_accepts_tinker_tensor_data_loss_wire_format():
     opd = _load_example()
 
@@ -1715,6 +1751,208 @@ def test_aggregate_prepared_metrics_weights_teacher_memory_pair_diagnostics(tmp_
     assert metrics["opd_cache_mismatch_change_frac"] == pytest.approx(4.0 / 6.0)
     assert metrics["opd_cache_mismatch_same_visible_input"] == pytest.approx(1.0)
     assert metrics["opd_cache_mismatch_negative_answer_kl_weight"] == pytest.approx(0.0)
+
+
+def test_merge_prepared_chunk_batches_rebases_hidden_cache_refs(tmp_path):
+    opd = _load_example()
+
+    import torch  # noqa: PLC0415
+    from safetensors.torch import load_file, save_file  # noqa: PLC0415
+
+    chunk0_path = tmp_path / "chunk0.safetensors"
+    chunk1_path = tmp_path / "chunk1.safetensors"
+    merged_path = tmp_path / "merged.safetensors"
+    save_file(
+        {"hidden_states": torch.tensor([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]])},
+        str(chunk0_path),
+    )
+    save_file(
+        {"hidden_states": torch.tensor([[10.0, 10.0], [11.0, 11.0]])},
+        str(chunk1_path),
+    )
+
+    chunk0 = opd.PreparedOpdBatch(
+        sequences=[[1, 2]],
+        data=[
+            {
+                "loss_fn_inputs": {
+                    "teacher_cache_indices": [0, 2, 0],
+                    "teacher_cache_base": [0],
+                }
+            }
+        ],
+        cache_path=chunk0_path,
+        metrics={
+            "student_sampling_s": 1.0,
+            "student_sampling_t0": 10.0,
+            "student_sampling_t1": 11.0,
+            "student_sampling_output_tokens": 3,
+            "teacher_prefill_s": 2.0,
+            "teacher_prefill_t0": 11.0,
+            "teacher_prefill_t1": 13.0,
+            "teacher_prefill_tokens": 3,
+            "prepare_s": 3.0,
+            "num_samples": 1.0,
+            "num_opd_datums": 1.0,
+        },
+        completions=[[7]],
+        prompt_texts=["p0"],
+        oprd_layer_indices=[0, 4],
+    )
+    chunk1 = opd.PreparedOpdBatch(
+        sequences=[[3, 4]],
+        data=[
+            {
+                "loss_fn_inputs": {
+                    "teacher_cache_indices": [1, 0],
+                    "teacher_cache_base": [0],
+                }
+            }
+        ],
+        cache_path=chunk1_path,
+        metrics={
+            "student_sampling_s": 4.0,
+            "student_sampling_t0": 10.5,
+            "student_sampling_t1": 14.5,
+            "student_sampling_output_tokens": 2,
+            "teacher_prefill_s": 3.0,
+            "teacher_prefill_t0": 14.5,
+            "teacher_prefill_t1": 17.5,
+            "teacher_prefill_tokens": 2,
+            "prepare_s": 7.0,
+            "num_samples": 1.0,
+            "num_opd_datums": 1.0,
+        },
+        completions=[[8]],
+        prompt_texts=["p1"],
+        oprd_layer_indices=[0, 4],
+    )
+
+    merged = opd._merge_prepared_chunk_batches([chunk0, chunk1], merged_path)
+
+    assert torch.equal(
+        load_file(str(merged_path))["hidden_states"],
+        torch.tensor(
+            [
+                [0.0, 0.0],
+                [1.0, 1.0],
+                [2.0, 2.0],
+                [10.0, 10.0],
+                [11.0, 11.0],
+            ]
+        ),
+    )
+    assert merged.sequences == [[1, 2], [3, 4]]
+    assert merged.completions == [[7], [8]]
+    assert merged.prompt_texts == ["p0", "p1"]
+    assert merged.oprd_layer_indices == [0, 4]
+    assert merged.data[0]["loss_fn_inputs"]["teacher_cache_indices"] == [0, 2, 0]
+    assert merged.data[0]["loss_fn_inputs"]["teacher_cache_base"] == [0]
+    assert merged.data[1]["loss_fn_inputs"]["teacher_cache_indices"] == [4, 3]
+    assert merged.data[1]["loss_fn_inputs"]["teacher_cache_base"] == [3]
+    assert chunk1.data[0]["loss_fn_inputs"]["teacher_cache_indices"] == [1, 0]
+    assert chunk1.data[0]["loss_fn_inputs"]["teacher_cache_base"] == [0]
+    assert not chunk0_path.exists()
+    assert not chunk1_path.exists()
+    assert merged_path.exists()
+    assert merged.metrics["strict_prepare_overlap_active"] == pytest.approx(1.0)
+    assert merged.metrics["strict_prepare_overlap_chunks"] == pytest.approx(2.0)
+    assert merged.metrics["strict_prepare_overlap_student_sampling_sum_s"] == pytest.approx(5.0)
+    assert merged.metrics["strict_prepare_overlap_teacher_prefill_sum_s"] == pytest.approx(5.0)
+    assert merged.metrics["student_sampling_s"] == pytest.approx(4.5)
+    assert merged.metrics["teacher_prefill_s"] == pytest.approx(5.0)
+    assert merged.metrics["num_opd_datums"] == pytest.approx(2.0)
+
+    aggregate = opd._aggregate_prepared_metrics([merged])
+    assert aggregate["strict_prepare_overlap_active"] == pytest.approx(1.0)
+    assert aggregate["strict_prepare_overlap_batch_count"] == pytest.approx(1.0)
+    assert aggregate["strict_prepare_overlap_chunks"] == pytest.approx(2.0)
+    assert aggregate["strict_prepare_overlap_student_sampling_sum_s"] == pytest.approx(5.0)
+    assert aggregate["strict_prepare_overlap_teacher_prefill_sum_s"] == pytest.approx(5.0)
+
+
+def test_strict_prepare_chunked_accepts_chz_config(monkeypatch, tmp_path):
+    opd = _load_example()
+
+    import torch  # noqa: PLC0415
+    from safetensors.torch import save_file  # noqa: PLC0415
+
+    seen_prompt_chunks = []
+    seen_overlap_values = []
+
+    async def fake_prepare(
+        config,
+        sampling_clients,
+        teacher_url,
+        prompts,
+        output_dir,
+        step,
+        chat_tokenizer=None,
+        microbatch_idx=0,
+        teacher_prefix_tokens=None,
+        teacher_filler_tokens=None,
+    ):
+        del sampling_clients, teacher_url, chat_tokenizer, teacher_prefix_tokens, teacher_filler_tokens
+        seen_prompt_chunks.append(list(prompts))
+        seen_overlap_values.append(config.opd_strict_prepare_overlap_chunks)
+        cache_path = output_dir / f"teacher_hidden_step{step}_mb{microbatch_idx}.safetensors"
+        row_count = len(prompts)
+        save_file({"hidden_states": torch.ones((row_count, 2), dtype=torch.float32)}, str(cache_path))
+        return opd.PreparedOpdBatch(
+            sequences=[[microbatch_idx, i] for i in range(row_count)],
+            data=[
+                {
+                    "loss_fn_inputs": {
+                        "teacher_cache_indices": [i],
+                        "teacher_cache_base": [i],
+                    }
+                }
+                for i in range(row_count)
+            ],
+            cache_path=cache_path,
+            metrics={
+                "student_sampling_s": 1.0,
+                "student_sampling_t0": float(microbatch_idx),
+                "student_sampling_t1": float(microbatch_idx) + 1.0,
+                "student_sampling_output_tokens": row_count,
+                "teacher_prefill_s": 1.0,
+                "teacher_prefill_t0": float(microbatch_idx) + 1.0,
+                "teacher_prefill_t1": float(microbatch_idx) + 2.0,
+                "teacher_prefill_tokens": row_count,
+                "prepare_s": 2.0,
+                "num_samples": float(row_count),
+                "num_opd_datums": float(row_count),
+            },
+            completions=[[i] for i in range(row_count)],
+            prompt_texts=[str(prompt) for prompt in prompts],
+            oprd_layer_indices=[0],
+        )
+
+    monkeypatch.setattr(opd, "_prepare_opd_batch", fake_prepare)
+    config = opd.Config(opd_strict_prepare_overlap_chunks=2)
+
+    merged = asyncio.run(
+        opd._prepare_opd_batch_strict_chunked(
+            config,
+            sampling_clients=[],
+            teacher_url="teacher",
+            prompts=["p0", "p1", "p2", "p3"],
+            output_dir=tmp_path,
+            step=0,
+            chat_tokenizer=None,
+            microbatch_idx=0,
+            teacher_prefix_tokens=None,
+            teacher_filler_tokens=None,
+            chunk_count=2,
+        )
+    )
+
+    assert seen_prompt_chunks == [["p0", "p1"], ["p2", "p3"]]
+    assert seen_overlap_values == [0, 0]
+    assert config.opd_strict_prepare_overlap_chunks == 2
+    assert merged.data[2]["loss_fn_inputs"]["teacher_cache_indices"] == [2]
+    assert merged.metrics["strict_prepare_overlap_active"] == pytest.approx(1.0)
+    assert merged.metrics["strict_prepare_overlap_chunks"] == pytest.approx(2.0)
 
 
 def test_concurrent_prepare_submits_all_completed_batches(monkeypatch, tmp_path):
@@ -2768,6 +3006,7 @@ def test_opd_pipeline_rl_trains_each_step_on_its_own_prepare(monkeypatch, tmp_pa
     num_steps = 3
     # Record, per training datum, the (step, prompts) it was prepared from.
     trained = []
+    fb_loss_params = []
     # Track the inference "weight version": +1 each sync. A prepare stamps the
     # weight version live at the time it actually samples, so we can assert the
     # 1-step staleness explicitly.
@@ -2806,6 +3045,7 @@ def test_opd_pipeline_rl_trains_each_step_on_its_own_prepare(monkeypatch, tmp_pa
                 "teacher_prefill_tokens": 1,
                 "prepare_s": 1.0,
             },
+            oprd_layer_indices=[0] if config.opd_oprd_layers else None,
         )
 
     class FakeTrainingClient:
@@ -2815,6 +3055,7 @@ def test_opd_pipeline_rl_trains_each_step_on_its_own_prepare(monkeypatch, tmp_pa
         def forward_backward(self, data, loss_fn, loss_fn_params):
             for datum in data:
                 trained.append(datum)
+            fb_loss_params.append(loss_fn_params)
             fut = asyncio.get_event_loop().create_future()
             fut.set_result(
                 SimpleNamespace(loss_fn_outputs=[], metrics={"valid_tokens:sum": 1})
@@ -2859,6 +3100,8 @@ def test_opd_pipeline_rl_trains_each_step_on_its_own_prepare(monkeypatch, tmp_pa
         opd_prepare_batch_size=prompts_per_step,  # one prepare batch per step window
         opd_prepare_concurrency=1,
         opd_pipeline_rl=True,
+        opd_oprd_layers="every1",
+        opd_oprd_num_layers=1,
         learning_rate=1e-4,
         teacher_head="teacher",
         output_dir=str(tmp_path),
@@ -2902,6 +3145,15 @@ def test_opd_pipeline_rl_trains_each_step_on_its_own_prepare(monkeypatch, tmp_pa
             f"step {step} sampled at version {versions[step]} (must be in [0, {step}] "
             f"— never from the future); trajectory {versions}"
         )
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "profile.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert [row["pipeline_rl_active"] for row in rows] == [0.0, 1.0, 1.0]
+    assert all(params["opd_oprd_enabled"] for params in fb_loss_params)
+    assert all(params["opd_oprd_layer_indices"] == [0] for params in fb_loss_params)
 
 
 def test_opd_main_writes_profile_row_before_sync_failure_abort(monkeypatch, tmp_path):

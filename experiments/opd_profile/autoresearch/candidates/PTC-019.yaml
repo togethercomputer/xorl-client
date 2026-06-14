@@ -1,0 +1,58 @@
+id: PTC-019
+base_config: AN
+slug: ptc-019-generated-memory100-sampled-pg-k1-flashqla
+buffer_label: generated-memory100-sampled-pg-k1-flashqla
+trainer_config: experiments/opd_profile/configs/qwen3_6_35b_a3b_opd_opdb_8node_nccl.yaml
+gdn_backend: flashqla
+student_prefill_text: "Memory: "
+student_prefill_count: 1
+student_prefill_suffix: "\nAnswer: "
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/randnum_4digit_8192_cot_nonempty.json
+prompts_json_path: /shared/opd-coord/randnum_4digit_8192_nonempty_cot.json
+num_prompts: 8185
+default_num_steps: 11
+default_prompts_per_step: 128
+supervise_student_cot: true
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 0.0
+opd_loss_mode: k1
+opd_use_policy_gradient: true
+learning_rate: 1e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 256
+score_min_control_n: 250
+eval_accuracy_every: 5
+eval_control_start_step: 5
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: true
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 2
+eval_answer_logprob_distractor_control: true
+eval_answer_logprob_distractor_offset: 1
+opd_pipeline_rl: false
+sampler_quiesce_before_sync: true
+sync_method: nccl_broadcast
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate_preserve_ws
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 1.0
+opd_cache_mismatch_memory_weight: 0.0
+opd_teacher_memory_pair_diagnostics: false
+opd_loss_max_clamp: 5.0
+client_args:
+  student_generated_memory_tokens: 100
+  eval_generated_memory_control: true
+  eval_generated_memory_tokens: 100
+  eval_generated_memory_shuffle_offset: 1
+  eval_generated_memory_temperature: 0.0
+  opd_ptc_positive_buffer_kl_weight: 0.1
+  opd_ptc_positive_answer_kl_weight: 0.001
+  opd_ptc_positive_hidden_weight: 0.0
+  opd_mask_zero_weight_positions: true
+  opd_teacher_answer_source: sampled
+  eval_corrupt_pause_control: true

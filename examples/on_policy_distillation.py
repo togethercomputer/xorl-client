@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import copy
 import json
 import logging
 import math
 import numbers
 import os
 import re
+import shutil
 import threading
 import time
 from collections.abc import Mapping
@@ -54,6 +56,126 @@ logging.getLogger("httpx").setLevel(os.environ.get("OPD_HTTPX_LOG_LEVEL", "WARNI
 
 def _elapsed(start: float) -> float:
     return time.perf_counter() - start
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _capture_asset_dir(capture_path: Path) -> Path:
+    suffix = capture_path.suffix or ".json"
+    return capture_path.with_suffix(f"{suffix}.assets")
+
+
+def _copy_capture_asset(src: str | Path, capture_path: Path, *, label: str) -> str:
+    src_path = Path(src)
+    if not src_path.exists():
+        raise FileNotFoundError(f"cannot capture missing forward_backward asset {src_path}")
+    dst_dir = _capture_asset_dir(capture_path)
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    dst_path = dst_dir / f"{label}-{src_path.name}"
+    shutil.copy2(src_path, dst_path)
+    return str(dst_path)
+
+
+def _write_forward_backward_capture(
+    *,
+    capture_path: Path,
+    config: "Config",
+    step: int,
+    prepare_batch_idx: int,
+    train_batch_idx: int,
+    train_microbatch_size: int,
+    data: list[dict[str, Any]],
+    loss_fn: str,
+    loss_fn_params: dict[str, Any],
+    prepared: "PreparedOpdBatch",
+) -> None:
+    captured_loss_params = copy.deepcopy(loss_fn_params)
+    cache_map = captured_loss_params.get("teacher_hidden_caches")
+    if isinstance(cache_map, dict):
+        captured_loss_params["teacher_hidden_caches"] = {
+            str(key): _copy_capture_asset(
+                value,
+                capture_path,
+                label=f"step{step}-prep{prepare_batch_idx}-train{train_batch_idx}-teacher{key}",
+            )
+            for key, value in cache_map.items()
+        }
+    if prepared.layers_cache_path is not None:
+        captured_loss_params["opd_oprd_layers_cache_path"] = _copy_capture_asset(
+            prepared.layers_cache_path,
+            capture_path,
+            label=f"step{step}-prep{prepare_batch_idx}-train{train_batch_idx}-oprd-layers",
+        )
+        captured_loss_params["teacher_layer_hidden_caches"] = {
+            "0": {
+                "path": captured_loss_params["opd_oprd_layers_cache_path"],
+                "tensor_key": "hidden_states_layers",
+            }
+        }
+
+    _atomic_write_json(
+        capture_path,
+        {
+            "metadata": {
+                "format": "xorl.opd.forward_backward_capture.v1",
+                "captured_at_unix_s": time.time(),
+                "step": step,
+                "prepare_batch_idx": prepare_batch_idx,
+                "train_batch_idx": train_batch_idx,
+                "model_id": config.model_id,
+                "model_name": config.model_name,
+                "loss_fn": loss_fn,
+                "num_datums": len(data),
+                "opd_microbatch_size": config.opd_microbatch_size,
+                "opd_prepare_batch_size": config.opd_prepare_batch_size,
+                "opd_train_microbatch_size": train_microbatch_size,
+                "opd_oprd_layers": config.opd_oprd_layers,
+                "opd_oprd_num_layers": config.opd_oprd_num_layers,
+                "opd_oprd_student_capture": config.opd_oprd_student_capture,
+                "recommended_replay_overrides": {
+                    "profile_clear_gradients_after_backward": True,
+                    "opd_profile_timings": True,
+                },
+            },
+            "request": {
+                "model_id": config.model_id,
+                "forward_backward_input": {
+                    "data": data,
+                    "loss_fn": loss_fn,
+                    "loss_fn_params": captured_loss_params,
+                },
+            },
+        },
+    )
+
+
+def _interval_union_s(intervals: list[tuple[float, float]]) -> float:
+    """Total wall-clock seconds covered by a set of [t0, t1] perf_counter intervals.
+
+    Concurrent prepare batches overlap, so summing per-batch phase durations
+    (`student_sampling_s` / `teacher_prefill_s`) wildly overstates the real wall
+    (a sum can exceed step_total). This returns the union length — the actual
+    wall during which ANY batch was in that phase. All inputs share the process
+    perf_counter clock, so they are directly comparable.
+    """
+    spans = sorted((t0, t1) for t0, t1 in intervals if t1 > t0)
+    if not spans:
+        return 0.0
+    total = 0.0
+    cur_start, cur_end = spans[0]
+    for t0, t1 in spans[1:]:
+        if t0 > cur_end:
+            total += cur_end - cur_start
+            cur_start, cur_end = t0, t1
+        else:
+            cur_end = max(cur_end, t1)
+    total += cur_end - cur_start
+    return total
 
 
 def _mean(values: list[float]) -> float:
@@ -796,6 +918,7 @@ def _opd_loss_data(
     teacher_input_ids_by_sample: list[list[int]] | None = None,
     teacher_kept_indices_by_sample: list[list[int]] | None = None,
     sample_ok_by_sample: list[int] | None = None,
+    correct_prefix_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Build student-side OPD loss request payload.
 
@@ -975,6 +1098,19 @@ def _opd_loss_data(
             target_tokens = list(target_tokens)
             for j in range(prompt_end):
                 target_tokens[j] = -100
+
+        if correct_prefix_only and sample_ok_by_sample is not None:
+            # Correct-prefix filtering (science runbook §7.1): on a floored task
+            # (~5% correct), distilling the teacher's conditionals at the ~95%
+            # WRONG on-policy prefixes erodes competence (the binding bootstrap
+            # constraint). When enabled, supervise ONLY samples whose sampled
+            # answer was correct — mask the WHOLE target for any sample that is
+            # not verified-correct (sample_ok != 1, incl. -1=unknown) so the KL
+            # lands only on the right manifold. Shrinks the effective batch (that
+            # is the point); pair with a larger prompts/step if valid-token count
+            # gets too small. Reuses the same -100 masking as mask_prompt_positions.
+            if int(sample_ok_by_sample[idx]) != 1:
+                target_tokens = [-100] * len(target_tokens)
 
         teacher_weights = (
             list(teacher_weights_by_sample[idx])
@@ -1481,6 +1617,7 @@ def _teacher_cache_from_sglang(
     per_sample_filler_count: list[int] | None = None,
     capture_layer_indices: list[int] | None = None,
     layers_cache_path: str | None = None,
+    use_sglang_layer_cache: bool = False,
 ) -> dict[str, Any]:
     """Drop-in for ``_teacher_cache_from_xorl`` against the xorl-sglang-internal
     ``/teacher_hidden_cache`` endpoint.
@@ -1494,14 +1631,16 @@ def _teacher_cache_from_sglang(
     teacher with ``--enable-return-hidden-states --disable-radix-cache
     --chunked-prefill-size >= max_seq_len`` and a shared cache filesystem.
 
-    Multi-layer OPRD (``capture_layer_indices`` set): the teacher's per-layer
-    hiddens are computed TRAINER-SIDE (self-distillation, shared weights), NOT by
-    SGLang — so we do NOT request SGLang per-layer capture. We still use SGLang for
-    the rank-2 KL cache, and additionally return the per-sample teacher
-    ``input_ids`` + KEPT-position indices (target != -100) so the trainer can run
-    its own no-grad forward and gather the matching positions.
+    Multi-layer OPRD (``capture_layer_indices`` set) defaults to the current
+    trainer-side no-grad teacher forward: SGLang writes only the rank-2 KL cache
+    and returns teacher ``input_ids`` + kept-position indices so the trainer can
+    recompute per-layer hiddens. When ``use_sglang_layer_cache`` is true, SGLang
+    additionally writes its rank-3 per-layer cache and the trainer reads it
+    directly; this is an explicit throughput A/B because it moves work from trainer
+    f/b to teacher prefill/cache write.
     """
-    oprd_trainer_forward = bool(capture_layer_indices)
+    oprd_active = bool(capture_layer_indices)
+    oprd_trainer_forward = oprd_active and not use_sglang_layer_cache
     data = _teacher_hidden_cache_data(
         sequences,
         teacher_prefix_tokens,
@@ -1523,9 +1662,11 @@ def _teacher_cache_from_sglang(
         "cache_key": "hidden_states",
         "dtype": "bfloat16",
     }
-    # NB: multi-layer OPRD does NOT request SGLang per-layer capture — the teacher
-    # per-layer hiddens are produced by the TRAINER-side no-grad forward. The SGLang
-    # teacher path is therefore byte-identical to the no-OPRD rank-2 KL cache.
+    if oprd_active and use_sglang_layer_cache:
+        if not layers_cache_path:
+            raise ValueError("use_sglang_layer_cache requires layers_cache_path")
+        payload["capture_layer_indices"] = list(capture_layer_indices or [])
+        payload["layers_cache_path"] = str(layers_cache_path)
     response = _post_teacher_cache_with_retry(
         f"{teacher_url}/teacher_hidden_cache",
         payload,
@@ -1566,10 +1707,22 @@ def _teacher_cache_from_sglang(
         )
     result: dict[str, Any] = {
         "cache_indices_by_sample": cache_indices,
-        "layers_cache_path": None,
+        "layers_cache_path": cache.get("layers_path") if use_sglang_layer_cache else None,
         "metrics": {},
         "info": cache,
     }
+    if use_sglang_layer_cache:
+        if result["layers_cache_path"] != str(layers_cache_path):
+            raise RuntimeError(
+                f"SGLang teacher wrote unexpected OPRD layer cache path: "
+                f"{result['layers_cache_path']} != {layers_cache_path}"
+            )
+        expected_layers = len(capture_layer_indices or [])
+        actual_layers = int(cache.get("num_capture_layers") or 0)
+        if actual_layers != expected_layers:
+            raise RuntimeError(
+                f"SGLang teacher wrote {actual_layers} OPRD layers; expected {expected_layers}"
+            )
     if oprd_trainer_forward:
         # Trainer-side teacher forward inputs: per-sample teacher input_ids + the kept
         # positions (target != -100). The kept count must match the rank-2 cache rows
@@ -1864,6 +2017,124 @@ def _merge_group_phase_caches(
     save_file({cache_key: merged}, tmp_path)
     os.replace(tmp_path, str(merged_path))
     return merged_indices
+
+
+def _offset_teacher_cache_refs(data: list[dict[str, Any]], offset: int) -> None:
+    """Shift teacher-cache row references after concatenating chunk caches."""
+    if offset == 0:
+        return
+    for row in data:
+        loss_inputs = row.get("loss_fn_inputs") or {}
+        indices = loss_inputs.get("teacher_cache_indices")
+        if indices is not None:
+            loss_inputs["teacher_cache_indices"] = [int(idx) + offset for idx in indices]
+        base = loss_inputs.get("teacher_cache_base")
+        if base is not None:
+            loss_inputs["teacher_cache_base"] = [int(base[0]) + offset] if base else []
+
+
+def _merge_prepared_chunk_batches(
+    chunks: list[PreparedOpdBatch],
+    merged_path: Path,
+    *,
+    cache_key: str = "hidden_states",
+) -> PreparedOpdBatch:
+    """Merge ordered strict-prepare chunks into one trainer-facing prepare batch.
+
+    Each chunk was prepared with identical semantics over a disjoint prompt slice.
+    We concatenate the hidden-cache tensors in chunk order, offset every
+    teacher-cache row reference by that chunk's starting row, and return a single
+    PreparedOpdBatch so the trainer still receives one fb call for the original
+    prompt window.
+    """
+    if not chunks:
+        raise ValueError("cannot merge zero prepared chunks")
+
+    import torch  # noqa: PLC0415
+    from safetensors.torch import load_file, save_file  # noqa: PLC0415
+
+    tensors = [load_file(str(chunk.cache_path))[cache_key] for chunk in chunks]
+    hidden_sizes = {int(t.shape[1]) for t in tensors if t.ndim == 2}
+    if any(t.ndim != 2 for t in tensors) or len(hidden_sizes) != 1:
+        raise RuntimeError("prepared chunk cache tensors must all be rank-2 with identical hidden size")
+
+    merged_t = torch.cat(tensors, dim=0).contiguous()
+    merged_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = f"{merged_path}.tmp-pid{os.getpid()}"
+    save_file({cache_key: merged_t}, tmp_path)
+    os.replace(tmp_path, str(merged_path))
+
+    sequences: list[list[int]] = []
+    data: list[dict[str, Any]] = []
+    completions: list[list[int]] = []
+    prompt_texts: list[str] = []
+    offset = 0
+    for chunk, tensor in zip(chunks, tensors):
+        chunk_data = copy.deepcopy(chunk.data)
+        _offset_teacher_cache_refs(chunk_data, offset)
+        sequences.extend(chunk.sequences)
+        data.extend(chunk_data)
+        completions.extend(chunk.completions)
+        prompt_texts.extend(chunk.prompt_texts)
+        offset += int(tensor.shape[0])
+
+    first_layers = chunks[0].oprd_layer_indices
+    if any(chunk.layers_cache_path is not None for chunk in chunks):
+        raise RuntimeError("strict chunked prepare does not support rank-3 layer caches")
+    if any(chunk.oprd_layer_indices != first_layers for chunk in chunks):
+        raise RuntimeError("prepared chunk OPRD layer subsets do not match")
+
+    chunk_metrics = _aggregate_prepared_metrics(chunks)
+    sample_wall_s = _interval_union_s(
+        [
+            (float(chunk.metrics["student_sampling_t0"]), float(chunk.metrics["student_sampling_t1"]))
+            for chunk in chunks
+            if "student_sampling_t0" in chunk.metrics
+        ]
+    )
+    teacher_wall_s = _interval_union_s(
+        [
+            (float(chunk.metrics["teacher_prefill_t0"]), float(chunk.metrics["teacher_prefill_t1"]))
+            for chunk in chunks
+            if "teacher_prefill_t0" in chunk.metrics
+        ]
+    )
+    metrics = dict(chunk_metrics)
+    metrics.update(
+        {
+            "student_sampling_s": sample_wall_s or float(chunk_metrics.get("student_sampling_s", 0.0)),
+            "student_sampling_output_tok_per_s": (
+                float(chunk_metrics.get("student_sampling_output_tokens", 0.0)) / sample_wall_s
+                if sample_wall_s > 0.0
+                else 0.0
+            ),
+            "teacher_prefill_s": teacher_wall_s or float(chunk_metrics.get("teacher_prefill_s", 0.0)),
+            "teacher_prefill_tok_per_s": (
+                float(chunk_metrics.get("teacher_prefill_tokens", 0.0)) / teacher_wall_s
+                if teacher_wall_s > 0.0
+                else 0.0
+            ),
+            "strict_prepare_overlap_active": 1.0,
+            "strict_prepare_overlap_chunks": float(len(chunks)),
+            "strict_prepare_overlap_student_sampling_sum_s": float(chunk_metrics.get("student_sampling_s", 0.0)),
+            "strict_prepare_overlap_teacher_prefill_sum_s": float(chunk_metrics.get("teacher_prefill_s", 0.0)),
+        }
+    )
+    for chunk in chunks:
+        try:
+            Path(chunk.cache_path).unlink(missing_ok=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("chunk cache cleanup skipped for %s: %s", chunk.cache_path, exc)
+    return PreparedOpdBatch(
+        sequences=sequences,
+        data=data,
+        cache_path=merged_path,
+        metrics=metrics,
+        completions=completions,
+        prompt_texts=prompt_texts,
+        layers_cache_path=None,
+        oprd_layer_indices=first_layers,
+    )
 
 
 @dataclass
@@ -3649,9 +3920,22 @@ class Config:
     eval_abort_empty_frac: float = 0.9  # auto-abort if empty_frac >= this ...
     eval_abort_patience: int = 0        # ... for this many consecutive steps (0=never abort)
     eval_prompts_json_path: str = ""    # held-out eval prompts; falls back to pool tail
+    # Optional fb-replay capture. When set, the first matching trainer
+    # forward_backward request is dumped as self-contained JSON plus copied
+    # teacher-cache assets, so server-only replay benchmarks can bypass
+    # sampling, teacher prefill, optimizer, and inference weight sync.
+    forward_backward_capture_path: str = ""
+    forward_backward_capture_step: int = 0
+    forward_backward_capture_train_batch: int = 0
     opd_microbatch_size: int = 0
     opd_prepare_batch_size: int = 0
     opd_prepare_concurrency: int = 1
+    # Strict same-step prepare overlap. When >1, a single prepare batch is split
+    # into this many prompt chunks, each chunk samples then teacher-prefills as
+    # soon as its own samples are ready, and the per-chunk teacher caches are
+    # merged back into one cache before the trainer sees the batch. This preserves
+    # fresh same-step samples and a single final fb call. Default 0/off.
+    opd_strict_prepare_overlap_chunks: int = 0
     prompt_len: int = 32
     prompts_json: str = ""
     prompts_json_path: str = ""
@@ -3700,13 +3984,13 @@ class Config:
     opd_hidden_match_mode: str = "cosine"
     # ---- Multi-layer OPRD (all-layer hidden matching) ----
     # When non-empty, multi-layer OPRD is ON: the trainer matches the student's
-    # decoder-layer subset against the SAME subset of a TRAINER-SIDE teacher forward
+    # decoder-layer subset against the SAME subset of teacher-sequence hiddens
     # (self-distillation: teacher = the same frozen weights run on the teacher
     # sequence prompt+CoT+pause+answer), via normalized MSE averaged over layers
-    # (REPLACES the single-layer hidden term, scaled by opd_hidden_match_coef). The
-    # teacher per-layer hiddens are NOT captured by SGLang — the client ships the
-    # teacher input_ids + kept-position indices per sample and the trainer runs its
-    # own no-grad forward. "" = off (default, byte-identical).
+    # (REPLACES the single-layer hidden term, scaled by opd_hidden_match_coef).
+    # By default the teacher per-layer hiddens are recomputed trainer-side. The
+    # optional opd_oprd_cache_backend="sglang" A/B asks SGLang to write a rank-3
+    # per-layer cache instead. "" = off (default, byte-identical).
     # Forms: "every4" (every 4th decoder layer) or a comma list e.g. "0,8,16,24".
     # Pairs with opd_hidden_match_coef>0.
     opd_oprd_layers: str = ""
@@ -3716,6 +4000,17 @@ class Config:
     opd_oprd_num_layers: int = 0
     # Restrict the OPRD term to the last-k supervised positions per sample (0 = all).
     opd_oprd_last_k: int = 0
+    # Multi-layer OPRD teacher layer source. "trainer" preserves the current path:
+    # the trainer runs a no-grad teacher forward inside forward_backward. "sglang"
+    # asks /teacher_hidden_cache to write the rank-3 layer cache and passes that to
+    # the trainer, moving this work out of f/b. Use "sglang" as an explicit
+    # throughput/correctness-gated A/B; default remains byte-identical.
+    opd_oprd_cache_backend: str = "trainer"
+    # Multi-layer OPRD student layer capture. "selected_hooks" captures only
+    # supervised-position rows from decoder-layer forward hooks, preserving the
+    # same OPRD loss while avoiding full [batch, seq, layers, d] retention.
+    # "output_hidden_states" is the legacy full-sequence capture fallback.
+    opd_oprd_student_capture: str = "selected_hooks"
     # "buffer = CoT length (K=C)" mode (CLIENT-ONLY orchestration; the trainer is
     # already per-position and needs no change). When True, each prompt's student
     # pause buffer is sized to K_i = C_i = len(that prompt's teacher CoT tokens),
@@ -3795,6 +4090,18 @@ class Config:
     # (buffer+answer). NB: every run before 2026-06-11 (incl. the 4x4 0.905)
     # effectively ran False — set False explicitly to reproduce those.
     opd_mask_prompt_kl: bool = True
+
+    # Correct-prefix filtering (science runbook §7.1, the surviving bootstrap
+    # lever after temperature + OPRD-coef were exhausted). When True, the OPD/KL
+    # loss supervises ONLY on-policy samples whose sampled answer scored correct
+    # (per eval_task); samples that are wrong or unverifiable are masked out
+    # entirely. Rationale: on a floored task ~95% of sampled answer prefixes are
+    # wrong and the CoT-teacher is itself confused there, so distilling those
+    # conditionals erodes competence — restrict supervision to the right
+    # manifold. Default False (no behavior change). Shrinks valid tokens/step,
+    # so consider raising prompts/step. After enabling, run the infra §9c step-0
+    # KL gate (datum-path change).
+    opd_correct_prefix_only: bool = False
 
     # Pause-position-supervised variant (only meaningful with teacher_cot_mode=
     # "insert"). When False (default) the student's pause/CoT region is MASKED
@@ -3910,6 +4217,14 @@ class Config:
     # The control eval (eval_accuracy_every) still runs AFTER sync, on the current
     # (not stale) inference weights — identical to the serial path.
     opd_pipeline_rl: bool = False
+    # Pipeline lookahead depth for opd_pipeline_rl. 1 = prepare 1 step ahead (the
+    # samples are 1-step-stale). >1 prepares that many steps ahead so the teacher
+    # never starves between steps (it always has queued work) — fills the per-step
+    # teacher idle gap (AMDAHL-002: teachers idle 25-37% waiting for the next step's
+    # sampling). Cost: samples up to `depth` steps stale + `depth` steps of prepared
+    # batches/caches held. Incompatible with sampler_quiesce_before_sync (which
+    # requires no next-step requests in flight during sync).
+    opd_pipeline_depth: int = 1
 
     # Group sampling + group teacher (modeled on filler_tokens_rl.py's group_size).
     # When 1 (default): the current single-sample-per-prompt behavior, byte-for-byte
@@ -5026,6 +5341,7 @@ async def _prepare_opd_batch_pipelined(
         student_filler_count=k_filler,
         supervise_student_cot=config.supervise_student_cot,
         mask_prompt_positions=config.opd_mask_prompt_kl,
+        correct_prefix_only=config.opd_correct_prefix_only,
         old_logprobs_by_sample=old_logprobs_by_sample if config.opd_use_policy_gradient else None,
         sample_ok_by_sample=_sample_answer_correctness(
             completions, prompts, 1, chat_tokenizer, config.eval_task
@@ -5059,6 +5375,124 @@ async def _prepare_opd_batch_pipelined(
     )
 
 
+def _strict_prepare_overlap_supported(config: Config, group_size: int) -> bool:
+    """Whether chunked strict prepare is semantics-preserving for this recipe."""
+    return (
+        config.teacher_backend == "sglang"
+        and group_size == 1
+        and not config.sft_mode
+        and not config.opd_buffer_equals_cot
+        and int(config.student_generated_memory_tokens or 0) <= 0
+        and float(config.opd_contrastive_corrupt_buffer_weight or 0.0) == 0.0
+        and float(config.opd_contrastive_corrupt_answer_weight or 0.0) == 0.0
+        and float(config.opd_positive_answer_weight or 0.0) == 0.0
+        and float(config.opd_ptc_positive_buffer_kl_weight or 0.0) == 0.0
+        and float(config.opd_ptc_positive_answer_kl_weight or 0.0) == 0.0
+        and float(config.opd_ptc_positive_hidden_weight or 0.0) == 0.0
+        and float(config.opd_cache_mismatch_memory_weight or 0.0) == 0.0
+        and not bool(config.opd_teacher_memory_pair_diagnostics)
+    )
+
+
+async def _prepare_opd_batch_strict_chunked(
+    config: Config,
+    sampling_clients: list[tomi.SamplingClient],
+    teacher_url: str,
+    prompts: list[Any],
+    output_dir: Path,
+    step: int,
+    chat_tokenizer: Any | None,
+    microbatch_idx: int,
+    teacher_prefix_tokens: list[int] | None,
+    teacher_filler_tokens: list[int] | list[list[int]] | None,
+    chunk_count: int,
+) -> PreparedOpdBatch:
+    """Strict same-step prepare overlap via ordered prompt chunks.
+
+    Each chunk runs the normal strict single-phase prepare. Chunks are launched
+    concurrently, so a chunk's teacher prefill can start as soon as that chunk's
+    same-step samples complete while slower chunks are still sampling. The chunk
+    caches are concatenated and cache references are re-based, yielding a single
+    PreparedOpdBatch for one downstream trainer fb call.
+    """
+    prepare_t0 = time.perf_counter()
+    if chunk_count <= 1 or len(prompts) <= 1:
+        raise ValueError("strict chunked prepare requires chunk_count > 1 and more than one prompt")
+    chunk_count = min(int(chunk_count), len(prompts))
+    chunk_size = int(math.ceil(len(prompts) / chunk_count))
+    prompt_chunks = [
+        prompts[start : start + chunk_size]
+        for start in range(0, len(prompts), chunk_size)
+    ]
+    first_filler = teacher_filler_tokens[0] if teacher_filler_tokens else None
+    per_prompt_filler = isinstance(first_filler, list)
+
+    def _chunk_filler(start: int, end: int) -> list[int] | list[list[int]] | None:
+        if per_prompt_filler:
+            return teacher_filler_tokens[start:end]  # type: ignore[index,return-value]
+        return teacher_filler_tokens
+
+    base_config = chz.replace(config, opd_strict_prepare_overlap_chunks=0)
+    tasks: list[asyncio.Task[PreparedOpdBatch]] = []
+    offset = 0
+    for chunk_idx, chunk_prompts in enumerate(prompt_chunks):
+        start = offset
+        end = start + len(chunk_prompts)
+        offset = end
+        tasks.append(
+            asyncio.create_task(
+                _prepare_opd_batch(
+                    base_config,
+                    sampling_clients,
+                    teacher_url,
+                    chunk_prompts,
+                    output_dir,
+                    step,
+                    chat_tokenizer,
+                    (microbatch_idx + 1) * 1000 + chunk_idx,
+                    teacher_prefix_tokens,
+                    _chunk_filler(start, end),
+                )
+            )
+        )
+    chunks = await asyncio.gather(*tasks)
+    merged_path = output_dir / f"teacher_hidden_step{step}_mb{microbatch_idx}.safetensors"
+    merged = _merge_prepared_chunk_batches(chunks, merged_path)
+    sample_t0s = [
+        float(chunk.metrics["student_sampling_t0"])
+        for chunk in chunks
+        if "student_sampling_t0" in chunk.metrics
+    ]
+    sample_t1s = [
+        float(chunk.metrics["student_sampling_t1"])
+        for chunk in chunks
+        if "student_sampling_t1" in chunk.metrics
+    ]
+    teacher_t0s = [
+        float(chunk.metrics["teacher_prefill_t0"])
+        for chunk in chunks
+        if "teacher_prefill_t0" in chunk.metrics
+    ]
+    teacher_t1s = [
+        float(chunk.metrics["teacher_prefill_t1"])
+        for chunk in chunks
+        if "teacher_prefill_t1" in chunk.metrics
+    ]
+    merged.metrics.update(
+        {
+            "prepare_s": _elapsed(prepare_t0),
+            "strict_prepare_overlap_wall_s": _elapsed(prepare_t0),
+        }
+    )
+    if sample_t0s and sample_t1s:
+        merged.metrics["student_sampling_t0"] = min(sample_t0s)
+        merged.metrics["student_sampling_t1"] = max(sample_t1s)
+    if teacher_t0s and teacher_t1s:
+        merged.metrics["teacher_prefill_t0"] = min(teacher_t0s)
+        merged.metrics["teacher_prefill_t1"] = max(teacher_t1s)
+    return merged
+
+
 async def _prepare_opd_batch(
     config: Config,
     sampling_clients: list[tomi.SamplingClient],
@@ -5087,6 +5521,27 @@ async def _prepare_opd_batch(
                 f"{len(prompts)} prompts"
             )
     buffer_equals_cot = bool(config.opd_buffer_equals_cot)
+    strict_overlap_chunks = int(getattr(config, "opd_strict_prepare_overlap_chunks", 0) or 0)
+    if strict_overlap_chunks > 1 and len(prompts) > 1:
+        if not _strict_prepare_overlap_supported(config, G):
+            raise ValueError(
+                "opd_strict_prepare_overlap_chunks is currently supported only for "
+                "single-phase sglang teacher strict prepares with group_size=1, "
+                "sft_mode=false, no buffer_equals_cot/generated-memory/custom-pair/cache diagnostics"
+            )
+        return await _prepare_opd_batch_strict_chunked(
+            config,
+            sampling_clients,
+            teacher_url,
+            prompts,
+            output_dir,
+            step,
+            chat_tokenizer,
+            microbatch_idx,
+            teacher_prefix_tokens,
+            teacher_filler_tokens,
+            strict_overlap_chunks,
+        )
     sequences, prompt_token_lens, filler_token_count, completions, _G, old_logprobs_by_sample, filler_counts = await _sample_student_batch(
         sampling_clients,
         prompts,
@@ -5168,9 +5623,18 @@ async def _prepare_opd_batch(
     oprd_layer_indices = _resolve_oprd_layer_indices(
         config.opd_oprd_layers, config.opd_oprd_num_layers
     )
-    # Trainer-side teacher forward: the teacher per-layer hiddens are computed in the
-    # trainer's own no-grad forward, so SGLang writes no rank-3 layers cache.
-    oprd_layers_cache_path = None
+    use_sglang_oprd_cache = bool(oprd_layer_indices) and config.opd_oprd_cache_backend == "sglang"
+    if config.opd_oprd_cache_backend not in {"trainer", "sglang"}:
+        raise ValueError(
+            f"opd_oprd_cache_backend must be 'trainer' or 'sglang', got {config.opd_oprd_cache_backend!r}"
+        )
+    # Default: trainer-side teacher forward writes no rank-3 layers cache. The
+    # explicit "sglang" A/B writes the layer cache next to the rank-2 KL cache.
+    oprd_layers_cache_path = (
+        output_dir / f"teacher_hidden_layers_step{step}_mb{microbatch_idx}.safetensors"
+        if use_sglang_oprd_cache
+        else None
+    )
 
     # Decide between the GROUP TEACHER (shared-prefix two-phase) and the plain
     # single-phase teacher. The group teacher is only valid (and only a win) for
@@ -5311,6 +5775,7 @@ async def _prepare_opd_batch(
                 per_sample_filler_count if buffer_equals_cot else None,
                 oprd_layer_indices,
                 str(oprd_layers_cache_path) if oprd_layers_cache_path else None,
+                use_sglang_oprd_cache,
             )
         else:
             teacher_cache = await asyncio.to_thread(
@@ -5331,10 +5796,14 @@ async def _prepare_opd_batch(
         cache_indices_by_sample = teacher_cache["cache_indices_by_sample"]
         teacher_compute_s = teacher_cache["metrics"].get("teacher_prefill_forward_compute_s", 0.0)
         teacher_write_s = teacher_cache["metrics"].get("teacher_hidden_cache_write_s", 0.0)
-        # Multi-layer OPRD trainer-side teacher forward: capture the per-sample teacher
-        # input_ids + kept-position indices (None when OPRD off). The trainer runs its
-        # own no-grad forward on these; no SGLang rank-3 cache is produced.
-        if oprd_layer_indices:
+        # Multi-layer OPRD: either keep the current trainer-side teacher forward
+        # inputs, or use the SGLang rank-3 layer cache when explicitly requested.
+        if use_sglang_oprd_cache:
+            layer_path = teacher_cache.get("layers_cache_path")
+            if not layer_path:
+                raise RuntimeError("OPRD SGLang cache backend requested but no layers_cache_path was returned")
+            oprd_layers_cache_path = Path(layer_path)
+        elif oprd_layer_indices:
             teacher_input_ids_by_sample = teacher_cache.get("teacher_input_ids_by_sample")
             teacher_kept_indices_by_sample = teacher_cache.get("teacher_kept_indices_by_sample")
             if teacher_input_ids_by_sample is None or teacher_kept_indices_by_sample is None:
@@ -5607,6 +6076,7 @@ async def _prepare_opd_batch(
         supervise_student_cot=effective_supervise_student_cot,
         mask_answer=config.opd_supervise_buffer_only,
         mask_prompt_positions=config.opd_mask_prompt_kl,
+        correct_prefix_only=config.opd_correct_prefix_only,
         teacher_weights_by_sample=teacher_weights_by_sample,
         hidden_match_weights_by_sample=hidden_match_weights_by_sample,
         old_logprobs_by_sample=loss_old_logprobs_by_sample,
@@ -5717,6 +6187,13 @@ async def _prepare_opd_batch(
         **teacher_memory_pair_metrics,
         **_student_generated_memory_prepare_metrics(config, chat_tokenizer),
         "prepare_s": _elapsed(prepare_t0),
+        # Absolute perf_counter spans for overlap-aware WALL aggregation across the
+        # concurrent prepare batches (the per-batch *_s above are durations that the
+        # step row SUMS — a sum overstates wall). See _interval_union_s.
+        "student_sampling_t0": sample_t0,
+        "student_sampling_t1": sample_t0 + sample_s,
+        "teacher_prefill_t0": teacher_t0,
+        "teacher_prefill_t1": teacher_t0 + teacher_s,
     }
     return PreparedOpdBatch(
         sequences=sequences,
@@ -5725,8 +6202,7 @@ async def _prepare_opd_batch(
         metrics=metrics,
         completions=completions,
         prompt_texts=[_user_prompt_text(prompts[i // G]) for i in range(len(sequences))],
-        # Trainer-side teacher forward writes no rank-3 SGLang cache → always None.
-        layers_cache_path=None,
+        layers_cache_path=oprd_layers_cache_path,
         oprd_layer_indices=oprd_layer_indices,
     )
 
@@ -5751,6 +6227,23 @@ def _aggregate_prepared_metrics(
     )
     prepare_s = sum(
         float(batch.metrics.get("prepare_s", 0.0)) for batch in prepared_batches
+    )
+    # Overlap-aware WALL for each prepare phase (union of the concurrent batches'
+    # spans), vs the sums above which overstate wall when prepare_concurrency > 1.
+    # Read these for attribution; the *_s sums are cumulative across batches.
+    sample_wall_s = _interval_union_s(
+        [
+            (float(batch.metrics["student_sampling_t0"]), float(batch.metrics["student_sampling_t1"]))
+            for batch in prepared_batches
+            if "student_sampling_t0" in batch.metrics
+        ]
+    )
+    teacher_wall_s = _interval_union_s(
+        [
+            (float(batch.metrics["teacher_prefill_t0"]), float(batch.metrics["teacher_prefill_t1"]))
+            for batch in prepared_batches
+            if "teacher_prefill_t0" in batch.metrics
+        ]
     )
     num_samples = sum(float(batch.metrics.get("num_samples", 0.0)) for batch in prepared_batches)
     num_opd_datums = sum(float(batch.metrics.get("num_opd_datums", 0.0)) for batch in prepared_batches)
@@ -5965,6 +6458,31 @@ def _aggregate_prepared_metrics(
         float(batch.metrics.get("student_generated_memory_total_filler_tokens", 0.0))
         for batch in prepared_batches
     ) if prepared_batches else 0.0
+    strict_prepare_overlap_active = max(
+        float(batch.metrics.get("strict_prepare_overlap_active", 0.0))
+        for batch in prepared_batches
+    ) if prepared_batches else 0.0
+    strict_prepare_overlap_batch_count = sum(
+        1.0
+        for batch in prepared_batches
+        if float(batch.metrics.get("strict_prepare_overlap_active", 0.0)) > 0.0
+    )
+    strict_prepare_overlap_chunks = max(
+        float(batch.metrics.get("strict_prepare_overlap_chunks", 0.0))
+        for batch in prepared_batches
+    ) if prepared_batches else 0.0
+    strict_prepare_overlap_wall_s = sum(
+        float(batch.metrics.get("strict_prepare_overlap_wall_s", 0.0))
+        for batch in prepared_batches
+    )
+    strict_prepare_overlap_student_sampling_sum_s = sum(
+        float(batch.metrics.get("strict_prepare_overlap_student_sampling_sum_s", 0.0))
+        for batch in prepared_batches
+    )
+    strict_prepare_overlap_teacher_prefill_sum_s = sum(
+        float(batch.metrics.get("strict_prepare_overlap_teacher_prefill_sum_s", 0.0))
+        for batch in prepared_batches
+    )
 
     return {
         "num_prepare_batches": len(prepared_batches),
@@ -6040,12 +6558,20 @@ def _aggregate_prepared_metrics(
         "student_generated_memory_seed_tokens": generated_memory_seed_tokens,
         "student_generated_memory_suffix_tokens": generated_memory_suffix_tokens,
         "student_generated_memory_total_filler_tokens": generated_memory_total_filler_tokens,
+        "strict_prepare_overlap_active": strict_prepare_overlap_active,
+        "strict_prepare_overlap_batch_count": strict_prepare_overlap_batch_count,
+        "strict_prepare_overlap_chunks": strict_prepare_overlap_chunks,
+        "strict_prepare_overlap_wall_s": strict_prepare_overlap_wall_s,
+        "strict_prepare_overlap_student_sampling_sum_s": strict_prepare_overlap_student_sampling_sum_s,
+        "strict_prepare_overlap_teacher_prefill_sum_s": strict_prepare_overlap_teacher_prefill_sum_s,
         "student_sampling_s": sample_s,
+        "student_sampling_wall_s": sample_wall_s,
         "student_sampling_output_tokens": sample_output_tokens,
         "student_sampling_output_tok_per_s": sample_output_tokens / sample_s
         if sample_s > 0
         else 0.0,
         "teacher_prefill_s": teacher_s,
+        "teacher_prefill_wall_s": teacher_wall_s,
         "teacher_prefill_tokens": teacher_tokens,
         "teacher_prefill_tok_per_s": teacher_tokens / teacher_s
         if teacher_s > 0
@@ -6702,18 +7228,10 @@ async def main(config: Config) -> None:
     # exclusive with) the DEPRECATED two-phase teacher_pipeline_phase: the latter
     # caused a training regression, so they must not be combined.
     pipeline_rl = bool(config.opd_pipeline_rl)
-    # All-layer OPRD needs the SINGLE-PHASE prepare path: the teacher per-layer hiddens
-    # come from a trainer-side full-sequence forward, which the two-phase pipelined
-    # prepare (_prepare_opd_batch_pipelined) does NOT wire (it never resolves
-    # oprd_layer_indices → opd_oprd_enabled is never sent → OPRD silently no-ops). Force
-    # single-phase whenever OPRD is requested.
-    if pipeline_rl and config.opd_oprd_layers:
-        logger.info(
-            "opd_oprd_layers=%r set → forcing opd_pipeline_rl OFF (OPRD requires the "
-            "single-phase prepare path that resolves oprd_layer_indices)",
-            config.opd_oprd_layers,
-        )
-        pipeline_rl = False
+    # OPRD is compatible with async-overlapped pipeline_rl because that path calls
+    # _prepare_step_batches -> _prepare_opd_batch, the same single-phase prepare
+    # used by the serial loop. It remains incompatible with the deprecated
+    # teacher_pipeline_phase path below, which uses _prepare_opd_batch_pipelined.
     if pipeline_rl and pipeline_phase:
         raise ValueError(
             "opd_pipeline_rl and teacher_pipeline_phase are mutually exclusive; "
@@ -6914,10 +7432,18 @@ async def main(config: Config) -> None:
     empty_streak = 0  # consecutive steps with empty_frac >= abort threshold
     # Async-overlapped sampling (opd_pipeline_rl) one-step-ahead prepare handle.
     # Holds the background task that prepares step N+1 while step N trains+syncs;
-    # step N consumes the task launched during step N-1. None until the first step
+    # step N consumes the task launched during step N-1. Empty until the first step
     # launches it (step 0 prepares synchronously, mirroring filler_tokens_rl which
-    # only starts its generation worker after the first step).
-    pending_prepare: "asyncio.Task[list[PreparedOpdBatch]] | None" = None
+    # only starts its generation worker after the first step). With
+    # opd_pipeline_depth>1 this holds up to `depth` step-keyed tasks (N+1..N+depth)
+    # so the teacher never starves waiting for the next step's sampling.
+    pipeline_depth = max(1, int(getattr(config, "opd_pipeline_depth", 1)))
+    if pipeline_depth > 1 and config.sampler_quiesce_before_sync:
+        raise ValueError(
+            "opd_pipeline_depth>1 is incompatible with sampler_quiesce_before_sync "
+            "(deeper lookahead keeps next-step requests in flight during sync)"
+        )
+    pending_prepares: dict[int, "asyncio.Task[list[PreparedOpdBatch]]"] = {}
     # Background eval bundle (eval_async + dedicated eval pool). At most one in
     # flight; it runs against the eval pool's frozen weights (the pool is only
     # re-synced at eval steps, after draining any previous bundle). Results are
@@ -6935,6 +7461,19 @@ async def main(config: Config) -> None:
     # Fire-and-forget HF-safetensors export futures (see config.save_hf_safetensors);
     # drained after the loop so the process doesn't exit before they finish.
     hf_save_futures: list[tuple[str, Any]] = []
+    fb_capture_done = False
+    fb_capture_path = (
+        Path(config.forward_backward_capture_path)
+        if config.forward_backward_capture_path
+        else None
+    )
+    if fb_capture_path is not None:
+        logger.info(
+            "Will capture forward_backward replay payload at step=%d train_batch=%d to %s",
+            config.forward_backward_capture_step,
+            config.forward_backward_capture_train_batch,
+            fb_capture_path,
+        )
     # Held-out set for the with/without-pause control eval (genuine-improvement
     # judge). From eval_prompts_json_path if given, else the tail of the pool.
     control_eval_prompts: list[Any] = []
@@ -7005,8 +7544,13 @@ async def main(config: Config) -> None:
         # Shared by the serial (interleaved) and pipelined paths so a step always
         # trains on exactly the batches prepared for it. `is_last` marks the final
         # prepare batch of the step (used for skip_optim_step gradient-clear).
-        def _submit_fb_for_prepared(prepared: PreparedOpdBatch, is_last: bool) -> None:
-            nonlocal first_fb_submit_t0, train_microbatch_count
+        def _submit_fb_for_prepared(
+            prepared: PreparedOpdBatch,
+            *,
+            prepare_batch_idx: int,
+            is_last: bool,
+        ) -> None:
+            nonlocal first_fb_submit_t0, train_microbatch_count, fb_capture_done
             loss_params: dict[str, Any] = {
                 "teacher_heads": {"0": config.teacher_head},
                 "teacher_hidden_caches": {"0": str(prepared.cache_path)},
@@ -7025,16 +7569,23 @@ async def main(config: Config) -> None:
                 "opd_profile_sync_cuda": config.profile_sync_cuda,
                 "num_chunks": 8,
             }
-            # Multi-layer OPRD trainer-side teacher forward: send the explicit layer
-            # subset (the SAME list the trainer uses to capture student layers) + the
-            # spec string. The teacher per-layer hiddens come from the trainer's own
-            # no-grad forward on the per-datum teacher_input_ids/teacher_kept_indices
-            # (already in the batch) — NO SGLang rank-3 cache. Omitted when off.
+            # Multi-layer OPRD: send the explicit layer subset (the SAME list the
+            # trainer uses to capture student layers) + the spec string. By default
+            # teacher per-layer hiddens come from the trainer-side no-grad forward;
+            # the SGLang cache backend passes a rank-3 layer cache here instead.
             if prepared.oprd_layer_indices:
                 loss_params["opd_oprd_enabled"] = True
                 loss_params["opd_oprd_layers"] = config.opd_oprd_layers
                 loss_params["opd_oprd_layer_indices"] = list(prepared.oprd_layer_indices)
                 loss_params["opd_oprd_last_k"] = int(config.opd_oprd_last_k)
+                loss_params["opd_oprd_student_capture"] = config.opd_oprd_student_capture
+                if prepared.layers_cache_path is not None:
+                    loss_params["teacher_layer_hidden_caches"] = {
+                        "0": {
+                            "path": str(prepared.layers_cache_path),
+                            "tensor_key": "hidden_states_layers",
+                        }
+                    }
             train_batches = _chunked(prepared.data, train_microbatch_size)
             for train_idx, train_batch in enumerate(train_batches):
                 train_loss_params = dict(loss_params)
@@ -7043,11 +7594,33 @@ async def main(config: Config) -> None:
                     train_loss_params["profile_clear_gradients_after_backward"] = True
                 if first_fb_submit_t0 is None:
                     first_fb_submit_t0 = time.perf_counter()
+                loss_fn = "cross_entropy" if config.sft_mode else "opd_loss"
+                request_loss_params = {} if config.sft_mode else train_loss_params
+                if (
+                    fb_capture_path is not None
+                    and not fb_capture_done
+                    and step == int(config.forward_backward_capture_step)
+                    and train_idx == int(config.forward_backward_capture_train_batch)
+                ):
+                    _write_forward_backward_capture(
+                        capture_path=fb_capture_path,
+                        config=config,
+                        step=step,
+                        prepare_batch_idx=prepare_batch_idx,
+                        train_batch_idx=train_idx,
+                        train_microbatch_size=train_microbatch_size,
+                        data=train_batch,
+                        loss_fn=loss_fn,
+                        loss_fn_params=request_loss_params,
+                        prepared=prepared,
+                    )
+                    fb_capture_done = True
+                    logger.info("Captured forward_backward replay payload to %s", fb_capture_path)
                 fb_futures.append(
                     training_client.forward_backward(
                         train_batch,
-                        loss_fn="cross_entropy" if config.sft_mode else "opd_loss",
-                        loss_fn_params={} if config.sft_mode else train_loss_params,
+                        loss_fn=loss_fn,
+                        loss_fn_params=request_loss_params,
                     )
                 )
                 train_microbatch_count += 1
@@ -7059,14 +7632,16 @@ async def main(config: Config) -> None:
             # — exactly like filler_tokens_rl starts its gen worker only after the
             # first step (filler_tokens_rl.py:2904-2920). The N+1 prepare is launched
             # below, AFTER fb submission, so it overlaps train+sync.
-            if pending_prepare is None:
+            pending = pending_prepares.pop(step, None)
+            if pending is None:
                 prepared_batches = await _prepare_step_batches(step)
             else:
-                prepared_batches = await pending_prepare
-                pending_prepare = None
+                prepared_batches = await pending
             for bidx, prepared in enumerate(prepared_batches):
                 _submit_fb_for_prepared(
-                    prepared, is_last=(bidx == len(prepared_batches) - 1)
+                    prepared,
+                    prepare_batch_idx=bidx,
+                    is_last=(bidx == len(prepared_batches) - 1),
                 )
         else:
             def schedule_prepare_batches() -> None:
@@ -7126,7 +7701,7 @@ async def main(config: Config) -> None:
                     inflight_prepare.keys(), return_when=asyncio.FIRST_COMPLETED
                 )
                 for task in done:
-                    inflight_prepare.pop(task)
+                    bidx = inflight_prepare.pop(task)
                     prepared = task.result()
                     completed_prepare_count += 1
                     schedule_prepare_batches()
@@ -7134,6 +7709,7 @@ async def main(config: Config) -> None:
                     prepared_batches.append(prepared)
                     _submit_fb_for_prepared(
                         prepared,
+                        prepare_batch_idx=bidx,
                         is_last=(completed_prepare_count == len(prompt_batches)),
                     )
         prepare_window_s = _elapsed(prepare_window_t0)
@@ -7172,9 +7748,15 @@ async def main(config: Config) -> None:
             if config.sampler_quiesce_before_sync:
                 # Fresh-sampler science cannot have step N+1 requests in flight
                 # while step N syncs. Launch the overlap after sync instead.
+                # (pipeline_depth>1 is rejected with quiesce — see the depth guard.)
                 launch_pending_prepare_after_sync = True
             else:
-                pending_prepare = asyncio.create_task(_prepare_step_batches(step + 1))
+                # Keep the lookahead window full: launch every step in
+                # [step+1, step+pipeline_depth] not already in flight. At depth=1 this
+                # is exactly the old single-step launch; deeper keeps the teacher fed.
+                for s in range(step + 1, min(step + pipeline_depth + 1, config.num_steps)):
+                    if s not in pending_prepares:
+                        pending_prepares[s] = asyncio.create_task(_prepare_step_batches(s))
 
         fb_t0 = first_fb_submit_t0 or time.perf_counter()
         fb_results = await asyncio.gather(*fb_futures)
@@ -7291,7 +7873,7 @@ async def main(config: Config) -> None:
                     sync_failure = sync_result.message or "sync_weights_to_inference failed"
 
         if launch_pending_prepare_after_sync and sync_failure is None:
-            pending_prepare = asyncio.create_task(_prepare_step_batches(step + 1))
+            pending_prepares[step + 1] = asyncio.create_task(_prepare_step_batches(step + 1))
 
         save_s = 0.0
         save_path: str | None = None
@@ -7752,14 +8334,16 @@ async def main(config: Config) -> None:
                     f"for {empty_streak} consecutive steps — student is generating nothing "
                     f"(EOS-collapse / loss reward-hack). Fix the prompt/recipe (see runbook)."
                 )
-    # Cancel any orphaned one-step-ahead prepare (only possible if the loop exits
-    # before consuming it; the final step never launches one).
-    if pending_prepare is not None and not pending_prepare.done():
-        pending_prepare.cancel()
-        try:
-            await pending_prepare
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
-            pass
+    # Cancel any orphaned lookahead prepares (only possible if the loop exits before
+    # consuming them; the final step never launches past num_steps).
+    for _pending in pending_prepares.values():
+        if not _pending.done():
+            _pending.cancel()
+            try:
+                await _pending
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+    pending_prepares.clear()
 
     # Drain a still-running async eval bundle so its late row lands before the
     # steady summary (the terminal control eval is blocking, so this only fires

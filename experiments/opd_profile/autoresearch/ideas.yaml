@@ -1,0 +1,2791 @@
+programme: prefill_time_compute_opsd
+created_utc: '2026-06-03T00:00:00Z'
+notes:
+- Focus on objective-level OPSD changes before filler search or decode-compression
+  work.
+- Default decision eval target is 1000 examples; anything below 900 scored examples
+  is incomplete.
+ideas:
+- id: PTC-001
+  status: infra_invalid
+  priority: 100
+  candidate: candidates/PTC-001.yaml
+  hypothesis: Pure positive OPSD KL on filler plus sampled answer can transfer teacher
+    prefill computation into student filler states.
+  rationale: This is the cleanest version of the user-proposed objective and removes
+    prompt-position KL from the denominator.
+  default_num_steps: 9
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-03T22:58:59Z'
+  last_num_steps: 9
+  last_prompts_per_step: 128
+  last_verdict: infra_invalid
+  last_reason: request_failure_frac_max=0.3720
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260603T225859Z-configPTC-001-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T011537Z-PTC-001-step8-infra_invalid.json
+  last_scored_utc: '2026-06-04T01:15:37Z'
+- id: PTC-002
+  status: rejected
+  priority: 95
+  candidate: candidates/PTC-002.yaml
+  hypothesis: Gold answer tails make the teacher continuation stable enough for the
+    filler KL objective to train.
+  rationale: If sampled answer noise is masking the effect, fixing the answer tail
+    should improve answer-logprob support.
+  default_num_steps: 9
+  default_prompts_per_step: 128
+  last_verdict: superseded
+  last_reason: Superseded by PTC-006, which tested the same gold-answer objective
+    on the FlashQLA and fast-sync path and was science_reject.
+- id: PTC-006
+  status: rejected
+  priority: 96
+  candidate: candidates/PTC-006.yaml
+  hypothesis: Gold answer tails make the teacher continuation stable enough under
+    the FlashQLA and faster-sync infrastructure.
+  rationale: This is the PTC-002 science variant on the current throughput path, avoiding
+    a fallback to the older FLA backend while testing the gold-answer hypothesis.
+  default_num_steps: 9
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T01:36:00Z'
+  last_num_steps: 9
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: no positive accuracy or answer-logprob signal
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T013603Z-configPTC-006-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T021205Z-PTC-006-step8-science_reject.json
+  last_scored_utc: '2026-06-04T02:12:05Z'
+- id: PTC-003
+  status: rejected
+  priority: 90
+  candidate: candidates/PTC-003.yaml
+  hypothesis: Filler-position hidden matching adds a useful representation target
+    once prompt KL is masked out.
+  rationale: Hidden matching was weak historically, but the old loss mixed it with
+    other objective confounds.
+  default_num_steps: 9
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T02:12:44Z'
+  last_num_steps: 9
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: no positive accuracy or answer-logprob signal
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T021246Z-configPTC-003-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T045543Z-PTC-003-step8-science_reject.json
+  last_scored_utc: '2026-06-04T04:55:43Z'
+- id: PTC-004
+  status: rejected
+  priority: 70
+  candidate: candidates/PTC-004.yaml
+  hypothesis: A larger batch/eval rerun of the best PTC variant will reduce variance
+    enough to distinguish weak signal from noise.
+  rationale: Scale only after at least one earlier PTC candidate has nonnegative accuracy
+    delta and strong answer-logprob support.
+  default_num_steps: 13
+  default_prompts_per_step: 256
+  last_verdict: skipped_precondition_failed
+  last_reason: Not launched because PTC-006 and PTC-003 were clean FlashQLA runs but
+    both had negative accuracy deltas and negative answer-logprob margins.
+- id: PTC-007
+  status: rejected
+  priority: 94
+  candidate: candidates/PTC-007.yaml
+  hypothesis: The previous 9-token filler made the latent channel too small; a 108-token
+    filler may provide enough capacity for teacher prefill computation to become causally
+    recoverable by the student.
+  rationale: PTC-006 cleanly rejected the short-filler gold-answer KL variant, but
+    the research memo explicitly treats compression as secondary until a causal signal
+    exists. This retests the same objective with a much larger pause budget before
+    changing hidden targets or scaling examples.
+  default_num_steps: 9
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T05:08:09Z'
+  last_num_steps: 9
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: no positive accuracy or answer-logprob signal
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T050810Z-configPTC-007-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T053033Z-PTC-007-step4-science_reject.json
+  last_scored_utc: '2026-06-04T05:30:33Z'
+- id: PTC-008
+  status: rejected
+  priority: 93
+  candidate: candidates/PTC-008.yaml
+  hypothesis: PTC-007 failed because long positive-only filler KL mostly trained easy
+    filler-token imitation and diluted answer-causal credit; a RiM-invariant-style
+    contrastive objective should make real memory help the answer and corrupted memory
+    hurt it while keeping the 108-token capacity budget.
+  rationale: This returns to the earlier AH/AI causal mechanism signal but ports it
+    onto the current FlashQLA, fast-sync, long-filler path. It is not another filler
+    sweep; the key change is the signed answer and corrupt-memory contrast.
+  default_num_steps: 9
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T05:31:33Z'
+  last_num_steps: 9
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: no positive accuracy or answer-logprob signal
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T053133Z-configPTC-008-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T060104Z-PTC-008-step4-science_reject.json
+  last_scored_utc: '2026-06-04T06:01:04Z'
+- id: PTC-009
+  status: rejected
+  priority: 92
+  candidate: candidates/PTC-009.yaml
+  hypothesis: PTC-008 only proved corrupted memory can be made worse; it still failed
+    to make real pause beat no-pause. Same-visible-input cache mismatch with active
+    hidden matching and stronger positive answer KL should pressure prompt-specific
+    memory without training a visible corrupt-token anti-target.
+  rationale: This is the long-filler version of the cache-mismatch/RiM invariant.
+    It keeps the 108-token capacity budget, removes signed corrupt-answer KL, turns
+    on hidden matching for the memory mismatch arm, and raises answer KL weight from
+    0.125 to 1.0 to counter the no-pause advantage seen in PTC-007/PTC-008.
+  default_num_steps: 9
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T06:01:42Z'
+  last_num_steps: 9
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: no positive accuracy or answer-logprob signal
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T060143Z-configPTC-009-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T063058Z-PTC-009-step4-science_reject.json
+  last_scored_utc: '2026-06-04T06:30:58Z'
+- id: PTC-010
+  status: rejected
+  priority: 91
+  candidate: candidates/PTC-010.yaml
+  hypothesis: PTC-009 failed because filler-position KL gave the optimizer an easy
+    non-causal target and did not force answer dependence on the learned memory. Removing
+    filler-token KL while keeping hidden-state memory matching, a stronger cache-mismatch
+    negative, and direct gold-answer KL should reveal whether the pause buffer can
+    carry useful prompt-specific state when the easy filler imitation objective is
+    gone.
+  rationale: This is not another filler-length sweep. It preserves the 108-token capacity,
+    FlashQLA/SMG/fast-sync path, and step-4 gate, but changes the loss surface from
+    filler KL plus hidden/cache pressure to hidden-only memory plus answer KL. If
+    pause still equals corrupt and trails no-pause, the fixed-slot teacher-cache target
+    is likely the wrong abstraction and the loop should move to a generated-memory/RiM
+    objective rather than more weight tuning.
+  default_num_steps: 9
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T06:33:14Z'
+  last_num_steps: 9
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: no positive accuracy or answer-logprob signal
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T063316Z-configPTC-010-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T070229Z-PTC-010-step4-science_reject.json
+  last_scored_utc: '2026-06-04T07:02:29Z'
+- id: PTC-011
+  status: inconclusive
+  priority: 92
+  candidate: candidates/PTC-011.yaml
+  hypothesis: The fixed-slot variants failed because the pause region was not a prompt-specific
+    memory surface at the causal corruption boundary. Have the student generate 100
+    memory tokens from each prompt before answering, then train hidden memory plus
+    gold-answer KL with cache-mismatch pressure across the generated memory span.
+  rationale: This preserves the FlashQLA/SMG/fast-sync path and the same step-4 gate,
+    but replaces static filler with generated prompt-specific memory. The corrupt
+    control shuffles generated memories across prompts; a real RiM-like memory should
+    beat both no-pause and shuffled-memory controls on accuracy and answer logprob.
+    If it still trails no-pause or barely beats shuffled memory, the teacher-cache
+    hidden target is not producing causally useful externalized reasoning state. The
+    generated-memory control gate uses 256 held-out prompts because each prompt first
+    samples 100 exact memory tokens; the fixed-filler 1000-prompt gate would spend
+    too much of the run on eval plumbing.
+  default_num_steps: 9
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T07:35:01Z'
+  last_num_steps: 9
+  last_prompts_per_step: 128
+  last_verdict: inconclusive
+  last_reason: completed cleanly but missed both reject and promotion thresholds
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T073501Z-configPTC-011-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T091212Z-PTC-011-step8-inconclusive.json
+  last_scored_utc: '2026-06-04T09:12:12Z'
+- id: PTC-012
+  status: rejected
+  priority: 90
+  candidate: candidates/PTC-012.yaml
+  hypothesis: 'If PTC-011 rejects, the generated memory surface itself was not enough
+    because the teacher-cache hidden/cache-mismatch target was still not aligned with
+    answer utility. Remove hidden/cache targets and train a RiM-style answer utility
+    objective: real generated memory gets strong gold-answer KL, while corrupted generated
+    memory gets a small signed anti-target so answers must depend on the memory contents.'
+  rationale: This keeps the 100-token prompt-specific generated memory, FlashQLA,
+    SMG, fast-sync path, and generated-memory eval gate, but changes the learning
+    signal from matching teacher hidden memory to making memory causally useful for
+    the final answer. It should beat no-pause and shuffled-memory controls if the
+    bottleneck was the hidden/cache target rather than generated-memory plumbing.
+  default_num_steps: 9
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T09:12:13Z'
+  last_num_steps: 9
+  last_prompts_per_step: 128
+  last_verdict: inconclusive
+  last_reason: Step-8 accuracy delta decayed to +0.0195 while answer logprob and answer
+    selection worsened; non-promotable recipe despite shuffled-memory control still
+    proving generated memory carries signal.
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T091215Z-configPTC-012-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T105043Z-PTC-012-step8-inconclusive.json
+  last_scored_utc: '2026-06-04T10:50:43Z'
+- id: PTC-013
+  status: rejected
+  priority: 89
+  candidate: candidates/PTC-013.yaml
+  requires:
+  - PTC-012
+  hypothesis: If PTC-012 rejects, answer-only RiM utility was likely too sparse to
+    teach the model how to make its generated memory useful. Add a small explicit
+    teacher-conditioned memory KL bootstrap while keeping answer utility and corrupt-memory
+    contrast dominant.
+  rationale: 'This keeps generated 100-token prompt-specific memory and the same FlashQLA/SMG
+    eval gate, but changes only the memory supervision strength: no hidden/cache target,
+    no strong filler imitation, just a 0.1 buffer KL bootstrap plus the real-vs-corrupt
+    answer objective. If this fails too, the generated-memory path is probably not
+    receiving effective credit assignment from these supervised OPD losses.'
+  default_num_steps: 9
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T10:51:10Z'
+  last_num_steps: 9
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: no positive accuracy or answer-logprob signal
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T105110Z-configPTC-013-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T114724Z-PTC-013-step4-science_reject.json
+  last_scored_utc: '2026-06-04T11:47:24Z'
+- id: PTC-014
+  status: rejected
+  priority: 88
+  candidate: candidates/PTC-014.yaml
+  requires:
+  - PTC-013
+  hypothesis: PTC-012 showed that generated memory can carry causal answer signal,
+    but the corrupt-answer anti-target appears to damage likelihood alignment; PTC-013
+    showed that adding buffer KL makes pause worse. Remove both corrupt-answer training
+    pressure and memory KL, and train only positive gold-answer utility on generated
+    memory.
+  rationale: This keeps the generated 100-token prompt-specific memory, FlashQLA,
+    SMG, and generated-memory control gate, but changes the loss to the least adversarial
+    answer-utility objective. If answer logprob remains below no-pause, the supervised
+    answer-utility path is likely unable to overcome the no-pause prior without a
+    different credit-assignment mechanism.
+  default_num_steps: 9
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T11:47:56Z'
+  last_num_steps: 9
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: no positive accuracy or answer-logprob signal
+  last_scored_utc: '2026-06-04T13:24:55Z'
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T114759Z-configPTC-014-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T132455Z-PTC-014-step8-science_reject.json
+- id: PTC-015
+  status: rejected
+  priority: 87
+  candidate: candidates/PTC-015.yaml
+  requires:
+  - PTC-014
+  hypothesis: PTC-014 showed that removing corrupt-answer and buffer-KL pressure improves
+    the causal generated-memory signal, but answer logprob still lags no-pause. If
+    the answer objective is underweighted rather than misdirected, doubling the positive
+    gold-answer KL weight should move answer_logprob_margin and answer_select_delta
+    toward or above zero while preserving the corrupt-memory collapse.
+  rationale: This keeps the generated 100-token prompt-specific memory, FlashQLA,
+    SMG, zero corrupt-answer pressure, zero buffer KL, and zero hidden/cache targets.
+    The only substantive change from PTC-014 is answer-position teacher KL weight
+    1.001 -> 2.001. If this also fails, the failure is less likely simple answer underweighting
+    and more likely a credit-assignment/objective mismatch.
+  default_num_steps: 9
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T13:24:55Z'
+  last_num_steps: 9
+  last_prompts_per_step: 128
+  last_verdict: inconclusive
+  last_reason: completed cleanly but missed both reject and promotion thresholds
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T132457Z-configPTC-015-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T150312Z-PTC-015-step8-inconclusive.json
+  last_scored_utc: '2026-06-04T15:03:12Z'
+- id: PTC-016
+  status: rejected
+  priority: 86
+  candidate: candidates/PTC-016.yaml
+  requires:
+  - PTC-015
+  hypothesis: If PTC-015 still fails, the issue is probably not just answer KL underweighting.
+    PTC-011 was the only recent recipe with positive answer-selection at step 8, and
+    its distinguishing useful knob was hidden-state memory shaping, not buffer KL.
+    Add a small hidden-only generated-memory bootstrap to the PTC-015 answer objective
+    while keeping corrupt-answer, buffer KL, and cache-mismatch negatives off.
+  rationale: This tests whether the generated memory needs a teacher-state anchor
+    to remain useful past the first control point. It preserves the 100 generated
+    memory tokens, FlashQLA, SMG, answer weight 2.0, and zero buffer/corrupt losses.
+    It changes only hidden memory pressure, at 0.5 instead of PTC-011's 1.5. Control
+    evaluation moves to steps 5 and 10 so the loop wakes only on useful eval points.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T15:03:13Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: early_science_reject
+  last_reason: 'Step-5 control rejected the hidden-anchor hypothesis despite the controller''s
+    generic inconclusive label: buffer_delta was only +0.0078, corrupt-pause accuracy
+    was 0.5391, answer_logprob_margin was negative, and answer_select_delta was strongly
+    negative.'
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T150313Z-configPTC-016-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T160508Z-PTC-016-step5-inconclusive.json
+  last_scored_utc: '2026-06-04T16:05:08Z'
+- id: PTC-017
+  status: rejected
+  priority: 85
+  candidate: candidates/PTC-017.yaml
+  requires:
+  - PTC-016
+  hypothesis: If PTC-016 rejects, hidden memory shaping may still be directionally
+    right but too weak. PTC-011's hidden weight 1.5 was the only setting that produced
+    positive step-8 answer-selection, but it mixed in cache-mismatch. PTC-017 raises
+    the hidden-only memory bootstrap to 1.0 while preserving PTC-015's stronger answer
+    objective and keeping cache/corrupt/buffer-KL losses off.
+  rationale: This is the highest-confidence supported fallback before spending time
+    on true PG/RiM plumbing. It tests hidden-anchor strength on the clean generated-memory
+    substrate with 100 generated tokens, FlashQLA, SMG, and eval only at steps 5 and
+    10.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_verdict: superseded
+  last_reason: PTC-016 step-5 control already showed hidden anchoring at 0.5 made
+    corrupt-pause accuracy high and answer-selection strongly negative; doubling the
+    same hidden-only pressure is a poor next experiment.
+- id: PTC-018
+  status: rejected
+  priority: 86
+  candidate: candidates/PTC-018.yaml
+  requires:
+  - PTC-016
+  hypothesis: 'PTC-014 with answer weight 1.0 produced the strongest early generated-memory
+    buffer delta but negative answer selection, while PTC-015 with answer weight 2.0
+    fixed answer selection but weakened the causal buffer gap. PTC-016 showed hidden
+    anchoring makes the generated memory less causal. Test the interpolation point:
+    answer-only weight 1.5, no hidden/cache/buffer/corrupt losses.'
+  rationale: This keeps the 100-token generated-memory substrate, FlashQLA, SMG, gold
+    answers, and corrupt generated-memory control. It avoids the now-rejected hidden-anchor
+    line and asks whether the useful PTC-014 buffer signal and the PTC-015 answer-selection
+    improvement can coexist at an intermediate answer weight.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T16:06:38Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: no positive accuracy or answer-logprob signal
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T160640Z-configPTC-018-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T170927Z-PTC-018-step5-science_reject.json
+  last_scored_utc: '2026-06-04T17:09:27Z'
+- id: PTC-019
+  status: infra_invalid
+  priority: 86
+  candidate: candidates/PTC-019.yaml
+  requires:
+  - PTC-018
+  hypothesis: The generated-memory answer-weight and hidden-anchor sweeps failed because
+    they train rewritten gold-answer sequences or teacher hidden targets rather than
+    giving policy-gradient credit to the actual memory and answer tokens the student
+    sampled. Use sampled-answer OPD PG with behavior-policy old_logprobs, k1 distillation
+    advantages, a small memory KL weight, and no corrupt/cache synthetic negatives.
+  rationale: 'This is the first real RiM/PG plumbing test: old logprobs are aligned
+    to the sampled generated-memory and answer tokens, gold-answer replacement is
+    off, and invalid non-sampled negative datums are disabled. If it fails cleanly,
+    the loop should stop sweeping supervised weights and either implement a true task-reward
+    RiM objective or change the memory-generation surface.'
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T17:11:37Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: infra_invalid
+  last_reason: request_failure_frac_max=0.0039
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T171139Z-configPTC-019-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T182907Z-PTC-019-step5-infra_invalid.json
+  last_scored_utc: '2026-06-04T18:29:07Z'
+- id: PTC-020
+  status: promote_retest
+  priority: 90
+  candidate: candidates/PTC-020.yaml
+  hypothesis: 'AM already showed the operational effect we care about: prefilling
+    prompt plus arbitrary filler tokens improved exact-match accuracy over no-pause
+    at n=1024, with strong post-hoc pause-vs-no-pause answer-logprob support. Retest
+    the AM recipe on the current FlashQLA/SMG/P2P-parallel path and score it by pause-vs-no-pause
+    performance, not corrupt-control or prompt-specific-memory diagnostics.'
+  rationale: The previous non-promotion was mostly a gate-design choice. In-loop answer-logprob
+    failed from oversized scorer batches and was fixed post-hoc by chunking; corrupt
+    exact-match was contaminated by cap/boundary artifacts; and answer-selection is
+    not the immediate objective. This branch asks only whether extra prefetched filler
+    tokens improve the answer distribution and exact-match accuracy versus no filler.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T19:11:32Z'
+  last_num_steps: 6
+  last_prompts_per_step: 128
+  last_verdict: promote_retest
+  last_reason: pause-vs-nopause accuracy warrants retest with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T191133Z-configPTC-020-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scored_utc: '2026-06-04T19:44:27Z'
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T194427Z-PTC-020-step5-promote_retest.json
+- id: PTC-021
+  status: strong_signal
+  priority: 89
+  candidate: candidates/PTC-021.yaml
+  requires:
+  - PTC-020
+  requires_statuses:
+    PTC-020:
+    - strong_signal
+    - promote_retest
+    - weak_signal
+  hypothesis: If PTC-020 reproduces the AM pause-vs-no-pause lift, continue the same
+    recipe to the second scheduled 1k control point to check whether the operational
+    effect is stable rather than a step-5 transient.
+  rationale: This is the lowest-risk positive follow-up. It changes only the run length
+    from 6 to 11 steps while keeping FlashQLA, parallel multi-endpoint P2P sync, the
+    1k pause-vs-no-pause gate, and the AM random-symbol filler objective.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T22:31:39Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T223140Z-configPTC-021-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T234210Z-PTC-021-step10-strong_ptc_signal.json
+  last_scored_utc: '2026-06-04T23:42:10Z'
+- id: PTC-022
+  status: rejected
+  priority: 88
+  candidate: candidates/PTC-022.yaml
+  requires:
+  - PTC-021
+  requires_statuses:
+    PTC-021:
+    - strong_signal
+    - promote_retest
+    - weak_signal
+  hypothesis: If the AM pause-vs-no-pause lift survives the stability retest, doubling
+    prompts per step should reduce optimizer/eval variance and make the final 1k operational
+    signal more reliable.
+  rationale: This is a scale-up of the same positive branch, not a new objective sweep.
+    It keeps the 6-step final-control schedule but raises prompts per step to 256
+    on the parallel multi-endpoint P2P path.
+  default_num_steps: 6
+  default_prompts_per_step: 256
+  last_launched_utc: '2026-06-04T23:42:10Z'
+  last_num_steps: 6
+  last_prompts_per_step: 256
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T234212Z-configPTC-022-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T001741Z-PTC-022-step5-science_reject.json
+  last_scored_utc: '2026-06-05T00:17:41Z'
+- id: PTC-023
+  status: strong_signal
+  priority: 92
+  candidate: candidates/PTC-023.yaml
+  requires:
+  - PTC-020
+  requires_statuses:
+    PTC-020:
+    - strong_signal
+    - promote_retest
+    - weak_signal
+  hypothesis: If AM's operational pause-vs-no-pause lift does not require hidden-state
+    matching, then the same short static-filler answer-causal recipe with hidden matching
+    disabled should retain a positive step-5 1k control delta and answer-logprob support.
+  rationale: This is the clean AM-minus-hidden ablation requested after PTC-020. It
+    keeps the corrupt buffer and corrupt-answer contrastive training objective, FlashQLA,
+    P2P sync, parallel endpoint sync, and the same final-only 1k operational gate,
+    while setting `opd_hidden_match_coef=0.0`. Corrupt exact-match eval is skipped
+    because the queue is judging pause-vs-no-pause performance.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T20:23:24Z'
+  last_num_steps: 6
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T202326Z-configPTC-023-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T205040Z-PTC-023-step5-strong_ptc_signal.json
+  last_scored_utc: '2026-06-04T20:50:40Z'
+- id: PTC-024
+  status: weak_signal
+  priority: 91
+  candidate: candidates/PTC-024.yaml
+  requires:
+  - PTC-020
+  requires_statuses:
+    PTC-020:
+    - strong_signal
+    - promote_retest
+    - weak_signal
+  hypothesis: If AM's operational lift mostly comes from short-filler answer supervision
+    and hidden anchoring rather than the corrupt-negative arm, replacing corrupt answer/buffer
+    penalties with a small positive-answer KL should preserve a positive pause-vs-no-pause
+    signal.
+  rationale: This isolates AM-minus-corrupt while keeping hidden matching active.
+    It removes both corrupt training weights, keeps the AM static filler, step-5 1k
+    operational control, FlashQLA, P2P sync, and parallel endpoint sync, and uses
+    `opd_positive_answer_weight=0.125` as the non-corrupt answer-side pressure.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T20:50:40Z'
+  last_num_steps: 6
+  last_prompts_per_step: 128
+  last_verdict: weak_ptc_signal
+  last_reason: pause beats no-pause but below scale gate without positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T205042Z-configPTC-024-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T211611Z-PTC-024-step5-weak_ptc_signal.json
+  last_scored_utc: '2026-06-04T21:16:11Z'
+- id: PTC-025
+  status: rejected
+  priority: 90
+  candidate: candidates/PTC-025.yaml
+  requires:
+  - PTC-020
+  requires_statuses:
+    PTC-020:
+    - strong_signal
+    - promote_retest
+    - weak_signal
+  hypothesis: If neither hidden matching nor corrupt-negative training is necessary
+    for the operational prefill-performance effect, then a minimal AM-style static-filler
+    run with only positive answer-side pressure should still beat no-pause at the
+    step-5 1k control.
+  rationale: This is the clean AM-minus-hidden-minus-corrupt ablation. It keeps AM's
+    short filler, final-only 1k pause-vs-no-pause scoring, FlashQLA, P2P sync, and
+    parallel endpoint sync, but sets hidden and corrupt weights to zero and adds `opd_positive_answer_weight=0.125`
+    so the answer path is not left without an explicit training signal.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-04T22:06:34Z'
+  last_num_steps: 6
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260604T220635Z-configPTC-025-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260604T223138Z-PTC-025-step5-science_reject.json
+  last_scored_utc: '2026-06-04T22:31:38Z'
+- id: PTC-026
+  status: weak_signal
+  priority: 87
+  candidate: candidates/PTC-026.yaml
+  requires:
+  - PTC-023
+  requires_statuses:
+    PTC-023:
+    - strong_signal
+    - promote_retest
+    - weak_signal
+  hypothesis: If the AM-minus-hidden screen is positive, the no-hidden recipe should
+    retain its pause-vs-no-pause operational lift through the step-10 1k stability
+    control rather than only at the first large readout.
+  rationale: This is the no-hidden stability follow-up for PTC-023. It keeps the same
+    AM static filler, corrupt training objective, FlashQLA, P2P sync, parallel endpoint
+    sync, and pause-vs-no-pause scoring, but moves the large control to step 10 with
+    `eval_control_start_step=10`.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T05:02:17Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: weak_ptc_signal
+  last_reason: pause beats no-pause but below scale gate with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T050218Z-configPTC-026-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T053249Z-PTC-026-step10-weak_ptc_signal.json
+  last_scored_utc: '2026-06-05T05:32:49Z'
+- id: PTC-027
+  status: deferred
+  priority: 86
+  candidate: candidates/PTC-027.yaml
+  requires:
+  - PTC-024
+  requires_statuses:
+    PTC-024:
+    - strong_signal
+    - promote_retest
+    - weak_signal
+  hypothesis: If the no-corrupt, hidden-kept screen is positive, replacing corrupt
+    negatives with positive answer-side pressure should remain operationally useful
+    through the step-10 1k stability control.
+  rationale: This is the stability follow-up for PTC-024. It keeps hidden matching,
+    corrupt training weights at zero, positive answer pressure at 0.125, FlashQLA,
+    P2P sync, parallel endpoint sync, and pause-vs-no-pause scoring, but moves the
+    large control to step 10.
+  defer_reason: PTC-024 was weak/collapsed, so a no-corrupt stability run is not part
+    of the primary decision tree unless explicitly requested.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+- id: PTC-028
+  status: deferred
+  priority: 85
+  candidate: candidates/PTC-028.yaml
+  requires:
+  - PTC-025
+  requires_statuses:
+    PTC-025:
+    - strong_signal
+    - promote_retest
+    - weak_signal
+  hypothesis: If the minimal no-hidden/no-corrupt screen is positive, positive answer-side
+    pressure alone should be enough to retain the operational pause-vs-no-pause lift
+    through the step-10 1k stability control.
+  rationale: This is the stability follow-up for PTC-025. It keeps AM's short static
+    filler, hidden and corrupt weights at zero, positive answer pressure at 0.125,
+    FlashQLA, P2P sync, parallel endpoint sync, and pause-vs-no-pause scoring, but
+    moves the large control to step 10.
+  defer_reason: PTC-025 rejected, so the minimal no-hidden/no-corrupt branch should
+    not consume fleet time.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+- id: PTC-029
+  status: rejected
+  priority: 98
+  candidate: candidates/PTC-029.yaml
+  requires:
+  - PTC-023
+  requires_statuses:
+    PTC-023:
+    - strong_signal
+    - promote_retest
+    - weak_signal
+  hypothesis: If the AM-minus-hidden result is a real memory-capacity effect rather
+    than a short-cue artifact, a 99-token random-symbol filler should preserve a positive
+    pause-vs-no-pause signal on the pipeline-RL overlap path.
+  rationale: This is the high-capacity speed-path check requested after the short-filler
+    screens. It keeps PTC-023's no-hidden corrupt objective, but moves the filler
+    from one 9-token unit to 11 units (99 tokens) and turns on pipeline-RL with sampler
+    quiescence disabled.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T03:35:40Z'
+  last_num_steps: 6
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_scored_utc: '2026-06-05T04:06:10Z'
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T033542Z-configPTC-029-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T040610Z-PTC-029-step5-science_reject.json
+- id: PTC-030
+  status: rejected
+  priority: 97
+  candidate: candidates/PTC-030.yaml
+  requires:
+  - PTC-024
+  requires_statuses:
+    PTC-024:
+    - strong_signal
+    - promote_retest
+    - weak_signal
+  hypothesis: If PTC-024's no-corrupt collapse was caused by too little filler capacity
+    rather than objective structure, the hidden-kept positive-answer-only objective
+    should recover with a 99-token random-symbol filler on pipeline-RL.
+  rationale: This pairs with PTC-029 in the high-capacity regime. It keeps hidden
+    matching and removes corrupt negatives as in PTC-024, but uses 99 filler tokens
+    and the overlapped pipeline-RL path.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T04:32:00Z'
+  last_num_steps: 6
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T043202Z-configPTC-030-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T050215Z-PTC-030-step5-science_reject.json
+  last_scored_utc: '2026-06-05T05:02:15Z'
+- id: PTC-031
+  status: deferred
+  priority: 96
+  candidate: candidates/PTC-031.yaml
+  requires:
+  - PTC-029
+  requires_statuses:
+    PTC-029:
+    - strong_signal
+    - promote_retest
+    - weak_signal
+  hypothesis: If the AM-minus-hidden operational lift is not specific to visible punctuation
+    text, 96 exact random token IDs should preserve the pause-vs-no-pause signal on
+    the pipeline-RL speed path.
+  rationale: This changes the 99-token symbol surface to a same-class-capacity exact-ID
+    random token filler while keeping the no-hidden corrupt-objective recipe and final
+    1k operational gate fixed.
+  defer_reason: PTC-029 rejected, so high-capacity filler-token surface sweeps are
+    off the primary hypothesis tree.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+- id: PTC-032
+  status: deferred
+  priority: 95
+  candidate: candidates/PTC-032.yaml
+  requires:
+  - PTC-030
+  requires_statuses:
+    PTC-030:
+    - strong_signal
+    - promote_retest
+    - weak_signal
+  hypothesis: If PTC-030's no-corrupt high-capacity run still collapses, replacing
+    visible symbols with 96 exact random token IDs should not by itself create a strong
+    pause-vs-no-pause lift.
+  rationale: This is the random-token filler analogue of the no-corrupt hidden-kept
+    high-capacity run, isolating filler type while keeping hidden matching and the
+    positive-answer-only objective.
+  defer_reason: PTC-030 rejected, so high-capacity filler-token surface sweeps are
+    off the primary hypothesis tree.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+- id: PTC-033
+  status: deferred
+  priority: 94
+  candidate: candidates/PTC-033.yaml
+  requires:
+  - PTC-029
+  requires_statuses:
+    PTC-029:
+    - strong_signal
+    - promote_retest
+    - weak_signal
+  hypothesis: If numeric-looking filler interacts better with the 4-digit arithmetic
+    domain than punctuation symbols, the no-hidden AM recipe should show a changed
+    pause-vs-no-pause margin with a 99-token fixed random-number filler.
+  rationale: This keeps the no-hidden corrupt-objective recipe but swaps the high-capacity
+    filler to repeated arbitrary 4-digit numbers, testing whether the operational
+    effect is token-type/domain-sensitive rather than just extra prefilled length.
+  defer_reason: PTC-029 rejected, so high-capacity filler-token surface sweeps are
+    off the primary hypothesis tree.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+- id: PTC-034
+  status: deferred
+  priority: 93
+  candidate: candidates/PTC-034.yaml
+  requires:
+  - PTC-030
+  requires_statuses:
+    PTC-030:
+    - strong_signal
+    - promote_retest
+    - weak_signal
+  hypothesis: If the no-corrupt hidden-kept objective needs a numeric filler surface
+    to become operationally useful, the 99-token random-number analogue should improve
+    over the high-capacity random-symbol weak/collapse result.
+  rationale: This is the numeric-filler counterpart to PTC-032, keeping hidden matching
+    and positive-answer-only pressure fixed while changing only the high-capacity
+    filler type.
+  defer_reason: PTC-030 rejected, so high-capacity filler-token surface sweeps are
+    off the primary hypothesis tree.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+- id: PTC-035
+  status: weak_signal
+  priority: 84
+  candidate: candidates/PTC-035.yaml
+  hypothesis: If pipeline-RL preserves the AM-minus-hidden mechanism when filler length
+    is held fixed, the short-filler no-hidden corrupt recipe should reproduce PTC-023's
+    pause-vs-no-pause lift on the overlapped sampling/training path.
+  rationale: This is the clean pipeline-RL validation that PTC-029 did not provide,
+    because PTC-029 changed both pipeline scheduling and filler length/type. It keeps
+    the PTC-023 objective and 9-token visible pause surface fixed while enabling pipeline
+    overlap.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T05:32:51Z'
+  last_num_steps: 6
+  last_prompts_per_step: 128
+  last_verdict: weak_ptc_signal
+  last_reason: pause beats no-pause but below scale gate with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T053252Z-configPTC-035-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T055823Z-PTC-035-step5-weak_ptc_signal.json
+  last_scored_utc: '2026-06-05T05:58:23Z'
+- id: PTC-036
+  status: promote_retest
+  priority: 83
+  candidate: candidates/PTC-036.yaml
+  hypothesis: If the full AM recipe is robust to pipeline-RL, the hidden-kept corrupt
+    objective should reproduce the PTC-020/PTC-021 family on the overlapped path.
+  rationale: This pairs with PTC-035 to separate hidden matching from pipeline scheduling.
+    It keeps AM's short filler, hidden matching, corrupt buffer and corrupt-answer
+    negative, final 1k gate, and only changes the execution path to pipeline-RL.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T05:58:26Z'
+  last_num_steps: 6
+  last_prompts_per_step: 128
+  last_verdict: promote_retest
+  last_reason: pause-vs-nopause accuracy warrants retest with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T055827Z-configPTC-036-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T063858Z-PTC-036-step5-promote_retest.json
+  last_scored_utc: '2026-06-05T06:38:58Z'
+- id: PTC-037
+  status: deferred
+  priority: 82
+  candidate: candidates/PTC-037.yaml
+  requires:
+  - PTC-035
+  requires_statuses:
+    PTC-035:
+    - strong_signal
+    - promote_retest
+    - weak_signal
+  hypothesis: If PTC-035 reproduces the no-hidden short-filler signal, the same recipe
+    should retain the lift through a step-10 final control on pipeline-RL.
+  rationale: This is a stability readout for the short-filler pipeline-RL no-hidden
+    branch. It also fills overnight capacity with a long run whose science value is
+    tied to PTC-023's strong result.
+  defer_reason: PTC-026 already showed the same no-hidden/corrupt recipe collapses
+    to a near-zero accuracy delta at step 10; keep lower-LR stability PTC-043 as the
+    targeted follow-up instead.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+- id: PTC-038
+  status: deferred
+  priority: 81
+  candidate: candidates/PTC-038.yaml
+  hypothesis: If PTC-029 failed because visible random symbols were a bad surface
+    rather than because high-capacity filler is intrinsically harmful, exact random
+    token IDs should recover some pause-vs-no-pause signal with the no-hidden corrupt
+    objective.
+  rationale: This deliberately runs despite PTC-029's rejection, because the user
+    asked whether random tokens work. It keeps the no-hidden corrupt recipe and tests
+    exact token IDs instead of punctuation text.
+  defer_reason: Random-token filler is not on the primary branch after PTC-029/PTC-030
+    rejected high-capacity random-symbol filler.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+- id: PTC-039
+  status: deferred
+  priority: 80
+  candidate: candidates/PTC-039.yaml
+  hypothesis: Numeric-looking high-capacity filler may interact differently with the
+    4-digit arithmetic task than punctuation symbols, even if both have similar prefill
+    length.
+  rationale: This is the random-number analogue of PTC-029 under the no-hidden corrupt
+    objective. It directly tests the user's question about random-number filler without
+    requiring PTC-029 to have succeeded.
+  defer_reason: Numeric filler is not on the primary branch after PTC-029/PTC-030
+    rejected high-capacity random-symbol filler.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+- id: PTC-040
+  status: queued
+  priority: 79
+  candidate: candidates/PTC-040.yaml
+  requires:
+  - PTC-035
+  requires_statuses:
+    PTC-035:
+    - strong_signal
+    - promote_retest
+  hypothesis: If the corrupt counterfactual effect comes mainly from making corrupted
+    memory bad at buffer positions, corrupt-buffer pressure alone should retain part
+    of PTC-023's operational lift.
+  rationale: This isolates the corrupt-buffer arm by zeroing the signed corrupt-answer
+    weight while keeping no-hidden short-filler pipeline-RL fixed. It helps determine
+    which part of the counterfactual negative is necessary.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+- id: PTC-041
+  status: queued
+  priority: 78
+  candidate: candidates/PTC-041.yaml
+  requires:
+  - PTC-035
+  requires_statuses:
+    PTC-035:
+    - strong_signal
+    - promote_retest
+  hypothesis: If the AM effect comes mainly from answer-side dematching rather than
+    buffer-position corruption, corrupt-answer pressure alone should outperform the
+    no-corrupt positive-answer baseline.
+  rationale: This is the complement of PTC-040. It zeroes corrupt-buffer pressure,
+    keeps the signed corrupt-answer arm, and measures whether answer-side counterfactual
+    pressure alone can create operational lift.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+- id: PTC-042
+  status: queued
+  priority: 77
+  candidate: candidates/PTC-042.yaml
+  requires:
+  - PTC-035
+  requires_statuses:
+    PTC-035:
+    - strong_signal
+    - promote_retest
+  hypothesis: Adding a small positive-answer term to the no-hidden corrupt recipe
+    may stabilize answer likelihood without removing the counterfactual negative that
+    appears necessary in PTC-023/PTC-024.
+  rationale: PTC-024 showed positive answer plus hidden without corrupt was weak.
+    This tests whether positive answer supervision is useful only when the corrupt
+    negative remains present.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+- id: PTC-043
+  status: queued
+  priority: 76
+  candidate: candidates/PTC-043.yaml
+  requires:
+  - PTC-035
+  requires_statuses:
+    PTC-035:
+    - strong_signal
+    - promote_retest
+  hypothesis: A lower learning rate may preserve the short-filler no-hidden corrupt
+    effect longer through step 10 by reducing overshoot or collapse.
+  rationale: This is a conservative stability variant of the PTC-023/PTC-035 family.
+    It keeps the objective and pipeline-RL path fixed while lowering the optimizer
+    step size and spending a step-10 control.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+- id: PTC-044
+  status: strong_signal
+  priority: 75
+  candidate: candidates/PTC-044.yaml
+  requires:
+  - PTC-036
+  requires_statuses:
+    PTC-036:
+    - strong_signal
+    - promote_retest
+  hypothesis: The full AM recipe with hidden matching and corrupt negatives should
+    either reproduce PTC-021's step-10 stability on pipeline-RL or expose pipeline-RL
+    as a behavioral confound.
+  rationale: This is the long stability counterpart to PTC-036. It provides an overnight
+    high-value check of the strongest AM branch under the overlapped execution path.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T06:39:07Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T063908Z-configPTC-044-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T072940Z-PTC-044-step10-strong_ptc_signal.json
+  last_scored_utc: '2026-06-05T07:29:40Z'
+- id: PTC-045
+  status: queued
+  priority: 74
+  candidate: candidates/PTC-045.yaml
+  requires:
+  - PTC-035
+  requires_statuses:
+    PTC-035:
+    - strong_signal
+    - promote_retest
+  hypothesis: If the short no-hidden corrupt signal is not a visible-boundary artifact,
+    preserving boundary whitespace while rotating the memory tokens should retain
+    the pause-vs-no-pause lift.
+  rationale: This checks the exact corrupt-control concern from the earlier rotate_preserve_ws
+    analysis without changing filler length, hidden matching, or pipeline-RL scheduling.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+- id: PTC-046
+  status: deferred
+  priority: 73
+  candidate: candidates/PTC-046.yaml
+  hypothesis: If the counterfactual negative mainly needs same-token disruption rather
+    than a gentle rotation, the reverse corrupt arm should also produce operational
+    pause lift.
+  rationale: This is the stronger corrupt-mode counterpart to PTC-035/PTC-045. It
+    helps determine whether the effect is robust to the specific corruption operator.
+  defer_reason: Corrupt-mode sweep is secondary; keep only the artifact-control variant
+    unless the primary signal reproduces and needs follow-up.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+- id: PTC-047
+  status: deferred
+  priority: 72
+  candidate: candidates/PTC-047.yaml
+  hypothesis: If answer-side counterfactual pressure is necessary but over-weighted,
+    halving the corrupt-answer coefficient should preserve signal while reducing instability.
+  rationale: This is the low-dose answer-dematching arm for the corrupt-negative ablation
+    set, complementing PTC-041 and PTC-048.
+  defer_reason: Dose response should wait until the binary answer-side ablation is
+    informative.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+- id: PTC-048
+  status: deferred
+  priority: 71
+  candidate: candidates/PTC-048.yaml
+  hypothesis: If answer-side dematching is the central mechanism, increasing the corrupt-answer
+    coefficient should strengthen answer-logprob causal margins.
+  rationale: This is the high-dose answer-dematching arm. Together with PTC-047 it
+    turns the corrupt-answer question into a small dose response instead of a binary
+    on/off ablation.
+  defer_reason: Dose response should wait until the binary answer-side ablation is
+    informative.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+- id: PTC-049
+  status: deferred
+  priority: 70
+  candidate: candidates/PTC-049.yaml
+  hypothesis: If buffer dematching helps early but destabilizes longer training, reducing
+    corrupt-buffer weight should keep the step-10 signal alive.
+  rationale: This is a longer stability readout for the no-hidden corrupt branch with
+    softer buffer pressure but the same answer-side counterfactual term.
+  defer_reason: Softer buffer-pressure stability is a follow-up optimization, not
+    a primary branch.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+- id: PTC-050
+  status: strong_signal
+  priority: 89
+  candidate: candidates/PTC-050.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If hidden matching is not required but can still regularize the AM mechanism,
+    a lower hidden coefficient should preserve stability without dominating the corrupt-negative
+    objective.
+  rationale: This is a low-coefficient hidden-matching long run behind the core pipeline-RL
+    validations. It gives the overnight loop a useful tail if the higher priority
+    ablations finish before morning.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T09:34:54Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T093456Z-configPTC-050-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T105526Z-PTC-050-step10-strong_ptc_signal.json
+  last_scored_utc: '2026-06-05T10:55:26Z'
+- id: PTC-051
+  status: queued
+  priority: 82
+  candidate: candidates/PTC-051.yaml
+  requires:
+  - PTC-035
+  - PTC-036
+  requires_statuses:
+    PTC-035:
+    - weak_signal
+    - rejected
+    PTC-036:
+    - weak_signal
+    - rejected
+  hypothesis: If both short-filler pipeline-RL reproductions fail to show an operational
+    pause-vs-no-pause lift, then the next high-value test is not another filler variant
+    but a same-current-code non-pipeline full-AM rerun to separate a pipeline-RL behavioral
+    confound from ordinary run-to-run or codepath drift.
+  rationale: PTC-035 preserved answer-logprob support but collapsed the operational
+    accuracy delta. If PTC-036 also fails to reproduce the full AM effect, this conditional
+    fallback retests the known PTC-020 recipe with pipeline-RL disabled, short filler,
+    hidden matching, corrupt negatives, FlashQLA, P2P sync, and the final 1k gate.
+  default_num_steps: 6
+  default_prompts_per_step: 128
+- id: PTC-052
+  status: strong_signal
+  infra_retry_count: 0
+  priority: 90
+  candidate: candidates/PTC-052.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: An independent rerun of the exact PTC-044 full-AM short-filler pipeline-RL
+    step-10 recipe should reproduce a promotion-quality pause-vs-no-pause lift, confirming
+    the result is robust to run-to-run variance rather than a single-run fluke.
+  rationale: PTC-044 is the promoted recipe; PTC-052 is the runbook's priority-1 independent
+    promotion proof. It changes nothing except identity, isolating reproducibility.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T08:54:19Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T085419Z-configPTC-052-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scored_utc: '2026-06-05T09:34:51Z'
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T093451Z-PTC-052-step10-strong_ptc_signal.json
+- id: PTC-053
+  status: strong_signal
+  priority: 86
+  candidate: candidates/PTC-053.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If full hidden-match strength is not required, halving the hidden-match
+    coefficient from 2.0 to 1.0 should preserve most of the step-10 pause-vs-no-pause
+    lift.
+  rationale: Mid-point of the hidden-match sweep between PTC-050 (0.5) and PTC-044
+    (2.0); single-knob mechanism test of how much hidden anchoring the AM effect needs.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T10:55:29Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T105530Z-configPTC-053-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T115602Z-PTC-053-step10-strong_ptc_signal.json
+  last_scored_utc: '2026-06-05T11:56:02Z'
+- id: PTC-054
+  status: promote_retest
+  priority: 84
+  candidate: candidates/PTC-054.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If stronger hidden anchoring further regularizes the AM mechanism, raising
+    the hidden-match coefficient from 2.0 to 4.0 should preserve or strengthen the
+    lift; if it dominates the corrupt-negative objective it should weaken it.
+  rationale: Upper arm of the hidden-match sweep; tests whether 2.0 is near-optimal
+    or whether more anchoring helps.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T11:56:05Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: promote_retest
+  last_reason: pause-vs-nopause accuracy warrants retest with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T115606Z-configPTC-054-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T123638Z-PTC-054-step10-promote_retest.json
+  last_scored_utc: '2026-06-05T12:36:38Z'
+- id: PTC-055
+  status: strong_signal
+  priority: 82
+  candidate: candidates/PTC-055.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If answer-side counterfactual pressure is load-bearing, doubling the
+    corrupt-answer weight from 0.125 to 0.25 should strengthen answer-logprob margins
+    without collapsing operational accuracy.
+  rationale: Upper arm of the corrupt-answer dose response around the PTC-044 setting;
+    single-knob.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T12:36:40Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T123642Z-configPTC-055-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T134214Z-PTC-055-step10-strong_ptc_signal.json
+  last_scored_utc: '2026-06-05T13:42:14Z'
+- id: PTC-056
+  status: strong_signal
+  priority: 80
+  candidate: candidates/PTC-056.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If the corrupt-answer term is over-weighted at 0.125, halving it to
+    0.0625 should preserve the pause-vs-no-pause lift while reducing answer-side pressure.
+  rationale: Lower arm of the corrupt-answer dose response; complements PTC-055 for
+    a clean 0.0625/0.125/0.25 sweep.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T13:42:17Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T134217Z-configPTC-056-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T142250Z-PTC-056-step10-strong_ptc_signal.json
+  last_scored_utc: '2026-06-05T14:22:50Z'
+- id: PTC-057
+  status: strong_signal
+  infra_retry_count: 1
+  priority: 78
+  candidate: candidates/PTC-057.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If buffer-side counterfactual pressure can be softened without losing
+    the effect, halving the corrupt-buffer weight from 1.0 to 0.5 should preserve
+    the step-10 lift.
+  rationale: Lower arm of the corrupt-buffer dose response around PTC-044; single-knob
+    mechanism/efficiency test.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T14:56:23Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_scored_utc: '2026-06-05T15:36:56Z'
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T145624Z-configPTC-057-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T153656Z-PTC-057-step10-strong_ptc_signal.json
+- id: PTC-058
+  status: infra_invalid
+  priority: 76
+  candidate: candidates/PTC-058.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If buffer-side counterfactual pressure is the central mechanism, doubling
+    the corrupt-buffer weight from 1.0 to 2.0 should strengthen the buffer-control
+    margin.
+  rationale: Upper arm of the corrupt-buffer dose response; complements PTC-057 for
+    a 0.5/1.0/2.0 sweep.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T15:36:58Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: infra_invalid
+  last_reason: trainer-head:pid=       - exited_at=2026-06-05T15:40:02Z rc=1; trainer-worker-1:pid=       -
+    stopped_at=2026-06-05T15:40:06Z; trainer-worker-2:pid=       - stopped_at=2026-06-05T15:40:08Z;
+    trainer-worker-3:pid=       - stopped_at=2026-06-05T15:40:06Z; trainer-worker-4:pid=       -
+    stopped_at=2026-06-05T15:40:06Z; trainer-worker-5:pid=       - stopped_at=2026-06-05T15:40:08Z;
+    trainer-worker-6:pid=       - stopped_at=2026-06-05T15:40:06Z; trainer-worker-7:pid=       -
+    stopped_at=2026-06-05T15:40:07Z
+  last_scored_utc: '2026-06-05T16:07:30Z'
+- id: PTC-059
+  status: strong_signal
+  priority: 74
+  candidate: candidates/PTC-059.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If the AM effect is learning-rate limited at 3e-6, raising the learning
+    rate to 5e-6 should reach a comparable or larger step-10 lift faster, unless it
+    destabilizes training.
+  rationale: Upper arm of the learning-rate sensitivity check around PTC-044; single-knob
+    stability/efficiency test.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T13:17:27Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T131729Z-configPTC-059-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T133258Z-PTC-059-step10-strong_ptc_signal.json
+  last_scored_utc: '2026-06-06T13:32:58Z'
+- id: PTC-060
+  status: strong_signal
+  priority: 72
+  candidate: candidates/PTC-060.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If 3e-6 risks instability over longer training, lowering the learning
+    rate to 2e-6 should preserve the lift with a smoother trajectory.
+  rationale: Lower arm of the learning-rate sensitivity check; complements PTC-059
+    for a 2e-6/3e-6/5e-6 sweep.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T14:03:45Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_scored_utc: '2026-06-06T14:19:16Z'
+  infra_retry_count: 1
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T140346Z-configPTC-060-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T141916Z-PTC-060-step10-strong_ptc_signal.json
+- id: PTC-061
+  status: strong_signal
+  priority: 70
+  candidate: candidates/PTC-061.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If the full-AM pipeline lift is genuine prefill-time compute rather
+    than an EOS reward-hack, extending training from step 10 to step 15 should keep
+    the pause-vs-no-pause lift stable or growing rather than collapsing into degraded
+    generation.
+  rationale: Longer-horizon stability scaleup of PTC-044; directly probes the known
+    OPD EOS-collapse failure mode at a deeper step.
+  default_num_steps: 16
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T14:19:20Z'
+  last_num_steps: 16
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T141922Z-configPTC-061-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T143951Z-PTC-061-step15-strong_ptc_signal.json
+  last_scored_utc: '2026-06-06T14:39:51Z'
+- id: PTC-062
+  status: strong_signal
+  priority: 68
+  candidate: candidates/PTC-062.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If the step-10 lift is not batch-size limited, doubling prompts-per-step
+    from 128 to 256 should preserve the pause-vs-no-pause effect; if a larger prompt
+    batch hurts as in PTC-022, this isolates that confound under the current full-AM
+    pipeline recipe.
+  rationale: Prompt-batch scaleup of PTC-044; cleanly retests the PTC-022 'bigger
+    batch' rejection within the promoted recipe rather than across a different config.
+  default_num_steps: 11
+  default_prompts_per_step: 256
+  last_launched_utc: '2026-06-06T14:39:54Z'
+  last_num_steps: 11
+  last_prompts_per_step: 256
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T143955Z-configPTC-062-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T150026Z-PTC-062-step10-strong_ptc_signal.json
+  last_scored_utc: '2026-06-06T15:00:26Z'
+- id: PTC-065
+  status: rejected
+  priority: 96
+  candidate: candidates/PTC-065.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If natural-language thinking filler elicits latent reasoning the way
+    RiM intends, a semantic thinking phrase as the student pause should reproduce
+    or exceed the symbol-filler pause-vs-no-pause lift.
+  rationale: "Filler-semantics test and bridge to the RiM comparison \u2014 does meaningful\
+    \ think filler beat meaningless symbols in the OPD framework."
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T16:14:54Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T161455Z-configPTC-065-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T170527Z-PTC-065-step10-science_reject.json
+  last_scored_utc: '2026-06-05T17:05:27Z'
+- id: PTC-063
+  status: weak_signal
+  infra_retry_count: 3
+  priority: 95
+  candidate: candidates/PTC-063.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If the pause effect is content-agnostic, a uniform repeated-symbol dots
+    filler should reproduce the pause-vs-no-pause lift.
+  rationale: Filler-content test of uniform versus varied symbols at the same length.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T21:15:34Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: weak_ptc_signal
+  last_reason: pause beats no-pause but below scale gate with positive answer-logprob
+    support
+  last_scored_utc: '2026-06-05T21:31:05Z'
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T211535Z-configPTC-063-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T213105Z-PTC-063-step10-weak_ptc_signal.json
+- id: PTC-064
+  status: rejected
+  priority: 94
+  candidate: candidates/PTC-064.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If the effect is not specific to the original symbol set, a different
+    punctuation set should reproduce the lift.
+  rationale: Filler-content control with different symbols at the same length.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T21:31:08Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T213108Z-configPTC-064-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T214639Z-PTC-064-step10-science_reject.json
+  last_scored_utc: '2026-06-05T21:46:39Z'
+- id: PTC-066
+  status: infra_invalid
+  priority: 93
+  candidate: candidates/PTC-066.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If digit tokens work as filler, a numeric sequence should reproduce
+    the lift.
+  rationale: Filler-content test using numeric tokens.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T11:29:12Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: infra_invalid
+  last_reason: trainer-head:pid=       - exited_at=2026-06-06T11:46:06Z rc=1; trainer-worker-1:pid=       -
+    stopped_at=2026-06-06T11:46:11Z; trainer-worker-2:pid=       - stopped_at=2026-06-06T11:46:09Z;
+    trainer-worker-3:pid=       - stopped_at=2026-06-06T11:46:10Z; trainer-worker-4:pid=       -
+    stopped_at=2026-06-06T11:46:11Z; trainer-worker-5:pid=       - stopped_at=2026-06-06T11:46:11Z;
+    trainer-worker-6:pid=       - stopped_at=2026-06-06T11:46:11Z; trainer-worker-7:pid=       -
+    stopped_at=2026-06-06T11:46:10Z
+  last_scored_utc: '2026-06-06T11:59:44Z'
+  infra_retry_count: 3
+- id: PTC-067
+  status: rejected
+  priority: 92
+  candidate: candidates/PTC-067.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If more prefill compute helps unlike the rejected high-capacity random
+    filler, doubling the structured short filler length should preserve or increase
+    the lift.
+  rationale: Filler-length and compute test using 2x the validated short filler.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T12:00:01Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T120001Z-configPTC-067-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T121532Z-PTC-067-step10-science_reject.json
+  last_scored_utc: '2026-06-06T12:15:32Z'
+- id: PTC-070
+  status: rejected
+  priority: 97
+  candidate: candidates/PTC-070.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If pause-token COUNT (prefill compute) drives the effect for a uniform
+    pause, ~100 identical dot tokens should beat the ~9-token filler rather than plateau
+    or hurt as random high-capacity filler did.
+  rationale: Headline count test of 100 versus 9 uniform pause tokens; the 9 was only
+    an artifact of the old symbol string length.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T17:05:30Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T170531Z-configPTC-070-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T175603Z-PTC-070-step10-science_reject.json
+  last_scored_utc: '2026-06-05T17:56:03Z'
+- id: PTC-069
+  status: strong_signal
+  priority: 89
+  candidate: candidates/PTC-069.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: Uniform-pause length sweep midpoint at ~54 tokens to map the count-versus-lift
+    curve between 9 and 100.
+  rationale: Fills the uniform-pause length scaling curve.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T12:15:35Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T121536Z-configPTC-069-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T123106Z-PTC-069-step10-strong_ptc_signal.json
+  last_scored_utc: '2026-06-06T12:31:06Z'
+- id: PTC-068
+  status: rejected
+  priority: 88
+  candidate: candidates/PTC-068.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: Uniform-pause length sweep point at ~27 tokens to map the count-versus-lift
+    curve between 9 and 100.
+  rationale: Fills the uniform-pause length scaling curve.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T13:01:53Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_scored_utc: '2026-06-06T13:17:24Z'
+  infra_retry_count: 1
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T130153Z-configPTC-068-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T131724Z-PTC-068-step10-science_reject.json
+- id: PTC-071
+  status: rejected
+  priority: 99
+  candidate: candidates/PTC-071.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If high-capacity VARIED symbols drive the effect, ~100 random symbols
+    should match or beat the strong short varied-9-symbol filler; if capacity or randomness
+    hurts (as the old PTC-029 suggested), it should be weak or negative. Retests PTC-029
+    on the current fla plus fast-sampler stack.
+  rationale: High-capacity random-symbol arm reopened at user request; cheap now that
+    eval is ~90s.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T21:46:42Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T214644Z-configPTC-071-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T220213Z-PTC-071-step10-science_reject.json
+  last_scored_utc: '2026-06-05T22:02:13Z'
+- id: PTC-072
+  status: rejected
+  priority: 98
+  candidate: candidates/PTC-072.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If high-capacity natural-language random filler elicits latent compute,
+    ~100 random english words should show a pause-vs-no-pause lift; the short NL think
+    filler was inert so this tests whether capacity changes that.
+  rationale: High-capacity random-words arm of the user-requested filler-type sweep.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T22:17:50Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T221751Z-configPTC-072-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T223321Z-PTC-072-step10-science_reject.json
+  last_scored_utc: '2026-06-05T22:33:21Z'
+- id: PTC-073
+  status: strong_signal
+  priority: 97
+  candidate: candidates/PTC-073.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If high-capacity numeric random filler elicits the effect, ~100 random
+    numbers should show a lift; complements digits-9 which was a small-capacity numeric
+    filler.
+  rationale: High-capacity random-numbers arm of the user-requested filler-type sweep.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T22:33:24Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed without positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T223325Z-configPTC-073-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T225355Z-PTC-073-step10-strong_ptc_signal.json
+  last_scored_utc: '2026-06-05T22:53:55Z'
+- id: PTC-074
+  status: infra_invalid
+  priority: 96
+  candidate: candidates/PTC-074.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If pure arbitrary-vocab noise can serve as a compute buffer, 100 random
+    token ids (exact-token buffer) should show a lift; this is the most content-free
+    high-capacity filler.
+  rationale: High-capacity random-token-id arm using the exact student_prefill_token_ids
+    buffer mode.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T09:25:58Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: infra_invalid
+  last_reason: trainer-head:pid=       - exited_at=2026-06-06T09:42:51Z rc=1; trainer-worker-1:pid=       -
+    stopped_at=2026-06-06T09:42:55Z; trainer-worker-2:pid=       - stopped_at=2026-06-06T09:42:56Z;
+    trainer-worker-3:pid=       - stopped_at=2026-06-06T09:42:55Z; trainer-worker-4:pid=       -
+    stopped_at=2026-06-06T09:42:55Z; trainer-worker-5:pid=       - stopped_at=2026-06-06T09:42:56Z;
+    trainer-worker-6:pid=       - stopped_at=2026-06-06T09:42:55Z; trainer-worker-7:pid=       -
+    stopped_at=2026-06-06T09:42:57Z
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T082423Z-configPTC-074-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scored_utc: '2026-06-06T09:56:30Z'
+  infra_retry_count: 3
+- id: PTC-075
+  status: rejected
+  priority: 100
+  candidate: candidates/PTC-075.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If hidden-state matching is not actually necessary for the full-AM pause-vs-no-pause
+    effect, turning it fully off (coef 0) with everything else kept (varied-9-symbol,
+    corrupt negatives, pipeline-RL) should preserve the strong lift; if the lift collapses,
+    hidden matching is load-bearing.
+  rationale: The hidden-coef sweep never included 0 and the old no-hidden runs were
+    a different recipe on the old stack; this is the clean necessity test of the clunky
+    hidden-match term.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T22:02:16Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T220218Z-configPTC-075-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T221747Z-PTC-075-step10-science_reject.json
+  last_scored_utc: '2026-06-05T22:17:47Z'
+- id: PTC-076
+  status: strong_signal
+  priority: 110
+  candidate: candidates/PTC-076.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: "orig 9-symbol recipe replicate 1 on the NEW fast sampler \u2014 does\
+    \ the +0.44 reproduce on the same inference config as alt/dots, or was it an old-slow-sampler\
+    \ artifact?"
+  rationale: Replicated controlled re-run on one sampler to settle whether the orig
+    effect, the alt failure, and the hidden-off result are real given run-to-run variance
+    and the mid-sweep sampler change.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T22:53:58Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T225358Z-configPTC-076-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T230929Z-PTC-076-step10-strong_ptc_signal.json
+  last_scored_utc: '2026-06-05T23:09:29Z'
+- id: PTC-077
+  status: strong_signal
+  priority: 109
+  candidate: candidates/PTC-077.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: "orig 9-symbol recipe replicate 2 on the new sampler \u2014 establish\
+    \ the orig delta distribution and acc_nopause behavior across runs."
+  rationale: Replicated controlled re-run on one sampler to settle whether the orig
+    effect, the alt failure, and the hidden-off result are real given run-to-run variance
+    and the mid-sweep sampler change.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T23:09:32Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T230934Z-configPTC-077-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260605T232503Z-PTC-077-step10-strong_ptc_signal.json
+  last_scored_utc: '2026-06-05T23:25:03Z'
+- id: PTC-078
+  status: strong_signal
+  priority: 108
+  candidate: candidates/PTC-078.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: "orig 9-symbol recipe replicate 3 on the new sampler \u2014 third orig\
+    \ point for variance."
+  rationale: Replicated controlled re-run on one sampler to settle whether the orig
+    effect, the alt failure, and the hidden-off result are real given run-to-run variance
+    and the mid-sweep sampler change.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T02:02:00Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_scored_utc: '2026-06-06T02:17:32Z'
+  infra_retry_count: 1
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T020201Z-configPTC-078-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T021732Z-PTC-078-step10-strong_ptc_signal.json
+- id: PTC-079
+  status: weak_signal
+  priority: 107
+  candidate: candidates/PTC-079.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: "alt 9-symbol recipe replicate 1 \u2014 is the alt failure real or a\
+    \ one-run fluke, on the same sampler as orig replicates."
+  rationale: Replicated controlled re-run on one sampler to settle whether the orig
+    effect, the alt failure, and the hidden-off result are real given run-to-run variance
+    and the mid-sweep sampler change.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-05T23:58:05Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: weak_ptc_signal
+  last_reason: pause beats no-pause but below scale gate with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260605T235805Z-configPTC-079-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T001336Z-PTC-079-step10-weak_ptc_signal.json
+  last_scored_utc: '2026-06-06T00:13:36Z'
+- id: PTC-080
+  status: weak_signal
+  priority: 106
+  candidate: candidates/PTC-080.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: alt 9-symbol recipe replicate 2 for variance.
+  rationale: Replicated controlled re-run on one sampler to settle whether the orig
+    effect, the alt failure, and the hidden-off result are real given run-to-run variance
+    and the mid-sweep sampler change.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T00:13:38Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: weak_ptc_signal
+  last_reason: pause beats no-pause but below scale gate with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T001339Z-configPTC-080-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T002909Z-PTC-080-step10-weak_ptc_signal.json
+  last_scored_utc: '2026-06-06T00:29:09Z'
+- id: PTC-081
+  status: weak_signal
+  priority: 105
+  candidate: candidates/PTC-081.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: "hidden-off replicate 1 with cap-hit watched \u2014 the first hidden-off\
+    \ run had 87pct cap-hit so its flat delta was confounded; redo cleanly."
+  rationale: Replicated controlled re-run on one sampler to settle whether the orig
+    effect, the alt failure, and the hidden-off result are real given run-to-run variance
+    and the mid-sweep sampler change.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T00:29:12Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: weak_ptc_signal
+  last_reason: pause beats no-pause but below scale gate with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T002913Z-configPTC-081-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T004443Z-PTC-081-step10-weak_ptc_signal.json
+  last_scored_utc: '2026-06-06T00:44:43Z'
+- id: PTC-082
+  status: weak_signal
+  priority: 104
+  candidate: candidates/PTC-082.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: hidden-off replicate 2 for variance and cap-hit check.
+  rationale: Replicated controlled re-run on one sampler to settle whether the orig
+    effect, the alt failure, and the hidden-off result are real given run-to-run variance
+    and the mid-sweep sampler change.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T03:50:33Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: weak_ptc_signal
+  last_reason: pause beats no-pause but below scale gate with positive answer-logprob
+    support
+  last_scored_utc: '2026-06-06T04:06:05Z'
+  infra_retry_count: 3
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T035035Z-configPTC-082-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T040605Z-PTC-082-step10-weak_ptc_signal.json
+- id: PTC-083
+  status: strong_signal
+  priority: 103
+  candidate: candidates/PTC-083.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: If MORE of the HELPFUL orig symbols (same 9-symbol sequence repeated
+    to ~100 tokens) helps, this scales the working filler up and tests capacity with
+    the helpful content vs the rejected 100-dots/random-symbols.
+  rationale: "Filler-content mapping sweep (user-requested) \u2014 what kinds of filler\
+    \ tokens actually help, and does scaling the helpful set to 100 tokens preserve\
+    \ the effect."
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T04:06:07Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T040608Z-configPTC-083-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T042139Z-PTC-083-step10-strong_ptc_signal.json
+  last_scored_utc: '2026-06-06T04:21:39Z'
+- id: PTC-084
+  status: strong_signal
+  priority: 102
+  candidate: candidates/PTC-084.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: "100 tokens randomly drawn from the helpful orig symbol set \u2014 does\
+    \ a high-capacity buffer of the helpful symbols in random order preserve the lift?"
+  rationale: "Filler-content mapping sweep (user-requested) \u2014 what kinds of filler\
+    \ tokens actually help, and does scaling the helpful set to 100 tokens preserve\
+    \ the effect."
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T04:52:26Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_scored_utc: '2026-06-06T05:07:57Z'
+  infra_retry_count: 1
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T045227Z-configPTC-084-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T050757Z-PTC-084-step10-strong_ptc_signal.json
+- id: PTC-085
+  status: rejected
+  priority: 101
+  candidate: candidates/PTC-085.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: "Neutral NON-math 9 symbols different from orig \u2014 tests whether\
+    \ the orig set is uniquely special or whether any non-math-operator symbol set\
+    \ works (the alt set that failed contained math operators that may clash with\
+    \ arithmetic)."
+  rationale: "Filler-content mapping sweep (user-requested) \u2014 what kinds of filler\
+    \ tokens actually help, and does scaling the helpful set to 100 tokens preserve\
+    \ the effect."
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T05:08:00Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T050801Z-configPTC-085-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T052331Z-PTC-085-step10-science_reject.json
+  last_scored_utc: '2026-06-06T05:23:31Z'
+- id: PTC-086
+  status: strong_signal
+  priority: 100
+  candidate: candidates/PTC-086.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: "9 random numbers \u2014 does the numbers-content effect (PTC-073 was\
+    \ +0.15 at 100) appear at low count too, isolating content from capacity?"
+  rationale: "Filler-content mapping sweep (user-requested) \u2014 what kinds of filler\
+    \ tokens actually help, and does scaling the helpful set to 100 tokens preserve\
+    \ the effect."
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T05:54:18Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_scored_utc: '2026-06-06T06:09:49Z'
+  infra_retry_count: 1
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T055419Z-configPTC-086-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T060949Z-PTC-086-step10-strong_ptc_signal.json
+- id: PTC-087
+  status: infra_invalid
+  priority: 99
+  candidate: candidates/PTC-087.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: "Replicate of 100 random numbers with a fresh draw \u2014 confirm PTC-073's\
+    \ +0.15 which was N=1 with 12pct cap-hit."
+  rationale: "Filler-content mapping sweep (user-requested) \u2014 what kinds of filler\
+    \ tokens actually help, and does scaling the helpful set to 100 tokens preserve\
+    \ the effect."
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T07:22:43Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: infra_invalid
+  last_reason: trainer-head:pid=       - exited_at=2026-06-06T07:39:37Z rc=1; trainer-worker-1:pid=       -
+    stopped_at=2026-06-06T07:39:42Z; trainer-worker-2:pid=       - stopped_at=2026-06-06T07:39:42Z;
+    trainer-worker-3:pid=       - stopped_at=2026-06-06T07:39:42Z; trainer-worker-4:pid=       -
+    stopped_at=2026-06-06T07:39:42Z; trainer-worker-5:pid=       - stopped_at=2026-06-06T07:39:40Z;
+    trainer-worker-6:pid=       - stopped_at=2026-06-06T07:39:42Z; trainer-worker-7:pid=       -
+    stopped_at=2026-06-06T07:39:42Z
+  last_scored_utc: '2026-06-06T07:53:15Z'
+  infra_retry_count: 3
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T070156Z-configPTC-087-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T072227Z-PTC-087-step10-infra_invalid.json
+- id: PTC-088
+  status: strong_signal
+  priority: 130
+  candidate: candidates/PTC-088.yaml
+  hypothesis: If the promoted step-10 pause signal is genuine learned prefill-time
+    compute (not a base-model prompt-format artifact), the pause-vs-corrupt margin
+    and answer-logprob margin should be ABSENT at step 0 and EMERGE with training;
+    and the pause-vs-no-pause delta should persist or grow from step 10 to step 30
+    rather than peak-then-decay.
+  rationale: 'Deep-analysis control for the fast-emergence concern. eval_control_start_step=0
+    + 31 steps gives the untrained baseline AND the full 0/5/.../30 trajectory in
+    one run. Also decomposes the delta: compare acc_nopause at step 0 vs step 10 to
+    test whether training manufactures the delta by DAMAGING the direct-answer baseline
+    rather than improving pause.'
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T00:44:46Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T004446Z-configPTC-088-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T012017Z-PTC-088-step30-strong_ptc_signal.json
+  last_scored_utc: '2026-06-06T01:20:17Z'
+- id: PTC-089
+  status: rejected
+  priority: 129
+  candidate: candidates/PTC-089.yaml
+  hypothesis: If the step-10 pause signal is driven by gradient learning, it must
+    DISAPPEAR under learning_rate=0; if it instead appears with zero weight updates,
+    the signal is an eval-harness plus prompt-format artifact, not learned compute.
+  rationale: Frozen-weights control complementing PTC-088. Zero LR means the student
+    never changes, so any pause/corrupt/logprob margin at steps 0/5/10 is purely the
+    prompt format and eval pipeline, isolating the contribution of actual training.
+  default_num_steps: 11
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T01:51:19Z'
+  last_num_steps: 11
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_scored_utc: '2026-06-06T02:01:50Z'
+  infra_retry_count: 1
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T015120Z-configPTC-089-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T020150Z-PTC-089-step0-science_reject.json
+- id: PTC-090
+  status: infra_invalid
+  priority: 95
+  candidate: candidates/PTC-090.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: 'If PTC-088 acc_pause gain (0.64->0.85) is FORMAT ADAPTATION (model
+    learns to emit a clean answer in the buffer+Answer: format) rather than filler-buffer
+    compute, a MINIMAL 1-symbol filler should reproduce the same acc_pause trajectory
+    and the same acc_nopause collapse; if instead the gain needs the 9-symbol buffer,
+    acc_pause should stay low with 1 symbol.'
+  rationale: Drain-time genuinely-useful single-knob test (science already concluded
+    the step-10 signal is a training-induced artifact). Paired against PTC-088 (9-symbol,
+    same step-0..30 trajectory). Score via da_decompose on buffer_delta + nopause-collapse,
+    NOT vs_corrupt.
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T16:40:04Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: infra_invalid
+  last_reason: trainer-head:pid=       - exited_at=2026-06-06T16:56:58Z rc=1; trainer-worker-1:pid=       -
+    stopped_at=2026-06-06T16:57:02Z; trainer-worker-2:pid=       - stopped_at=2026-06-06T16:57:04Z;
+    trainer-worker-3:pid=       - stopped_at=2026-06-06T16:57:03Z; trainer-worker-4:pid=       -
+    stopped_at=2026-06-06T16:57:02Z; trainer-worker-5:pid=       - stopped_at=2026-06-06T16:57:02Z;
+    trainer-worker-6:pid=       - stopped_at=2026-06-06T16:57:03Z; trainer-worker-7:pid=       -
+    stopped_at=2026-06-06T16:57:02Z
+  last_scored_utc: '2026-06-06T17:10:36Z'
+  infra_retry_count: 3
+- id: PTC-091
+  status: rejected
+  priority: 140
+  candidate: candidates/PTC-091.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: 'Fair no-filler-trained baseline @ lr=3e-6: train student to answer
+    DIRECTLY (no buffer, positive-answer-supervised), 31 steps, control@30. Does plain
+    accuracy converge to the filler-trained acc_pause (~0.85, PTC-088)? Equal => filler
+    is format-adaptation, not compute.'
+  rationale: Missing control from the artifact review; LR sweep {3e-6,1e-5,3e-5} to
+    confirm the baseline CAN converge. Read eval/accuracy trajectory + step-30 control
+    via da_decompose; ignore the autopilot science_reject verdict (delta~0 by design,
+    no filler).
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_reason: pause does not beat no-pause accuracy
+  last_scored_utc: '2026-06-06T20:40:47Z'
+  infra_retry_count: 0
+  last_launched_utc: '2026-06-06T20:10:15Z'
+  last_verdict: science_reject
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T201017Z-configPTC-091-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T204047Z-PTC-091-step30-science_reject.json
+- id: PTC-092
+  status: rejected
+  priority: 139
+  candidate: candidates/PTC-092.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: 'Fair no-filler-trained baseline @ lr=1e-5: train student to answer
+    DIRECTLY (no buffer, positive-answer-supervised), 31 steps, control@30. Does plain
+    accuracy converge to the filler-trained acc_pause (~0.85, PTC-088)? Equal => filler
+    is format-adaptation, not compute.'
+  rationale: Missing control from the artifact review; LR sweep {3e-6,1e-5,3e-5} to
+    confirm the baseline CAN converge. Read eval/accuracy trajectory + step-30 control
+    via da_decompose; ignore the autopilot science_reject verdict (delta~0 by design,
+    no filler).
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  infra_retry_count: 0
+  last_launched_utc: '2026-06-06T20:40:50Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T204051Z-configPTC-092-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T211150Z-PTC-092-step30-science_reject.json
+  last_scored_utc: '2026-06-06T21:11:50Z'
+- id: PTC-093
+  status: rejected
+  priority: 138
+  candidate: candidates/PTC-093.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: 'Fair no-filler-trained baseline @ lr=3e-5: train student to answer
+    DIRECTLY (no buffer, positive-answer-supervised), 31 steps, control@30. Does plain
+    accuracy converge to the filler-trained acc_pause (~0.85, PTC-088)? Equal => filler
+    is format-adaptation, not compute.'
+  rationale: Missing control from the artifact review; LR sweep {3e-6,1e-5,3e-5} to
+    confirm the baseline CAN converge. Read eval/accuracy trajectory + step-30 control
+    via da_decompose; ignore the autopilot science_reject verdict (delta~0 by design,
+    no filler).
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  infra_retry_count: 1
+  last_launched_utc: '2026-06-06T21:42:42Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: lr=3e-5 no-filler baseline COLLAPSES (eval/accuracy mean step>=10 =
+    0.199); step-30 control cap_hit=0.61 is the collapse artifact. Data captured;
+    skipping deterministic cap_hit retries.
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T211154Z-configPTC-093-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T214225Z-PTC-093-step30-infra_invalid.json
+  last_scored_utc: '2026-06-06T21:42:25Z'
+- id: PTC-098
+  status: strong_signal
+  priority: 128
+  candidate: candidates/PTC-098.yaml
+  requires: &id001
+  - PTC-044
+  requires_statuses: &id002
+    PTC-044:
+    - strong_signal
+  hypothesis: "#4 objective: hidden-match coef 2->8 \u2014 force student filler hiddens\
+    \ to match the teacher post-CoT hiddens HARDER. If the filler can be made to buy\
+    \ real compute, acc_pause should beat the no-filler baseline (~0.80). Read eval/accuracy,\
+    \ not verdict."
+  rationale: User-requested filler-dynamics wave (position/longer/LR/objectives).
+    Score via eval/accuracy + da_decompose, NOT the autopilot verdict (the vs_corrupt/delta
+    gate is the known artifact).
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T222244Z-configPTC-098-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T225316Z-PTC-098-step30-strong_ptc_signal.json
+  last_scored_utc: '2026-06-06T22:53:16Z'
+  infra_retry_count: 0
+  last_launched_utc: '2026-06-06T22:22:43Z'
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+- id: PTC-099
+  status: rejected
+  priority: 127
+  candidate: candidates/PTC-099.yaml
+  requires: *id001
+  requires_statuses: *id002
+  hypothesis: "#4 objective: buffer-only supervision (supervise ONLY the filler buffer,\
+    \ no answer terms) \u2014 force the filler to carry the computation. Does acc_pause\
+    \ exceed the no-filler baseline? Read eval/accuracy."
+  rationale: User-requested filler-dynamics wave (position/longer/LR/objectives).
+    Score via eval/accuracy + da_decompose, NOT the autopilot verdict (the vs_corrupt/delta
+    gate is the known artifact).
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  infra_retry_count: 1
+  last_launched_utc: '2026-06-06T23:24:29Z'
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_scored_utc: '2026-06-06T23:55:01Z'
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T232430Z-configPTC-099-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260606T235501Z-PTC-099-step30-science_reject.json
+- id: PTC-094
+  status: strong_signal
+  priority: 126
+  candidate: candidates/PTC-094.yaml
+  requires: *id001
+  requires_statuses: *id002
+  hypothesis: "#3 LR: filler recipe at lr=1e-6 (BELOW the 3e-6 default), step-30.\
+    \ Lower-LR probe of the stable regime \u2014 does the filler keep its slight edge\
+    \ / change dynamics at lower LR? Pair vs no-filler (091=3e-6). Read eval/accuracy."
+  rationale: User-requested filler-dynamics wave (position/longer/LR/objectives).
+    Score via eval/accuracy + da_decompose, NOT the autopilot verdict (the vs_corrupt/delta
+    gate is the known artifact).
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-06T23:55:04Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260606T235505Z-configPTC-094-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T002536Z-PTC-094-step30-strong_ptc_signal.json
+  last_scored_utc: '2026-06-07T00:25:36Z'
+- id: PTC-095
+  status: weak_signal
+  priority: 125
+  candidate: candidates/PTC-095.yaml
+  requires: *id001
+  requires_statuses: *id002
+  hypothesis: '#3 LR: filler recipe at lr=5e-7 (well below 3e-6 default), step-30.
+    Furthest-low LR; does convergence slow but hold, and does the filler-vs-nofiller
+    gap change? Read eval/accuracy.'
+  rationale: User-requested filler-dynamics wave (position/longer/LR/objectives).
+    Score via eval/accuracy + da_decompose, NOT the autopilot verdict (the vs_corrupt/delta
+    gate is the known artifact).
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-07T00:25:38Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: weak_ptc_signal
+  last_reason: pause beats no-pause but below scale gate with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T002539Z-configPTC-095-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T005610Z-PTC-095-step30-weak_ptc_signal.json
+  last_scored_utc: '2026-06-07T00:56:10Z'
+- id: PTC-096
+  status: strong_signal
+  priority: 124
+  candidate: candidates/PTC-096.yaml
+  requires: *id001
+  requires_statuses: *id002
+  hypothesis: '#2 longer: filler recipe to step-60 (vs 30). Does anything change in
+    the dynamics / what it converges to beyond step 30? Read eval/accuracy trajectory.'
+  rationale: User-requested filler-dynamics wave (position/longer/LR/objectives).
+    Score via eval/accuracy + da_decompose, NOT the autopilot verdict (the vs_corrupt/delta
+    gate is the known artifact).
+  default_num_steps: 61
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-07T00:56:13Z'
+  last_num_steps: 61
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T005614Z-configPTC-096-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T014647Z-PTC-096-step60-strong_ptc_signal.json
+  last_scored_utc: '2026-06-07T01:46:47Z'
+- id: PTC-097
+  status: rejected
+  priority: 123
+  candidate: candidates/PTC-097.yaml
+  requires: *id001
+  requires_statuses: *id002
+  hypothesis: '#2 longer: no-filler baseline to step-60. Paired with 096 to test whether
+    the filler-vs-nofiller accuracy gap opens up at longer training. Read eval/accuracy.'
+  rationale: User-requested filler-dynamics wave (position/longer/LR/objectives).
+    Score via eval/accuracy + da_decompose, NOT the autopilot verdict (the vs_corrupt/delta
+    gate is the known artifact).
+  default_num_steps: 61
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-07T16:28:36Z'
+  last_num_steps: 61
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T162837Z-configPTC-097-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T171911Z-PTC-097-step60-science_reject.json
+  last_scored_utc: '2026-06-07T17:19:11Z'
+- id: PTC-100
+  status: rejected
+  priority: 122
+  candidate: candidates/PTC-100.yaml
+  requires: *id001
+  requires_statuses: *id002
+  hypothesis: "#1 position: filler BEFORE the question (prepended in the prompt, no\
+    \ buffer machinery) vs filler-after (PTC-088). Control \u2014 the model cannot\
+    \ compute on the problem before seeing it, so filler-before should NOT help; if\
+    \ it matches filler-after/no-filler, position is irrelevant. Read eval/accuracy."
+  rationale: User-requested filler-dynamics wave (position/longer/LR/objectives).
+    Score via eval/accuracy + da_decompose, NOT the autopilot verdict (the vs_corrupt/delta
+    gate is the known artifact).
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-07T17:19:14Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T171915Z-configPTC-100-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T174946Z-PTC-100-step30-science_reject.json
+  last_scored_utc: '2026-06-07T17:49:46Z'
+- id: PTC-101
+  status: rejected
+  priority: 128
+  candidate: candidates/PTC-101.yaml
+  requires: &id003
+  - PTC-044
+  requires_statuses: &id004
+    PTC-044:
+    - strong_signal
+  hypothesis: '#3 LR matrix: no-filler at lr=1e-6 (below 3e-6). Completes the no-filler
+    low-LR arm; pairs w/ filler 094.'
+  rationale: Complete the LR x filler matrix (user). Read eval/accuracy; control_start=num_steps-1
+    avoids early science_reject.
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-07T01:46:50Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T014652Z-configPTC-101-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T021222Z-PTC-101-step30-science_reject.json
+  last_scored_utc: '2026-06-07T02:12:22Z'
+- id: PTC-102
+  status: rejected
+  priority: 127
+  candidate: candidates/PTC-102.yaml
+  requires: *id003
+  requires_statuses: *id004
+  hypothesis: '#3 LR matrix: no-filler at lr=5e-7. Furthest-low no-filler; pairs w/
+    filler 095.'
+  rationale: Complete the LR x filler matrix (user). Read eval/accuracy; control_start=num_steps-1
+    avoids early science_reject.
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-07T02:12:29Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T021229Z-configPTC-102-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T024301Z-PTC-102-step30-science_reject.json
+  last_scored_utc: '2026-06-07T02:43:01Z'
+- id: PTC-103
+  status: rejected
+  priority: 126
+  candidate: candidates/PTC-103.yaml
+  requires: *id003
+  requires_statuses: *id004
+  hypothesis: "#3 LR matrix: filler at lr=1e-5 (above 3e-6). Pairs w/ no-filler 092\
+    \ to see filler-vs-nofiller gap at high LR \u2014 is the filler MORE stable than\
+    \ no-filler (092=0.64) at 1e-5?"
+  rationale: Complete the LR x filler matrix (user). Read eval/accuracy; control_start=num_steps-1
+    avoids early science_reject.
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-07T02:43:03Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T024304Z-configPTC-103-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T031336Z-PTC-103-step30-science_reject.json
+  last_scored_utc: '2026-06-07T03:13:36Z'
+- id: PTC-104
+  status: rejected
+  priority: 125
+  candidate: candidates/PTC-104.yaml
+  requires: *id003
+  requires_statuses: *id004
+  hypothesis: "#3 LR matrix: filler at lr=3e-5. Pairs w/ no-filler 093 (collapsed\
+    \ to 0.20) \u2014 does the filler survive 3e-5 better?"
+  rationale: Complete the LR x filler matrix (user). Read eval/accuracy; control_start=num_steps-1
+    avoids early science_reject.
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-07T03:13:39Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: "SKIPPED per user \u2014 filler 3e-5 will collapse like no-filler 3e-5\
+    \ (0.20); no information."
+- id: PTC-105
+  status: strong_signal
+  priority: 128
+  candidate: candidates/PTC-105.yaml
+  requires: &id005
+  - PTC-044
+  requires_statuses: &id006
+    PTC-044:
+    - strong_signal
+  hypothesis: '#capacity: 100 filler tokens (9-symbol x11) at lr=3e-6, step-30. Does
+    MORE filler help (capacity for compute) vs 10-tok (PTC-088 ~0.84) and no-filler
+    (0.77)? Read eval/accuracy.'
+  rationale: User filler-count sweep 10/100/1000 (10=PTC-088). control_start=30 (no
+    early reject); read eval/accuracy not verdict.
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-07T03:24:14Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T032414Z-configPTC-105-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T035344Z-PTC-105-step30-strong_ptc_signal.json
+  last_scored_utc: '2026-06-07T03:53:44Z'
+- id: PTC-106
+  status: strong_signal
+  priority: 114
+  candidate: candidates/PTC-106.yaml
+  requires: *id005
+  requires_statuses: *id006
+  hypothesis: "#capacity: 1000 filler tokens (9-symbol x111). Far-high capacity \u2014\
+    \ does a huge buffer change anything, or hurt (slower/unstable)? Read eval/accuracy."
+  rationale: User filler-count sweep 10/100/1000 (10=PTC-088). control_start=30 (no
+    early reject); read eval/accuracy not verdict.
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-07T21:34:10Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_scored_utc: '2026-06-07T22:29:45Z'
+  infra_retry_count: 1
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T213411Z-configPTC-106-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T222945Z-PTC-106-step30-strong_ptc_signal.json
+- id: PTC-107
+  status: strong_signal
+  priority: 130
+  candidate: candidates/PTC-107.yaml
+  requires: &id007
+  - PTC-044
+  requires_statuses: &id008
+    PTC-044:
+    - strong_signal
+  hypothesis: '#filler-content x count: rand tokens 10 filler tokens at lr=3e-6 step-30.
+    Does content type (random ids / lorem NL) at scale beat the 9-symbol or no-filler
+    (0.77)? Read eval/accuracy.'
+  rationale: 'User: add random tokens + lorem ipsum to the count sweep. exact token_ids
+    list; control_start=30; read eval/accuracy not verdict.'
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T054428Z-configPTC-107-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scored_utc: '2026-06-07T06:19:38Z'
+  infra_retry_count: 0
+  last_launched_utc: '2026-06-07T05:44:27Z'
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T061938Z-PTC-107-step30-strong_ptc_signal.json
+- id: PTC-110
+  status: strong_signal
+  priority: 129
+  candidate: candidates/PTC-110.yaml
+  requires: *id007
+  requires_statuses: *id008
+  hypothesis: '#filler-content x count: lorem 10 filler tokens at lr=3e-6 step-30.
+    Does content type (random ids / lorem NL) at scale beat the 9-symbol or no-filler
+    (0.77)? Read eval/accuracy.'
+  rationale: 'User: add random tokens + lorem ipsum to the count sweep. exact token_ids
+    list; control_start=30; read eval/accuracy not verdict.'
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  infra_retry_count: 0
+  last_launched_utc: '2026-06-07T12:11:20Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T121121Z-configPTC-110-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T124152Z-PTC-110-step30-strong_ptc_signal.json
+  last_scored_utc: '2026-06-07T12:41:52Z'
+- id: PTC-108
+  status: rejected
+  priority: 127
+  candidate: candidates/PTC-108.yaml
+  requires: *id007
+  requires_statuses: *id008
+  hypothesis: '#filler-content x count: rand tokens 100 filler tokens at lr=3e-6 step-30.
+    Does content type (random ids / lorem NL) at scale beat the 9-symbol or no-filler
+    (0.77)? Read eval/accuracy.'
+  rationale: 'User: add random tokens + lorem ipsum to the count sweep. exact token_ids
+    list; control_start=30; read eval/accuracy not verdict.'
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  infra_retry_count: 0
+  last_launched_utc: '2026-06-07T12:41:55Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T124156Z-configPTC-108-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T131228Z-PTC-108-step30-science_reject.json
+  last_scored_utc: '2026-06-07T13:12:28Z'
+- id: PTC-111
+  status: promote_retest
+  priority: 126
+  candidate: candidates/PTC-111.yaml
+  requires: *id007
+  requires_statuses: *id008
+  hypothesis: '#filler-content x count: lorem 100 filler tokens at lr=3e-6 step-30.
+    Does content type (random ids / lorem NL) at scale beat the 9-symbol or no-filler
+    (0.77)? Read eval/accuracy.'
+  rationale: 'User: add random tokens + lorem ipsum to the count sweep. exact token_ids
+    list; control_start=30; read eval/accuracy not verdict.'
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  infra_retry_count: 0
+  last_launched_utc: '2026-06-07T13:12:30Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: promote_retest
+  last_reason: pause-vs-nopause accuracy warrants retest with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T131231Z-configPTC-111-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T134303Z-PTC-111-step30-promote_retest.json
+  last_scored_utc: '2026-06-07T13:43:03Z'
+- id: PTC-109
+  status: rejected
+  priority: 115
+  candidate: candidates/PTC-109.yaml
+  requires: *id007
+  requires_statuses: *id008
+  hypothesis: '#filler-content x count: rand tokens 1000 filler tokens at lr=3e-6
+    step-30. Does content type (random ids / lorem NL) at scale beat the 9-symbol
+    or no-filler (0.77)? Read eval/accuracy.'
+  rationale: 'User: add random tokens + lorem ipsum to the count sweep. exact token_ids
+    list; control_start=30; read eval/accuracy not verdict.'
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  infra_retry_count: 0
+  last_launched_utc: '2026-06-07T20:07:40Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T200740Z-configPTC-109-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T210314Z-PTC-109-step30-science_reject.json
+  last_scored_utc: '2026-06-07T21:03:14Z'
+- id: PTC-112
+  status: strong_signal
+  priority: 113
+  candidate: candidates/PTC-112.yaml
+  requires: *id007
+  requires_statuses: *id008
+  hypothesis: '#filler-content x count: lorem 1000 filler tokens at lr=3e-6 step-30.
+    Does content type (random ids / lorem NL) at scale beat the 9-symbol or no-filler
+    (0.77)? Read eval/accuracy.'
+  rationale: 'User: add random tokens + lorem ipsum to the count sweep. exact token_ids
+    list; control_start=30; read eval/accuracy not verdict.'
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  infra_retry_count: 0
+  last_launched_utc: '2026-06-07T22:29:48Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T222948Z-configPTC-112-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T232522Z-PTC-112-step30-strong_ptc_signal.json
+  last_scored_utc: '2026-06-07T23:25:22Z'
+- id: PTC-113
+  status: rejected
+  priority: 135
+  candidate: candidates/PTC-113.yaml
+  requires:
+  - PTC-044
+  requires_statuses:
+    PTC-044:
+    - strong_signal
+  hypothesis: '#per-position CoT distillation (match_cot mode): K=252 filler, hidden-match
+    aligns student-filler-i <-> teacher-CoT-i (first 252 CoT positions). Does forcing
+    the filler to be a length-matched latent reproduction of the CoT trajectory beat
+    no-filler (0.77)? Read eval/accuracy. NOTE: caps at first 252 of ~2048 CoT tokens;
+    if signal, escalate to true K=C (A).'
+  rationale: 'User idea: prefill = CoT length + supervise hidden match at each position.
+    New teacher_cot_mode=match_cot keeps teacher CoT[0:K] in cache so the per-position
+    match drives filler->CoT distillation. De-risked fixed-K=252 test before full
+    K=C rollout change.'
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  infra_retry_count: 0
+  last_launched_utc: '2026-06-07T06:26:47Z'
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T062648Z-configPTC-113-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T070219Z-PTC-113-step30-science_reject.json
+  last_scored_utc: '2026-06-07T07:02:19Z'
+- id: PTC-114
+  status: rejected
+  priority: 134
+  candidate: candidates/PTC-114.yaml
+  requires: &id009
+  - PTC-044
+  requires_statuses: &id010
+    PTC-044:
+    - strong_signal
+  hypothesis: '#match_cot LONGER (step-60): does per-position CoT distillation emerge
+    with more training? vs no-filler 0.77 / 113 step-30.'
+  rationale: 'Overnight wave: match_cot exploration (K/coef/longer) + longer-training
+    of baselines. Read eval/accuracy vs no-filler 0.77; control at final step only.'
+  default_num_steps: 60
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-07T08:55:04Z'
+  last_num_steps: 60
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: COMPLETED (eval/acc peaked 0.76@step55, declined to 0.59@step59, mean~0.57).
+    Control delta uncomputed (control_start=59 not on eval cycle, fixed for siblings).
+    Data captured; advancing.
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T075847Z-configPTC-114-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scored_utc: '2026-06-07T08:54:13Z'
+  infra_retry_count: 0
+- id: PTC-115
+  status: rejected
+  priority: 133
+  candidate: candidates/PTC-115.yaml
+  requires: *id009
+  requires_statuses: *id010
+  hypothesis: '#match_cot coef=8: does a harder per-position hidden-match help vs
+    coef=2 (113)?'
+  rationale: 'Overnight wave: match_cot exploration (K/coef/longer) + longer-training
+    of baselines. Read eval/accuracy vs no-filler 0.77; control at final step only.'
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-07T09:08:52Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T090853Z-configPTC-115-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T094425Z-PTC-115-step30-science_reject.json
+  last_scored_utc: '2026-06-07T09:44:25Z'
+- id: PTC-116
+  status: rejected
+  priority: 132
+  candidate: candidates/PTC-116.yaml
+  requires: *id009
+  requires_statuses: *id010
+  hypothesis: '#match_cot K=63: smaller CoT-prefix cap (first 63 CoT positions matched).'
+  rationale: 'Overnight wave: match_cot exploration (K/coef/longer) + longer-training
+    of baselines. Read eval/accuracy vs no-filler 0.77; control at final step only.'
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-07T09:44:27Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T094429Z-configPTC-116-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T101500Z-PTC-116-step30-science_reject.json
+  last_scored_utc: '2026-06-07T10:15:00Z'
+- id: PTC-120
+  status: rejected
+  priority: 131
+  candidate: candidates/PTC-120.yaml
+  requires: *id009
+  requires_statuses: *id010
+  hypothesis: '#match_cot K=126: mid CoT-prefix cap. K-sweep with 63/252.'
+  rationale: 'Overnight wave: match_cot exploration (K/coef/longer) + longer-training
+    of baselines. Read eval/accuracy vs no-filler 0.77; control at final step only.'
+  default_num_steps: 31
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-07T10:15:03Z'
+  last_num_steps: 31
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T101503Z-configPTC-120-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T104535Z-PTC-120-step30-science_reject.json
+  last_scored_utc: '2026-06-07T10:45:35Z'
+- id: PTC-119
+  status: rejected
+  priority: 130
+  candidate: candidates/PTC-119.yaml
+  requires: *id009
+  requires_statuses: *id010
+  hypothesis: "#match_cot step-100: longest per-position CoT distillation \u2014 does\
+    \ latent reasoning emerge with much more training?"
+  rationale: 'Overnight wave: match_cot exploration (K/coef/longer) + longer-training
+    of baselines. Read eval/accuracy vs no-filler 0.77; control at final step only.'
+  default_num_steps: 100
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-07T10:45:38Z'
+  last_num_steps: 100
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: pause does not beat no-pause accuracy
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T104539Z-configPTC-119-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T121117Z-PTC-119-step95-science_reject.json
+  last_scored_utc: '2026-06-07T12:11:17Z'
+- id: PTC-117
+  status: rejected
+  priority: 125
+  candidate: candidates/PTC-117.yaml
+  requires: *id009
+  requires_statuses: *id010
+  hypothesis: '#filler 9sym LONGER (step-60): does the filler effect change with more
+    training (user: latent reasoning needs >few steps)?'
+  rationale: 'Overnight wave: match_cot exploration (K/coef/longer) + longer-training
+    of baselines. Read eval/accuracy vs no-filler 0.77; control at final step only.'
+  default_num_steps: 60
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-07T13:43:06Z'
+  last_num_steps: 60
+  last_prompts_per_step: 128
+  last_verdict: science_reject
+  last_reason: COMPLETED step-60. Autopilot scored strong_ptc_signal@step55 but DEFERRED
+    (control not at last step) -> stalled. Verdict is the confounded pause-vs-nopause
+    artifact; eval/acc peaked 0.844 then declined to 0.67 (< no-filler 0.77 stable).
+    Manually advanced.
+- id: PTC-121
+  status: strong_signal
+  priority: 124
+  candidate: candidates/PTC-121.yaml
+  requires: *id009
+  requires_statuses: *id010
+  hypothesis: '#filler 9sym step-100: longest filler run.'
+  rationale: 'Overnight wave: match_cot exploration (K/coef/longer) + longer-training
+    of baselines. Read eval/accuracy vs no-filler 0.77; control at final step only.'
+  default_num_steps: 101
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-07T15:07:57Z'
+  last_num_steps: 101
+  last_prompts_per_step: 128
+  last_verdict: strong_ptc_signal
+  last_reason: pause-vs-nopause accuracy gate passed with positive answer-logprob
+    support
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T150758Z-configPTC-121-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T162833Z-PTC-121-step100-strong_ptc_signal.json
+  last_scored_utc: '2026-06-07T16:28:33Z'
+- id: PTC-118
+  status: weak_signal
+  priority: 121
+  candidate: candidates/PTC-118.yaml
+  requires: *id009
+  requires_statuses: *id010
+  hypothesis: '#no-filler step-100: does direct-answer keep improving with much more
+    training? longer baseline vs match_cot/filler-longer.'
+  rationale: 'Overnight wave: match_cot exploration (K/coef/longer) + longer-training
+    of baselines. Read eval/accuracy vs no-filler 0.77; control at final step only.'
+  default_num_steps: 101
+  default_prompts_per_step: 128
+  last_launched_utc: '2026-06-07T18:52:01Z'
+  last_num_steps: 101
+  last_prompts_per_step: 128
+  last_verdict: weak_ptc_signal
+  last_reason: pause beats no-pause but below scale gate without positive answer-logprob
+    support
+  last_scored_utc: '2026-06-07T20:07:37Z'
+  infra_retry_count: 2
+  last_profile: /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260607T185202Z-configPTC-118-er-opd-q36-35b-slots-trainer-head/opd_profile.jsonl
+  last_scorecard: /home/apanda/xorl-apanda-dev-opd-port/experiments/opd_profile/autoresearch/scorecards/20260607T200737Z-PTC-118-step100-weak_ptc_signal.json

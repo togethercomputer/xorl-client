@@ -1,0 +1,73 @@
+id: ARITH-017-OPRD-C3
+base_config: AM
+slug: arith-017-oprd-c3
+buffer_label: arith-oprd-c3
+# R2 (overnight plan rev4, 2026-06-13): THE HEADLINE ARM — LEVER-1 x OPRD.
+# Identical to ARITH-014D-OPRD-STD-C1 (faithful OPRD: coef-1 all-layer
+# answer-position hidden-MSE vs the CoT-informed teacher + answer reverse-KL,
+# warm009 pause seed, clamp 10) EXCEPT prepare temperature 1.0 -> 0.3.
+# Rationale (science runbook §7.2): 014D was the program's first positive OPRD
+# signal (terminal 0.145 vs answer-only null 0.094, held-out recovering late to
+# 0.141@100) — the hidden term halves wrong-prefix erosion and adds a
+# restorative gradient. Lever-1 (low prepare temp) attacks the COMPLEMENTARY
+# failure (wrong-prefix starvation). Combining them is the single highest-value
+# arm. Read: terminal control acc_pause vs 014D's 0.145, R1, and the 0.238 seed.
+#   clears 0.238 => first genuine distillation-beats-SFT win => extend + port.
+#   in (0.145, 0.238) => additive, sub-seed => dose OPRD coef (R3/R4).
+#   <= 0.145 => temperature did not compound => dose coef at T=1.0.
+# STEP-0 VALIDATION (abort if violated): opd_frac_answer ~1.0 (frac_buffer ~0),
+# opd_oprd_num_layers = 40, opd_oprd_loss > 0, opd_kl ~0.5 (§9c gate).
+# ce_mode quack_linear (4node_warm009 config). 014D proved warm009 (compiled,
+# now quack_linear) is the right substrate — NOT the _oprd native/eager twin
+# (014C diverged on native+eager on this branch).
+trainer_config: experiments/opd_profile/configs/qwen3_6_35b_a3b_opd_opdb_8node_warm009.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 1000
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/arith_ops6_nonempty_cot.json
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 101
+default_prompts_per_step: 64
+# Lever-1: lower prepare temperature (top-level; generator templates it).
+temperature: 1.0  # set to T=1.0 2026-06-13: R1 showed T=0.3 does NOT rescue erosion; anchor coef-dose to 014D (c1xT1.0=0.145)
+supervise_student_cot: false
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 3.0   # R3 coef dose +1->3 (overnight rev4; coef 100 known-destructive)
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 1024
+eval_accuracy_every: 5
+eval_control_start_step: 100
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: true
+eval_answer_logprob_every: 10
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: true
+eval_answer_logprob_distractor_offset: 1
+opd_pipeline_rl: true
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 10.0
+client_args:
+  opd_oprd_layers: every1
+  opd_oprd_num_layers: 40
+  opd_hidden_match_mode: mse
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: true
+  opd_mask_prompt_kl: true

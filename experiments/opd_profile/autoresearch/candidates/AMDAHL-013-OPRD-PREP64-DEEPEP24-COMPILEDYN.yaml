@@ -1,0 +1,78 @@
+id: AMDAHL-013-OPRD-PREP64-DEEPEP24-COMPILEDYN
+base_config: AM
+slug: amdahl-013-oprd-prep64-deepep24-compiledyn
+buffer_label: amdahl-013-oprd-prep64-deepep24-compiledyn
+# Semantics-preserving current-node compile probe (2026-06-13): same AMDAHL-009
+# 64-prompt OPRD window, warm009 checkpoint, AdamW optimizer, quack+DeepEP24,
+# one direct teacher, and two samplers, but enable decoder-layer torch.compile
+# with dynamic=True in the trainer source. This tests whether the known Qwen3.6
+# compile speed path can survive packed varlen OPD without recompile churn.
+#
+# Compare against AMDAHL-009:
+#   step_total_s mean 15.11 s, forward_backward_s mean 4.78 s,
+#   valid_tokens_per_step_s mean 267.9, health intact.
+#
+# Measured 2026-06-13 after the compile-agnostic EP DCP load fix:
+#   run_id: 20260613T183155Z-configAMDAHL-013-OPRD-PREP64-DEEPEP24-COMPILEDYN-er-opd-q36-35b-slots-trainer-head
+#   trainer exit: rc=0
+#   non-warmup step_total_s mean: 14.67
+#   non-warmup forward_backward_s mean: 4.84
+#   non-warmup prepare_s mean: 5.95
+#   non-warmup sync_inference_weights_s mean: 3.15
+#   non-warmup valid_tokens_per_step_s mean: 279.5
+# Decision: fit and slightly faster than AMDAHL-009 by wall time, but not the
+# winner and not an fb win; do not promote over AMDAHL-014. Compile behavior
+# touches numerics/runtime, so any future default still needs static/K3 coverage.
+trainer_config: experiments/opd_profile/configs/qwen3_6_35b_a3b_opd_opdb_4node_warm009_deepep24_compile.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 100
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/arith_ops6_nonempty_cot.json
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 8
+default_prompts_per_step: 64
+profile_warmup_steps: 4
+supervise_student_cot: false
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 1.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 128
+eval_accuracy_every: 0
+eval_control_start_step: 0
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: false
+eval_answer_logprob_every: 0
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: false
+opd_pipeline_rl: false
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 10.0
+opd_prepare_batch_size: 64
+opd_microbatch_size: 64
+save_every: 0
+client_args:
+  opd_oprd_layers: every1
+  opd_oprd_num_layers: 40
+  opd_hidden_match_mode: mse
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: false
+  opd_mask_prompt_kl: true
+  eval_heldout_num_problems: 0

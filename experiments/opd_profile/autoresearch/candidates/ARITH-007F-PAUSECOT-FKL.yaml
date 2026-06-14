@@ -1,0 +1,79 @@
+id: ARITH-007F-PAUSECOT-FKL
+base_config: AM
+slug: arith-007f-pause-cot-forward-kl
+buffer_label: arith-pause-cot-fkl
+# USER-PROPOSED OBJECTIVE (2026-06-11 ~05:10): prefill a pause buffer, sample
+# the answer on-policy, and supervise the PAUSE positions against the teacher's
+# CoT positions in LOGPROB space — pause-position-i's next-token distribution
+# is pulled (reverse-KL) toward the teacher's P(CoT_{i+1} | prompt, CoT_{1..i}),
+# while answer positions are supervised against the full-CoT-conditioned
+# teacher as usual. Maps onto existing machinery with ZERO code change:
+# teacher_cot_mode=match_cot aligns buffer-i <-> CoT-i and keeps those teacher
+# rows in the cache; supervise_student_cot=true leaves buffer positions
+# unmasked; opd_hidden_match_coef=0 makes the supervision pure logit-KL
+# (the PTC-302 K=C runs used hidden-match MSE instead, in the corrupted-serving
+# window, with the prompt-KL bug — this is the clean logprob-space version).
+# K=1024 FIXED (not K=C): every CoT in the pool has >=1409 tokens (min) so the
+# match_cot K<=C contract holds for all samples; fixed K keeps eval coherent
+# (acc_pause = greedy WITH the same 1024-pause buffer = the decisive
+# measurement) and sequences ~1.1k tokens. Carries the corrected prompt mask
+# (default) + clamp 10 (ARITH-006's win). 64 prompts/step for memory at 1.1k
+# tokens/seq. Comparators: SFT 0.19, best no-filler OPD 0.099, base 0.047.
+trainer_config: experiments/opd_profile/configs/qwen3_6_35b_a3b_opd_opdb_8node.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 1000
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_mode: match_cot
+teacher_cot_json_path: /shared/opd-coord/arith_ops6_nonempty_cot.json
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 101
+default_prompts_per_step: 64
+supervise_student_cot: true
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 0.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 1024
+eval_accuracy_every: 5
+eval_control_start_step: 100
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: true
+eval_answer_logprob_every: 5
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: true
+eval_answer_logprob_distractor_offset: 1
+opd_pipeline_rl: true
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 30.0
+# forward_kl_full is unimplemented on the streaming KL backend (reverse-only);
+# torch_compile backend materializes chunked full-vocab logits at loss time.
+opd_kl_backend: torch_compile
+client_args:
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: true
+  opd_mask_prompt_kl: true
+  # Forward KL: gradient q−p pulls teacher-mode logits UP even when the
+  # student's buffer distribution is a delta on ' pause' (reverse KL gradient
+  # vanishes there: q(v)≈0 multiplies every CoT token's term). Buffer becomes
+  # soft-label CE on the CoT trace; answer positions become ~CE toward the
+  # near-deterministic teacher answer. Clamp raised 10→30: early forward-KL at
+  # disjoint distributions is ~15-20 nats and clamp-10 would re-freeze the
+  # buffer.
+  opd_loss_mode: forward_kl_full

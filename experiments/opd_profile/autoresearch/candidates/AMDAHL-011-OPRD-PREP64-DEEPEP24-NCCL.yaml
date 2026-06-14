@@ -1,0 +1,78 @@
+id: AMDAHL-011-OPRD-PREP64-DEEPEP24-NCCL
+base_config: AM
+slug: amdahl-011-oprd-prep64-deepep24-nccl
+buffer_label: amdahl-011-oprd-prep64-deepep24-nccl
+# Current-node NCCL transport/buffer probe (2026-06-13): same AMDAHL-009
+# 64-prompt OPRD window, prep64 trainer packing, quack+DeepEP24 dispatch, and
+# warm009 checkpoint, but add the trainer-only NCCL socket/buffer settings that
+# the existing 4-node Q36 synthetic benchmark uses. This does not change the
+# OPD objective, prompt window, optimizer, model, or sampler/teacher allocation.
+#
+# Compare against AMDAHL-009:
+#   step_total_s mean 15.11 s, forward_backward_s mean 4.78 s,
+#   sync_inference_weights_s mean 3.25 s, valid_tokens_per_step_s mean 267.9,
+#   health intact.
+#
+# Result (2026-06-13 smoke): HEALTHY BUT REJECT. The env was active in the
+# trainer log (`nccl_nsocks=8`, `socket_nthreads=4`, `buffsize=8388608`) and
+# DeepEP24 was active in server.log, but non-warmup means regressed versus
+# AMDAHL-009: step_total_s=15.35, forward_backward_s=4.76,
+# sync_inference_weights_s=3.35, valid_tokens_per_step_s=259.8. Do not promote;
+# AMDAHL-009 remains the perf winner.
+trainer_config: experiments/opd_profile/configs/qwen3_6_35b_a3b_opd_opdb_4node_warm009_deepep24.yaml
+gdn_backend: fla
+trainer_nccl_socket_ifname: ^lo,docker
+trainer_nccl_nsocks_perthread: 8
+trainer_nccl_socket_nthreads: 4
+trainer_nccl_buffsize: 8388608
+trainer_nccl_net_gdr_level: 2
+score_mode: pause_vs_nopause
+score_min_control_n: 100
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/arith_ops6_nonempty_cot.json
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 4
+default_prompts_per_step: 64
+supervise_student_cot: false
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 1.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 128
+eval_accuracy_every: 0
+eval_control_start_step: 0
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: false
+eval_answer_logprob_every: 0
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: false
+opd_pipeline_rl: false
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 10.0
+opd_prepare_batch_size: 64
+opd_microbatch_size: 64
+save_every: 0
+client_args:
+  opd_oprd_layers: every1
+  opd_oprd_num_layers: 40
+  opd_hidden_match_mode: mse
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: false
+  opd_mask_prompt_kl: true
+  eval_heldout_num_problems: 0

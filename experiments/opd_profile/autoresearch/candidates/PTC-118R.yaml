@@ -1,0 +1,61 @@
+id: PTC-118R
+base_config: AM
+slug: ptc-118r-nofiller-step100-quack-repro
+buffer_label: nofiller-step100-quack-repro
+# REPRO of PTC-118 (wandb ko5kko3m: Q3.6-35B-A3B 4x4 no-filler, acc 0.461->0.883
+# train-window, final greedy acc_nopause 0.905) on the post-apanda-dev-merge code
+# with (a) the 2026-06-09 diagnostics (streaming entropy/top1, clamp frac, region +
+# correct/wrong KL splits, eval_samples.jsonl, periodic gold-logprob) and (b)
+# moe_implementation=quack under EP (PR #353 registration fix; watch the historic
+# step-2 group-GEMM schema-assert). Launch with `--model q36` on EVERY generator
+# command (teachers + samplers + dispatch + trainer must all serve Q3.6).
+# Recipe deltas vs PTC-118 (infra/diagnostics only, not the training recipe):
+# serial_endpoint_sync true (2xTP2 sampler topology needs it; original ran 1 sampler),
+# eval_answer_logprob_every/distractor (new diagnostics).
+trainer_config: experiments/opd_profile/configs/qwen3_6_35b_a3b_opd_opdb_8node.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 1000
+student_prefill_text: ''
+student_prefill_count: 0
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/randnum_4digit_8192_cot_nonempty.json
+prompts_json_path: /shared/opd-coord/randnum_4digit_8192_nonempty_cot.json
+num_prompts: 8185
+default_num_steps: 101
+default_prompts_per_step: 128
+supervise_student_cot: true
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 0.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 1024
+eval_accuracy_every: 5
+eval_control_start_step: 100
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: true
+eval_answer_logprob_every: 5
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 2
+eval_answer_logprob_distractor_control: true
+eval_answer_logprob_distractor_offset: 1
+opd_pipeline_rl: true
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 5.0
+client_args:
+  # DISJOINT eval set (2026-06-10): 1024 fresh pairs not in the training pool
+  # (seed 20260610). Eliminates the tail-contamination that inflated step-100
+  # controls (~+0.08 memorization bonus once training wrapped over the tail).
+  eval_prompts_json_path: /shared/opd-coord/randnum_4digit_eval_fresh_1024.json
+  eval_corrupt_pause_control: true

@@ -1,0 +1,43 @@
+id: PTC-300s
+base_config: AM
+slug: ptc-300s-q35-5x5-kc-smoke
+buffer_label: kc-smoke32
+trainer_config: experiments/opd_profile/configs/qwen3_5_35b_a3b_opd_opdb_8node.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 16
+# SMOKE: validate the per-sample K=C training path (sampling per-sample buffer,
+# teacher-cache match_cot at K_i=C_i, loss remap). NOT a science run. 3 steps.
+student_prefill_text: ' pause'
+student_prefill_count: 1
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_mode: match_cot
+teacher_cot_json_path: /shared/opd-coord/randnum_5digit_q35_smoke32_cot.json
+prompts_json_path: /shared/opd-coord/randnum_5digit_q35_smoke32_prompts.json
+num_prompts: 32
+default_num_steps: 3
+default_prompts_per_step: 8
+supervise_student_cot: true
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 0.5
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 16
+eval_accuracy_every: 1
+eval_control_start_step: 2
+eval_control_max_concurrency: 16
+eval_answer_logprob_control: false
+opd_pipeline_rl: true
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: false
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_loss_max_clamp: 5.0
+client_args:
+  eval_corrupt_pause_control: false
+  opd_buffer_equals_cot: true

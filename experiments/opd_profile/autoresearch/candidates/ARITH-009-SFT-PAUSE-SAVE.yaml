@@ -1,0 +1,75 @@
+id: ARITH-009-SFT-PAUSE-SAVE
+base_config: AM
+slug: arith-009-sft-pause1k-save-ckpt
+buffer_label: arith-sft-pause1k-save
+# NESTED-ARITHMETIC SFT control (HANDOFF_ARITHMETIC_OPSD_2026_06_10 §2e). Clone
+# of PTC-118SFT re-pointed at the arithmetic task: plain CE on gold-spliced
+# answers, NO teacher (teacher_cot_json_path empty — sft_mode never prefills).
+# Task profile (band probe 2026-06-10): direct single-pass floored, CoT carries
+# the capability — tests whether answer-only supervision can teach composition.
+# FILTERED-POOL twin of ARITH-001-SFT (user request 2026-06-10): trains on the
+# SAME teacher-correct subset as ARITH-002-OPD so the OPD-vs-SFT comparison is
+# data-matched. ARITH-001 (full pool) doubles as the data-composition ablation.
+# Launch with `--model q36` on EVERY generator command.
+trainer_config: experiments/opd_profile/configs/qwen3_6_35b_a3b_opd_opdb_8node.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 1000
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: ''
+# SFT WITH THE 1k-PAUSE BUFFER IN-CONTEXT (user direction 2026-06-11 ~17:40):
+# gold-answer CE after prompt+pause*1024 — teaches answering in the buffer
+# format (base frac_answer_correct=0.000 with pauses per ARITH-007F, so
+# pause-OPD has a zero-signal bootstrap without this). Checkpoint seeds
+# ARITH-005-OPD-WARM. Eval cadence halved (1024-tok prefills make each eval
+# cycle ~14 min through the 2 TP=2 samplers; no radix reuse — pause block sits
+# after the distinct prompt).
+# DCP checkpoint at the final step (save fires at (step+1)%save_every==0; 101
+# steps -> one save at step index 100 = the end). The checkpoint seeds
+# ARITH-005-OPD-WARM (SFT->OPSD warm start, user-directed 2026-06-11).
+save_every: 101
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 101
+default_prompts_per_step: 128
+supervise_student_cot: true
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 0.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 1024
+eval_accuracy_every: 10
+eval_control_start_step: 100
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: true
+eval_answer_logprob_every: 20
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: true
+eval_answer_logprob_distractor_offset: 1
+opd_pipeline_rl: true
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 5.0
+client_args:
+  # Task-keyed scorer (negative-safe int parse + AST gold eval) — added 2026-06-10.
+  eval_task: arithmetic
+  # DISJOINT eval set — contamination rule is absolute (4x4 tail wrap = +0.08).
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: true
+  # SFT ablation: same loop/data/windows/lr/evals as ARITH-002-OPD, but plain
+  # teacher-forced cross-entropy on the gold-spliced answer tokens.
+  sft_mode: true
+  opd_teacher_answer_source: gold

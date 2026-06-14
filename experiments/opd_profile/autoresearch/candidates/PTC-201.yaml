@@ -1,0 +1,45 @@
+id: PTC-201
+base_config: AM
+slug: ptc-201-q35-5x5-clean-distill
+buffer_label: pause-256-q35-5x5-clean
+trainer_config: experiments/opd_profile/configs/qwen3_5_35b_a3b_opd_opdb_8node.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 512
+# Clean CoT-distillation: NO contrastive negatives (PTC-200 inherited AM's
+# corrupt_buffer=1.0/corrupt_answer=0.125 -> loss gamed the negative term while
+# answer-KL DIVERGED, acc floored). Mild hidden-match (0.5 = runbook "low coef best")
+# to supervise the buffer toward teacher post-CoT hiddens + answer reverse-KL.
+student_prefill_text: ' pause'
+student_prefill_count: 256
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_mode: insert
+teacher_cot_json_path: /shared/opd-coord/randnum_5digit_q35_8k_cot.json
+prompts_json_path: /shared/opd-coord/randnum_5digit_q35_8k_prompts.json
+num_prompts: 8000
+default_num_steps: 31
+default_prompts_per_step: 64
+supervise_student_cot: true
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 0.5
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_positive_answer_weight: 0.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 512
+eval_accuracy_every: 5
+eval_control_start_step: 30
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: false
+opd_pipeline_rl: true
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: false
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_loss_max_clamp: 5.0
+client_args:
+  eval_corrupt_pause_control: false

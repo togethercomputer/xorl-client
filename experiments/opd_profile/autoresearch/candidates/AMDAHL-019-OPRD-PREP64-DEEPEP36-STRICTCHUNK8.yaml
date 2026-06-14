@@ -1,0 +1,81 @@
+id: AMDAHL-019-OPRD-PREP64-DEEPEP36-STRICTCHUNK8
+base_config: AM
+slug: amdahl-019-oprd-prep64-deepep36-strictchunk8
+buffer_label: amdahl-019-oprd-prep64-deepep36-strictchunk8
+# Strict fresh-sample prepare-overlap sweep (2026-06-13): same trainer, prompt
+# window, single fb call, quack+DeepEP36 dispatch, and non-pipelined semantics as
+# AMDAHL-018, but split each same-step 64-prompt prepare into eight prompt chunks
+# instead of four. This tests whether finer-grained same-step overlap reduces the
+# remaining strict prepare wall without adding nodes or accepting one-step-stale
+# samples.
+#
+# Compare against AMDAHL-018:
+#   step_total_s=14.03, forward_backward_s=4.68, prepare_s=5.27,
+#   student_sampling_s=2.52, teacher_prefill_s=2.59,
+#   sync_inference_weights_s=3.37, valid_tokens_per_step_s=292.5,
+#   pipeline_rl_active=0.
+#
+# Outcome 2026-06-13: not promoted. First launch omitted explicit sampler flags
+# while the generator default was still 1, so only one sampler endpoint was
+# registered/synced even though dispatch routed across two; non-warmup mean was
+# step_total_s=12.71 but sync_endpoint_success_count=1, so it is invalid. The
+# corrected 2-endpoint relaunch registered both endpoints, then wedged during
+# initial P2P sync with repeated Mooncake/RDMA "received packet mismatch" errors
+# against 10.42.31.93:15682@mlx5_2 and was stopped. The generator default was
+# changed to sampler_replicas=2 afterward. Do not promote chunk8 without a clean
+# 2/2-sync rerun; the invalid 1-sync row also did not improve strict prepare
+# versus AMDAHL-018 (5.28 s vs 5.27 s).
+trainer_config: experiments/opd_profile/configs/qwen3_6_35b_a3b_opd_opdb_4node_warm009_deepep36.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 100
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/arith_ops6_nonempty_cot.json
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 6
+default_prompts_per_step: 64
+profile_warmup_steps: 2
+supervise_student_cot: false
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 1.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 128
+eval_accuracy_every: 0
+eval_control_start_step: 0
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: false
+eval_answer_logprob_every: 0
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: false
+opd_pipeline_rl: false
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 10.0
+opd_prepare_batch_size: 64
+opd_microbatch_size: 64
+save_every: 0
+client_args:
+  opd_oprd_layers: every1
+  opd_oprd_num_layers: 40
+  opd_hidden_match_mode: mse
+  opd_strict_prepare_overlap_chunks: 8
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: false
+  opd_mask_prompt_kl: true
+  eval_heldout_num_problems: 0

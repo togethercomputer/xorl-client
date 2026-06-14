@@ -1,0 +1,43 @@
+id: PTC-302Np
+base_config: AM
+slug: ptc-302np-nofiller-PROFILE
+buffer_label: FAIR-nofiller-control-PROFILE
+trainer_config: experiments/opd_profile/configs/qwen3_5_35b_a3b_opd_opdb_8node.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 128
+# PROFILING CONTROL for PTC-302Bp (K=C all-layer OPRD). IDENTICAL stack + 2-prompt/
+# 2-step profiling block; differs ONLY in: no buffer (student_prefill_count=0), no
+# teacher hidden capture (opd_hidden_match_coef=0, no opd_oprd_*), no match_cot.
+# Isolates the O(T^2)-attention-on-long-buffer cost: this arm should fb in seconds.
+student_prefill_text: ''
+student_prefill_count: 0
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/randnum_5digit_q35_le6000_cot.json
+prompts_json_path: /shared/opd-coord/randnum_5digit_q35_le6000_prompts.json
+num_prompts: 5179
+default_num_steps: 2
+default_prompts_per_step: 2
+supervise_student_cot: true
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 0.0
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 16
+eval_accuracy_every: 1
+eval_control_start_step: 1
+eval_control_max_concurrency: 64
+eval_answer_logprob_control: false
+opd_pipeline_rl: false
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: true
+request_timeout: 3600
+weight_sync_timeout: 900
+opd_loss_max_clamp: 5.0
+client_args:
+  eval_corrupt_pause_control: false

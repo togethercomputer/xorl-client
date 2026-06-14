@@ -1,0 +1,44 @@
+id: PTC-005
+base_config: AN
+slug: ptc-005-pure-kl-flashqla
+buffer_label: randsymbol-ptc-pure-kl-flashqla
+trainer_config: experiments/opd_profile/configs/qwen3_6_35b_a3b_opd_opdb_8node_nccl.yaml
+gdn_backend: flashqla
+student_prefill_text: " ! | ~ _ * ^ # @ "
+student_prefill_count: 1
+student_prefill_suffix: "Answer: "
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/randnum_4digit_8192_cot_nonempty.json
+prompts_json_path: /shared/opd-coord/randnum_4digit_8192_nonempty_cot.json
+num_prompts: 8185
+default_num_steps: 9
+default_prompts_per_step: 128
+supervise_student_cot: true
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 0.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 1000
+eval_accuracy_every: 4
+eval_control_start_step: 4
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: true
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 2
+eval_answer_logprob_distractor_control: false
+opd_pipeline_rl: false
+sampler_quiesce_before_sync: true
+sync_method: nccl_broadcast
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_positive_answer_weight: 0.0
+client_args:
+  opd_ptc_positive_buffer_kl_weight: 1.0
+  opd_ptc_positive_answer_kl_weight: 0.125
+  opd_ptc_positive_hidden_weight: 0.0
+  opd_mask_zero_weight_positions: true
+  opd_teacher_answer_source: sampled
+  eval_corrupt_pause_control: false

@@ -1,0 +1,60 @@
+id: E0A-SFT-LONG
+base_config: AM
+slug: e0a-sft-long-anchor
+buffer_label: e0a-sft-long
+# E0a (overnight plan rev4): CONVERGED-SFT ANCHOR. No-filler gold-answer SFT
+# (sft_mode, no teacher, student_prefill_count 0) from base, 321 steps with
+# periodic DCP saves. Purpose: (1) the converged-SFT asymptote every distillation
+# arm is ultimately judged against (101-step SFT was still climbing at 0.19-0.23);
+# (2) warm-start seeds for future arms; (3) the overnight "keep-GPUs-busy" tail
+# (~4h). Trainer config = 4node_adamw DIRECTLY (NOT _8node, which auto-remaps to
+# the muon config that is unvalidated for SFT — infra §5b). ce_mode quack_linear.
+# 321 ≡ 1 (mod 5) so eval_control_start_step=320 satisfies the control-eval rule.
+trainer_config: experiments/opd_profile/configs/qwen3_6_35b_a3b_opd_opdb_4node_adamw.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 1000
+student_prefill_text: ''
+student_prefill_count: 0
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: ''
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 321
+default_prompts_per_step: 128
+save_every: 107
+supervise_student_cot: true
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 0.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 1024
+eval_accuracy_every: 10
+eval_control_start_step: 320
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: true
+eval_answer_logprob_every: 20
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: true
+eval_answer_logprob_distractor_offset: 1
+opd_pipeline_rl: true
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 5.0
+client_args:
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: true
+  sft_mode: true
+  opd_teacher_answer_source: gold

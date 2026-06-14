@@ -1,0 +1,49 @@
+id: PTC-302XL
+base_config: AM
+slug: ptc-302xl-q35-5x5-oprd-all40-big
+buffer_label: oprd-every4-lastk256
+trainer_config: experiments/opd_profile/configs/qwen3_5_35b_a3b_opd_opdb_8node.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 128
+# OPRD x RiM: per-sample pause buffer K_i = C_i (CoT length) matched 1:1 to the
+# teacher CoT (match_cot) + KL anchor + hidden-match. C<=6000 subset (5179 ex).
+# HEAVY: ~6100-tok samples, seq_len 8192 -> minutes/step, hours/run; watch OOM.
+# NOTE: in-loop eval/accuracy still uses the static buffer (eval-path K=C is a
+# follow-up); gate on loss + a dedicated K=C eval until that lands.
+student_prefill_text: ' pause'
+student_prefill_count: 1
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_mode: match_cot
+teacher_cot_json_path: /shared/opd-coord/randnum_5digit_q35_le6000_cot.json
+prompts_json_path: /shared/opd-coord/randnum_5digit_q35_le6000_prompts.json
+num_prompts: 5179
+default_num_steps: 81
+default_prompts_per_step: 64
+supervise_student_cot: true
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 100.0
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 128
+eval_accuracy_every: 5
+eval_control_start_step: 80
+eval_control_max_concurrency: 64
+eval_answer_logprob_control: false
+opd_pipeline_rl: true
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: false
+request_timeout: 1800
+weight_sync_timeout: 900
+opd_loss_max_clamp: 5.0
+client_args:
+  eval_corrupt_pause_control: false
+  opd_buffer_equals_cot: true
+  opd_oprd_layers: every1
+  opd_oprd_last_k: 2000
+  opd_oprd_num_layers: 40

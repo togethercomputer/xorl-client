@@ -1,0 +1,47 @@
+id: PTC-107
+base_config: AM
+slug: ptc-107-randtok-10
+buffer_label: rand-10tok
+trainer_config: experiments/opd_profile/configs/qwen3_6_35b_a3b_opd_opdb_8node.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 1000
+student_prefill_text: ''
+student_prefill_count: 1
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/randnum_4digit_8192_cot_nonempty.json
+prompts_json_path: /shared/opd-coord/randnum_4digit_8192_nonempty_cot.json
+num_prompts: 8185
+default_num_steps: 31
+default_prompts_per_step: 128
+supervise_student_cot: true
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 2.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 1024
+eval_accuracy_every: 5
+eval_control_start_step: 30
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: true
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 2
+eval_answer_logprob_distractor_control: false
+eval_answer_logprob_distractor_offset: 1
+opd_pipeline_rl: true
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: false
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 1.0
+opd_contrastive_corrupt_answer_weight: 0.125
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 5.0
+client_args:
+  eval_corrupt_pause_control: true
+student_prefill_token_ids: 84990,39644,103600,170738,12757,19088,215392,140578,24775,95963

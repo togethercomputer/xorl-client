@@ -1,0 +1,86 @@
+id: ARITH-014-OPRD-WARM
+base_config: AM
+slug: arith-014-oprd-answers-warm009
+buffer_label: arith-oprd-ans-warm
+# FAITHFUL-OPRD arm (science runbook §4, user-queued 2026-06-11): all-layer
+# hidden-state MSE at the SHARED ANSWER positions vs the CoT-informed teacher
+# (the paper's alignment — NOT the falsified buffer<->CoT cross-token match).
+# Expressed with existing knobs (explore-verified 2026-06-11):
+#   supervise_student_cot=false  -> pause-buffer positions masked (target=-100)
+#   opd_mask_prompt_kl=true      -> prompt positions masked
+#   => valid_mask = ANSWER positions only; BOTH the reverse-KL and the hidden
+#   MSE ride that mask, 1:1 against the teacher's prompt+CoT+answer forward.
+#   opd_oprd_layers=every1/40    -> all-layer, 1/d-normalized, stop-grad teacher
+# Composition: L = answer-KL + 100*hidden-MSE (paper default is OPRD-only mu=0;
+# we keep the KL anchor — drop to opd_kl_loss_weight 0 in a follow-up if the
+# composed run is inconclusive). Trainer config = warm009_oprd (rmsnorm native
+# + ce eager, OPRD requirements).
+# STEP-0 VALIDATION (abort if violated): opd_frac_answer ~= 1.0 of supervised
+# tokens (frac_buffer ~ 0), opd_oprd_num_layers = 40, opd_oprd_loss > 0.
+# DRAFT 2026-06-11 — pause-format OPD warm-started from the ARITH-009
+# pause-SFT checkpoint (the user-directed SFT->OPSD line, status doc §4b/§4c).
+# Recipe = ARITH-006-OPD-CL10 (corrected prompt-mask + clamp 10, reverse-KL on
+# on-policy answers, teacher_cot_mode replace) with two changes:
+#   1. student_prefill = ' pause' x1024 — the student samples and is supervised
+#      IN the pause format it was just SFT'd into (control acc_pause 0.238 at
+#      warm-start vs 0.000 at base -> ~24% correct on-policy prefixes, the
+#      benign-bootstrap regime where OPD worked on 4x4).
+#   2. trainer_config = warm009 variant (load_weights_mode=skip +
+#      load_checkpoint_path at the 009 step-101 DCP; adamw kept — the
+#      checkpoint embeds adamw state and the ladder is adamw).
+# Question under test: with the bootstrap fixed, does distilling the
+# CoT-conditioned answer distribution beat the SFT it started from
+# (0.238 pause / 0.215 nopause control; SFT ladder ceiling ~0.23)?
+# Comparator discipline: success = control acc_pause clearly > 0.238 AND
+# held-out trajectory above the extended-SFT slope; OPD ≈ 0.24 = SFT-redux.
+# Corrected-objective runs drift after their peak (PTC-122) — watch for an
+# early peak; eval cadence 5 for that reason.
+trainer_config: experiments/opd_profile/configs/qwen3_6_35b_a3b_opd_opdb_8node_warm009_oprd.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 1000
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/arith_ops6_nonempty_cot.json
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 101
+default_prompts_per_step: 64
+supervise_student_cot: false
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 100.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 1024
+eval_accuracy_every: 10
+eval_control_start_step: 100
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: true
+eval_answer_logprob_every: 20
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: true
+eval_answer_logprob_distractor_offset: 1
+opd_pipeline_rl: true
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 10.0
+client_args:
+  opd_oprd_layers: every1
+  opd_oprd_num_layers: 40
+  opd_hidden_match_mode: mse
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: true
+  opd_mask_prompt_kl: true

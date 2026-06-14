@@ -1,0 +1,53 @@
+id: PTC-118RW
+base_config: AM
+slug: ptc-118rw-rewind-baf6dcce
+buffer_label: nofiller-step100-rewind-baf6dcce
+trainer_config: experiments/opd_profile/configs/qwen3_6_35b_a3b_opd_opdb_8node.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 1000
+student_prefill_text: ''
+student_prefill_count: 0
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/randnum_4digit_8192_cot_nonempty.json
+prompts_json_path: /shared/opd-coord/randnum_4digit_8192_nonempty_cot.json
+num_prompts: 8185
+default_num_steps: 101
+default_prompts_per_step: 128
+supervise_student_cot: true
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 0.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 1024
+eval_accuracy_every: 5
+eval_control_start_step: 100
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: true
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 2
+eval_answer_logprob_distractor_control: false
+eval_answer_logprob_distractor_offset: 1
+opd_pipeline_rl: true
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: false
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 5.0
+client_args:
+  eval_corrupt_pause_control: true
+# REWIND control: src/xorl checked out at baf6dcce (the exact commit the original
+# PTC-118 / ko5kko3m ran on, pre-apanda-dev-merge), today's client + serving stack
+# (dedicated 2xTP2, same as PTC-118R/118T). Launch with XORL_OPD_DIAG_DATUM_FIELDS=0
+# in the generator env (legacy trainer lacks the diag-datum exclude keys).
+# serial_endpoint_sync stays false as in the original (old sync handler).
+eval_answer_logprob_every: 5
+eval_answer_logprob_distractor_control: true

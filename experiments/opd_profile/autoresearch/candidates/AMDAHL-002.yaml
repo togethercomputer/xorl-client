@@ -1,0 +1,69 @@
+# AMDAHL PROBE 002 (2026-06-13): re-measure the prepare pipeline after the
+# teacher reshape. IDENTICAL shape to AMDAHL-001 (512 prompts/step, prepare batch
+# 64, concurrency 16, microbatch 256, 3 steps, evals off) so the ONLY variable is
+# the stack: 2 teacher endpoints (one idle, client routed direct) -> 4 teacher
+# endpoints behind the teacher-smg round-robin (launch with
+# --teacher-replicas 4 --teacher-route smg --sampler-layout dedicated).
+# AMDAHL-001 verdict (docs/notes/amdahl_allocation_20260613.md): teacher prefill
+# is the wall (~165 s/batch on ONE TP=8 endpoint); student sampling ~18 s wall;
+# trainer ~88% idle. Read the NEW wall metrics this run emits:
+#   teacher_prefill_wall_s  (overlap-union, NOT the Σ-of-8 teacher_prefill_s)
+#   student_sampling_wall_s
+# Expected: teacher_prefill_wall_s ~quarter (512 seq / 4 endpoints = 128 each =
+# teacher max-running-requests, ~1 wave), prepare_window_s ~284 -> ~80-110 s,
+# step_total_s ~290 -> ~120-150 s. If teacher_prefill_wall_s now <= fb (~28 s) the
+# step is trainer/sampler-bound and the next lever shifts (raise prompts/step).
+id: AMDAHL-002
+base_config: AM
+slug: amdahl-002-teacher-reshape
+buffer_label: amdahl-002
+trainer_config: experiments/opd_profile/configs/qwen3_6_35b_a3b_opd_opdb_8node_warm009.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 100
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/arith_ops6_nonempty_cot.json
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 3
+default_prompts_per_step: 512
+supervise_student_cot: false
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 0.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 128
+eval_accuracy_every: 0
+eval_control_start_step: 0
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: false
+eval_answer_logprob_every: 0
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: false
+eval_answer_logprob_distractor_offset: 1
+opd_pipeline_rl: true
+opd_prepare_batch_size: 64
+opd_prepare_concurrency: 16
+opd_microbatch_size: 256
+save_every: 0
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 10.0
+client_args:
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: true
+  opd_mask_prompt_kl: true

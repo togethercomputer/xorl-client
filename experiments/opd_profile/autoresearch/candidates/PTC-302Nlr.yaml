@@ -1,0 +1,44 @@
+id: PTC-302Nlr
+base_config: AM
+slug: ptc-302nlr-q35-5x5-nofiller-lr1e6-2xtp2
+buffer_label: FAIR-nofiller-control-vs-302L
+trainer_config: experiments/opd_profile/configs/qwen3_5_35b_a3b_opd_opdb_8node.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 128
+# NO-FILLER CONTROL for PTC-302L (acc_pause=0.133 at 41x16). Matched data/steps/
+# lr/batch; differs ONLY in: no buffer (student_prefill_count=0), no OPRD
+# (opd_hidden_match_coef=0, no opd_oprd_*), no match_cot. Tests the runbook's
+# upper bound: does no-filler continued-training reach >= 0.133? If yes, the
+# all-layer OPRD buffer adds nothing (the gain was just "more training helps").
+student_prefill_text: ''
+student_prefill_count: 0
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/randnum_5digit_q35_le6000_cot.json
+prompts_json_path: /shared/opd-coord/randnum_5digit_q35_le6000_prompts.json
+num_prompts: 5179
+default_num_steps: 101
+default_prompts_per_step: 128
+supervise_student_cot: true
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 0.0
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+learning_rate: 1e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 128
+eval_accuracy_every: 5
+eval_control_start_step: 100
+eval_control_max_concurrency: 64
+eval_answer_logprob_control: false
+opd_pipeline_rl: false
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: true
+request_timeout: 1800
+weight_sync_timeout: 900
+opd_loss_max_clamp: 5.0
+client_args:
+  eval_corrupt_pause_control: false

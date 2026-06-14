@@ -1,0 +1,61 @@
+# AMDAHL PROBE 001 (2026-06-13): prepare-pipeline scaling measurement.
+# Clone of ARITH-005-OPD-WARM (real OPD loss + teacher-scoring path) at 8x the
+# tokens/step (512 prompts) with prepare batch 64 / concurrency 16. NOT science.
+# Question: does the prepare wall (sampling + teacher scoring, 21.3 s at 64
+# prompts) scale sub-linearly with concurrency, or is the client/teacher path
+# serialization-bound? Measures: prepare_window_s, forward_backward_s,
+# step_total_s, teacher aggregate tok/s -> feeds the GPU-reallocation plan.
+id: AMDAHL-001
+base_config: AM
+slug: amdahl-001-prepare-scaling
+buffer_label: amdahl-001
+trainer_config: experiments/opd_profile/configs/qwen3_6_35b_a3b_opd_opdb_8node_warm009.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 100
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/arith_ops6_nonempty_cot.json
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 3
+default_prompts_per_step: 512
+supervise_student_cot: false
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 0.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 128
+eval_accuracy_every: 0
+eval_control_start_step: 0
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: false
+eval_answer_logprob_every: 0
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: false
+eval_answer_logprob_distractor_offset: 1
+opd_pipeline_rl: true
+opd_prepare_batch_size: 64
+opd_prepare_concurrency: 16
+opd_microbatch_size: 256
+save_every: 0
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 10.0
+client_args:
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: true
+  opd_mask_prompt_kl: true

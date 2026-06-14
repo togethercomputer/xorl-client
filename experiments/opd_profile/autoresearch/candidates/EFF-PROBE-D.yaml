@@ -1,0 +1,58 @@
+id: EFF-PROBE-D
+base_config: AM
+slug: eff-probe-d
+buffer_label: eff-probe-d
+# THROUGHPUT PROBE (2026-06-12, user goal: fix the 0.15%-MFU / 74-tok/s/GPU
+# data starvation). NOT science — synthetic-load measurement of trainer fb
+# scaling on the 4-node (32xH100) topology, mirroring the throughput-tuner
+# benchmark (261K tok/s = 8.2k tok/s/GPU @ 16.2% MFU, mbs8 x 8193, 56.4 GB).
+# sft_mode (no teacher), pause-1024 sequences (~1085 tok/sample), evals OFF.
+# Launch (after the stack moves to --trainer-nodes 4):
+#   $PY $GENERATOR --model q36 --trainer-nodes 4 write-trainer-control \
+#     --candidate .../THIS.yaml --num-steps 4 --prompts-per-step 2048 \
+#     --sampler-replicas 2 --sampler-layout dedicated
+# Measure: forward_backward_s, step_total_s, nvidia-smi peak on trainer-head,
+# tok/s/GPU = 2048*1085/fb_s/32.
+trainer_config: experiments/opd_profile/configs/qwen3_6_35b_a3b_opd_effd_4node_muon.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 100
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: ''
+save_every: 0
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 4
+default_prompts_per_step: 2048
+supervise_student_cot: true
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 0.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 128
+eval_accuracy_every: 0
+eval_control_start_step: 0
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: false
+eval_answer_logprob_every: 0
+opd_pipeline_rl: true
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_loss_max_clamp: 5.0
+opd_microbatch_size: 1024
+opd_prepare_batch_size: 1024
+opd_prepare_concurrency: 16
+client_args:
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: false
+  sft_mode: true
+  opd_teacher_answer_source: gold
+  eval_heldout_num_problems: 0

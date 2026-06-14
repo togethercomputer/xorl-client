@@ -1,0 +1,44 @@
+id: PTC-200
+base_config: AM
+slug: ptc-200-q35-5x5-cot-internalize
+buffer_label: pause-256-q35-5x5
+trainer_config: experiments/opd_profile/configs/qwen3_5_35b_a3b_opd_opdb_8node.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 512
+# Fixed pause buffer (256 tok) — first un-saturated test: can OPD make the buffer
+# load-bearing where DIRECT fails (5x5 ~0.195) but teacher CoT succeeds (~0.994)?
+student_prefill_text: ' pause'
+student_prefill_count: 256
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+# insert mode keeps the pause rows in the teacher cache so hidden-match can shape the
+# buffer against post-CoT teacher hiddens (the "force the buffer to be load-bearing" lever).
+teacher_cot_mode: insert
+# 8k pool (first 8000 of the 55874 nonempty) — plenty for 31-101 step runs and loads
+# ~7x faster than the full set (tokenizing all 55874 x ~7800-tok CoTs upfront = ~10min+).
+teacher_cot_json_path: /shared/opd-coord/randnum_5digit_q35_8k_cot.json
+prompts_json_path: /shared/opd-coord/randnum_5digit_q35_8k_prompts.json
+num_prompts: 8000
+default_num_steps: 31
+default_prompts_per_step: 64
+supervise_student_cot: true
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 2.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 512
+eval_accuracy_every: 5
+eval_control_start_step: 30
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: false
+opd_pipeline_rl: true
+sampler_quiesce_before_sync: false
+sync_method: p2p
+serial_endpoint_sync: false
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_loss_max_clamp: 5.0
+client_args:
+  eval_corrupt_pause_control: false
