@@ -1,0 +1,51 @@
+# Student trainer config for OPD + SingleShot MTP smoke on Qwen3.6-35B-A3B.
+# This is intentionally conservative: no CP, eager full-attention masks, and
+# short packing length for the first plumbing run.
+
+model_path: Qwen/Qwen3.6-35B-A3B
+model_name: Qwen/Qwen3.6-35B-A3B
+config_path: Qwen/Qwen3.6-35B-A3B
+tokenizer_path: Qwen/Qwen3.6-35B-A3B
+attn_implementation: eager
+moe_implementation: quack
+ep_dispatch: deepep
+deepep_buffer_size_gb: 2.0
+deepep_num_sms: 24
+train_router: false
+record_routing_weights: false
+
+data_parallel_mode: fsdp2
+expert_parallel_size: 8
+ulysses_parallel_size: 1
+ringattn_parallel_size: 1
+tensor_parallel_size: 1
+data_parallel_replicate_size: 1
+data_parallel_shard_size: 1
+
+enable_mixed_precision: true
+enable_gradient_checkpointing: true
+enable_full_shard: true
+enable_activation_offload: false
+enable_compile: false
+init_device: meta
+load_weights_mode: grouped
+
+output_dir: outputs/Qwen3.6-35B-A3B-opd-singleshot-mtp-smoke
+load_checkpoint_path: ""
+ckpt_manager: dcp
+
+log_level: INFO
+worker_connection_timeout: 180.0
+worker_max_retries: 3
+
+sample_packing_sequence_len: 4096
+enable_packing: true
+
+skip_initial_checkpoint: true
+ce_mode: compiled
+
+optimizer: muon
+optimizer_dtype: bf16
+muon_lr: 0.02
+muon_momentum: 0.95
+muon_adjust_lr_fn: match_rms_adamw

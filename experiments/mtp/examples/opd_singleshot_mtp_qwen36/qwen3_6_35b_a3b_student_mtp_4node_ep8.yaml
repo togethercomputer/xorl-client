@@ -1,0 +1,103 @@
+# Multi-node trainer config for the Qwen3.6-35B-A3B SingleShot MTP run.
+#
+# Methodology target:
+#   - student/teacher initialization: same Qwen3.6-35B-A3B checkpoint
+#   - rollout strategy: native SGLang MTP with ConfAdapt from step 0
+#   - trainer strategy: rollout replay with native trace validation
+#   - topology: 4 nodes x 8 H100, EP=8, FSDP shard=32, TP/PP/CP disabled
+#
+# Qwen3.6 mask path:
+#   Qwen3.6 mixes full-attention and linear_attention layers. Full attention
+#   consumes a tensor-parameterized FlexAttention BlockMask; linear_attention
+#   consumes a tensorized GatedDeltaNet replay plan.
+
+model_path: Qwen/Qwen3.6-35B-A3B
+model_name: Qwen/Qwen3.6-35B-A3B
+config_path: Qwen/Qwen3.6-35B-A3B
+tokenizer_path: Qwen/Qwen3.6-35B-A3B
+# COMPILE-ON TEST 2026-06-07: the earlier "NCCL unhandled cuda error" on the
+# compiled full-scale forward_backward was NOT a compile/MoE-alltoall bug — it
+# was the dense GatedDeltaNet replay-plan OOM (14.18M-row gather) surfacing as a
+# tiny NCCL calloc failure. That is now fixed (packed path in
+# gated_deltanet.py), so compile-on is testable at full scale. flex_attention
+# feeds the full_attention layers a static BlockMask; the GDN large-replay path
+# is torch.compiler.disable (so it can't churn). See
+# docs/notes/mtp_moe_dispatch_oom_handoff.md + mtp_torch_compile_recompilation.md.
+attn_implementation: flex_attention
+moe_implementation: quack
+ep_dispatch: deepep
+train_router: false
+record_routing_weights: false
+router_fp32: true
+lm_head_fp32: true
+deepep_buffer_size_gb: 2.0
+deepep_num_sms: 24
+# 2026-06-07 throughput: overlap DeepEP combine with next layer's compute (matches
+# the qwen3_6_35b_a3b benchmark recipe). Only takes effect when ep_dispatch=deepep.
+deepep_async_combine: true
+# 2026-06-09 profiling: 1,024 replay chunks fragment SingleShot MTP GDN replay
+# into hundreds of per-layer calls on high-duplication samples. 16,384 fit the
+# Qwen3.6 35B-A3B 4-node OPD smoke and cut trainer FB by ~6x on the same
+# 32-prompt/two-chunk shape.
+linear_replay_plan_max_packed_tokens: 16384
+
+data_parallel_mode: fsdp2
+expert_parallel_size: 8
+ulysses_parallel_size: 1
+ringattn_parallel_size: 1
+tensor_parallel_size: 1
+pipeline_parallel_size: 1
+data_parallel_replicate_size: 1
+data_parallel_shard_size: 32
+sync_inference_method: nccl_broadcast
+
+enable_mixed_precision: true
+enable_gradient_checkpointing: true
+enable_full_shard: true
+enable_activation_offload: false
+# COMPILE-ON TEST 2026-06-07: keep compile enabled; compile on/off did not move
+# the measured first-FB allocation. Watch TORCH_LOGS=recompiles for
+# recompile_limit churn on the GDN linear-attn layers; if it churns, fall back to
+# compiling only full_attention layers. See attn_implementation note above.
+enable_compile: true
+enable_forward_prefetch: true
+init_device: meta
+# 2026-06-07: grouped weight-load (one reader/node + per-EP-FSDP-group collective)
+# HANGS post-merge — rank 0-7 PG+EP init fine, then the grouped-load subgroup's
+# NCCL collective deadlocks during load → engine-ready timeout. all_ranks has each
+# rank read its own shard from /shared (no cross-rank load collective). Slower load,
+# but avoids the merge-regressed grouped-load path.
+load_weights_mode: all_ranks
+
+output_dir: outputs/Qwen3.6-35B-A3B-opd-singleshot-mtp-confadapt-4node-ep8
+# NOTE (2026-06-08): the DCP overwrite HANGS under the merged code — DCP reshard's
+# Gloo CPU collective (/default_pg/0//NN//cpu) deadlocks 30min → DistStoreError. Same
+# rank-0-desync class as the merged NCCL-init/grouped-load hangs. Temporarily disabled
+# to get a running bare-HF run; re-enable once the merge coordination bug is fixed.
+# load_checkpoint_path: /shared/huggingface/Qwen3.6-35B-A3B-xorl-dcp-ep8-20260522
+load_checkpoint_path: ""
+ckpt_manager: dcp
+
+log_level: INFO
+worker_connection_timeout: 300.0
+worker_max_retries: 5
+
+sample_packing_sequence_len: 4096
+enable_packing: true
+
+skip_initial_checkpoint: true
+ce_mode: compiled
+
+# Muon (vs AdamW) can reduce post-step optimizer-state pressure, but it does not
+# help the first forward_backward OOM because optimizer states are allocated
+# lazily after the first step. lr below is overridden by the OPD config_writer
+# (OPD_FULL_FT_LR=1e-6) and serves as the AdamW lr for the non-Muon params
+# (embeddings/norms/router); muon_lr is the 2D-matrix lr.
+optimizer: muon
+lr: 1.0e-6
+muon_lr: 1.0e-5
+muon_momentum: 0.95
+muon_nesterov: true
+muon_ns_steps: 5
+weight_decay: 0.0
+optimizer_dtype: bf16
