@@ -71,6 +71,22 @@ blocker is engine-level fb instability on the 1-node quack/DeepEP/FSDP path, not
 only the lm-head memory. It cannot be root-caused remotely (no `ptrace`/py-spy in
 the non-privileged pod; engine logs go silent at the stall).
 
+## CORRECTION: PR #373 lowmem IS FSDP-safe (engine-design evidence, 2026-06-14)
+
+A sibling agent resolved the FSDP-safety question with code evidence (not
+inference): `torch_parallelize.py:381-385` deliberately groups final-norm + lm_head
+into ONE FSDP unit with `reshard_after_forward=False`, so when `norm.forward()`
+runs FSDP all-gathers the lm-head and KEEPS it gathered for `compute_loss()`. The
+vocab-sharded loss path is opt-in and needs CP + dp_size=1 (OPD doesn't use it). So
+**the lm-head weight at the loss is a full LOCAL tensor by design** — the streaming
+KL (baseline AND `opd_streaming_lowmem`) always slices a full-local
+`student_weight[start:end]`, never a sharded DTensor. Therefore my earlier
+"lowmem hangs under FSDP via DTensor slicing" hypothesis was **WRONG**, and
+**PR #373 is FSDP-safe and promotable**. The keep-fp32 recipe
+(`opd_kl_backend=streaming` + `lm_head_fp32=true` + `opd_streaming_lowmem=true`) is
+validated end-to-end. This is consistent with the cluster evidence below: the
+1-node fb stall reproduced with PLAIN baselines too, so it was never lowmem.
+
 ## ROOT CAUSE of the 1-node fb stall (2026-06-14, via faulthandler stack dumps)
 
 Used `PYTHONFAULTHANDLER=1` + SIGABRT (no ptrace needed) to dump stacks of the
