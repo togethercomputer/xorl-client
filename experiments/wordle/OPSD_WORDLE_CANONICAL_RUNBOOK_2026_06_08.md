@@ -22,14 +22,22 @@ The Wordle work was split across three consolidated repos (the old single run-wo
 | **Engine** (imported as `xorl`; OPD loss, server, FSDP/EP) | **`xorl-internal` `apanda-dev`** (consolidated trunk, OPD B1 #370/#372 landed) | `src/xorl/` |
 | **Run artifacts** (gold data, checkpoints, eval transcripts) | **`/shared/apanda/`** (after relocation; pre-relocation still in the old worktree `experiments/zorl/results/`) | — |
 
-**→ Instantiate the next Wordle agent from `xorl-client-internal`, branch `apanda-dev`** (currently
-contains all 4 harnesses; the Wordle code is under `experiments/wordle/`). Branch a fresh
-`exp/wordle-<topic>` off it. Its venv must import the **`xorl` engine from `xorl-internal` `apanda-dev`**
-(the consolidated trunk) plus `xorl_client`. Pull k8s/configs from **`xorl-infra`**.
+**→ Instantiate the next Wordle science agent from this prepared worktree:**
+
+```bash
+cd /home/apanda/xorl-client-wordle-science-20260614
+```
+
+It is on branch `science/wordle-retrieval-sft-20260614`, rooted at
+`internal/apanda-dev @ 0c29943`. Its venv must import the **`xorl` engine from
+`xorl-internal` `apanda-dev`** (the consolidated trunk) plus `xorl_client`. Pull
+k8s/configs from `/home/apanda/xorl-infra-opd-wordle-pr1-20260614` until
+xorl-infra PR #1 is merged.
 
 **Data the next agent needs** (locate under `/shared/apanda/` post-relocation; currently at
 `…run-20260607/experiments/zorl/results/`):
-- Broad algo-think SFT gold: `wordle_gold_sft/algo_think_v2_broad_20260613T215318Z/gold.jsonl`
+- Broad algo-think SFT gold:
+  `/shared/apanda/wordle-data/algo_think_v2_broad_20260613T215318Z/gold.jsonl`
   (15,986 turns, full word-list coverage, seed-777 floor-eval targets held out).
 - SFT-48 warm-start ckpt: `opsd_wordle_native_baseline/20260612T160347Z-…sft_gold/server_output/weights/default/step-000048`.
 - Reason-first CoT cache (weak target, see PROBE RESULT): `wordle_teacher_cot/q36_cot_cache_v0_*`.
