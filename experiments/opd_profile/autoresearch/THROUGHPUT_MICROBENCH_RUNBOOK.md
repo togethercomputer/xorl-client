@@ -517,6 +517,33 @@ a replay artifact (forced per-fb; amortized over grad-accum in real training; al
 batch fits — exactly what the validated vocab-parallel reverse-KL kernel enables (drop
 the full lm-head gather). The integration is the next deep change (task #13).**
 
+**VP-KL integration — autograd fully de-risked offline (branch `throughput/opd-vocab-parallel-kl`).**
+Two multi-process (gloo) tests now pass to float32 precision vs single-process full-vocab
+references: (1) `test_vocab_parallel_reverse_kl` — the kernel's cross-rank vocab-parallel
+reductions (kl rel 3e-5, grad rel 1e-6); (2) `test_vp_kl_gathered` — the FSDP glue
+`vocab_parallel_reverse_kl_gathered` (gather activations, shard weights): the local
+token-slice hidden grad matches the reference slice (rel 8.7e-7, **no cross-rank
+double-count**) and the weight-shard grad matches (rel 1.5e-6). So the hard part (autograd
+correctness across the data+vocab-sharded group) is proven. **Remaining model_runner
+wiring (needs the live multi-rank trainer to develop, since it depends on the live FSDP2
+DTensor placements / EP×FSDP mesh): (a) get the lm-head local shard via `lm_head.weight`
+DTensor `.to_local()` + the `fsdp_mesh` group + vocab offset; (b) match the teacher shard
+via `head_manager.sharded_view`; (c) pad uneven per-rank token counts to a uniform count +
+mask; (d) supply the local-shard grad back to FSDP2 as the DTensor grad; (e) skip
+`_lm_head_forward_anchor`'s gather; gate behind `opd_kl_backend=vocab_parallel` (opt-in →
+cannot affect the science default path) and validate loss-match vs the full-gather path.**
+
+**BLOCKED on cluster capacity (2026-06-14 ~12:3xZ).** All schedulable default-group compute
+nodes are full (0 with ≥8 free GPU); the only free nodes are node-group=nccl and an
+admission webhook forces node-group=default, so they're policy-excluded (same wall the
+science agent hit). Both the 4-node feeding validation and the VP-KL wiring need
+default-group nodes to free. A background poller is waiting for ≥2 free.
+**NEXT WHEN NODES FREE (priority order):** (1) 4-node (or 2-node) FEEDING validation — stand
+up a trainer-only multi-node stack, replay with `--repeat-data N` to fill the dp ranks
+(5 base rows × N ≥ dp_size → ~0 dummy), measure MFU vs under-filled; this is the DIRECT
+10%-at-4-node target and needs no code. (2) VP-KL model_runner wiring (above) for the
+1-node memory cap.
+
 ## Do Not Spend The Next Cycle On
 
 - Context/ulysses parallelism (CP) for this short-sequence MoE — measured to hurt
