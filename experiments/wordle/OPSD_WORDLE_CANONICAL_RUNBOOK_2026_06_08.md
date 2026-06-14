@@ -47,6 +47,15 @@ teacher `opsd-wordle-q36-teacher-sglang`, gateway `opsd-wordle-q36-smg`. The tea
 base Qwen3.6-35B-A3B and is reachable over cluster DNS for offline probes (no GPU job needed —
 that's how the PROBE RESULT below was produced).
 
+**🔗 COORDINATION WITH THE THROUGHPUT AGENT (mandatory) — `/shared/apanda/wordle-coord/`.** A parallel
+throughput agent (worktree `…-throughput-20260614`) owns MFU/fwd-bwd profiling AND the first-step hang,
+and PUBLISHES the current best training config. **Before EVERY training launch:** read
+`/shared/apanda/wordle-coord/PROMOTED.json` and use its `config_path` as your trainer `CONFIG_PATH`
+(overlay ONLY science env: `BASELINE_OBJECTIVE=sft_gold`, `GOLD_DATA`, `SAMPLE_EVAL_INTERVAL=0`). Append
+your launches/gates/blockers to `messages.jsonl` and poll it for promotions/replies. If
+`validated_no_hang` is false, do NOT chase the hang yourself — post the blocker and meanwhile expand/
+verify gold coverage + the held-out eval harness. Full protocol: `wordle-coord/README.md`.
+
 **Immediate next experiments (ranked, all set up):**
 1. **Retrieval-targeted SFT** (`…-algosft-4gpu.yaml` + the broad gold) — the live hypothesis. KNOWN
    ISSUE: hangs at the first `forward_backward` (4-GPU EP=4 + fp8 + compiled CE; cold eval=0.443 OK).
