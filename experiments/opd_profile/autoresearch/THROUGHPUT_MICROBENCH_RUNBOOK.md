@@ -96,6 +96,12 @@ Conclusions, in order of importance:
    real grouped-GEMM kernels (`triton`/`native` `torch._grouped_mm`/`quack`,
    default `triton`), so production is on the grouped curve, not the loop floor —
    **do not** regress onto an eager/loop expert path.
+   - Confirmed with the engine's actual production primitive: `torch._grouped_mm`
+     (the `native` backend, SwiGLU gate_up+down fwd+bwd) tracks the `bmm` ceiling
+     within ~1pp at every M — **11.3% vs 11.8% at M=72**, 39% vs 37% at M=512,
+     48% vs 46% at M=4096. So the small-M deficit is **not** a kernel
+     inefficiency; the grouped kernel is already at the ceiling. The only lever is
+     bigger M. (`microbench_moe_gemm.py --grouped-mm`.)
 3. The headline "~1.37% executed MFU" is **student-model FLOPs ÷ total wall time**.
    The FLOP counter counts only the student model, but the 4.46 s wall also pays
    for teacher forward (0.85 s), KL/loss (0.91 s), backward (1.59 s), clear-grad

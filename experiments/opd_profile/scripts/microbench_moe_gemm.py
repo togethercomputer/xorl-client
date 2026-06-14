@@ -78,6 +78,30 @@ def bench_grouped_bmm(m: int, n_experts: int, iters: int, dtype) -> float:
     return _time(run, iters)
 
 
+def bench_grouped_mm(m: int, n_experts: int, iters: int, dtype) -> float:
+    """Production primitive: torch._grouped_mm (cuBLAS/CUTLASS), as the engine's
+    `native` MoE backend uses it. Uniform M per expert (ragged offs, contiguous).
+    """
+    dev = "cuda"
+    total = m * n_experts
+    x = torch.randn(total, H, device=dev, dtype=dtype, requires_grad=True)
+    gate_up = torch.randn(n_experts, H, 2 * I, device=dev, dtype=dtype, requires_grad=True)
+    down = torch.randn(n_experts, I, H, device=dev, dtype=dtype, requires_grad=True)
+    offs = (torch.arange(1, n_experts + 1, device=dev, dtype=torch.int32) * m)
+
+    def run():
+        gu = torch._grouped_mm(x, gate_up, offs=offs)
+        g, u = gu.chunk(2, dim=-1)
+        h = (torch.nn.functional.silu(g) * u).contiguous()
+        out = torch._grouped_mm(h, down, offs=offs)
+        # grouped_mm backward rejects the 0-stride grad from .sum(); use a
+        # contiguous grad_output instead.
+        out.backward(torch.ones_like(out))
+        x.grad = gate_up.grad = down.grad = None
+
+    return _time(run, iters)
+
+
 def bench_loop(m: int, n_experts: int, iters: int, dtype) -> float:
     """Per-expert python loop -- the launch-overhead floor."""
     dev = "cuda"
@@ -111,6 +135,8 @@ def main() -> int:
     ap.add_argument("--iters", type=int, default=20)
     ap.add_argument("--dtype", default="bf16", choices=["bf16", "fp16", "fp32"])
     ap.add_argument("--loop", action="store_true", help="also run per-expert loop floor (slow)")
+    ap.add_argument("--grouped-mm", action="store_true",
+                    help="also run torch._grouped_mm (the engine's native production primitive)")
     ap.add_argument("--target-mfu", type=float, default=0.10)
     ap.add_argument("--output-json", default=None)
     args = ap.parse_args()
@@ -129,7 +155,9 @@ def main() -> int:
     )
 
     rows = []
-    header = f"{'M/exp':>6} {'tok/rank':>9} {'grouped ms':>11} {'TFLOP/s':>9} {'MFU%':>7}"
+    header = f"{'M/exp':>6} {'tok/rank':>9} {'bmm ms':>9} {'bmmMFU%':>8}"
+    if args.grouped_mm:
+        header += f" {'gmm ms':>8} {'gmmMFU%':>8}"
     if args.loop:
         header += f" {'loop ms':>9} {'loopMFU%':>9}"
     print(header, flush=True)
@@ -139,9 +167,15 @@ def main() -> int:
             dt = bench_grouped_bmm(m, n_local, args.iters, dtype)
             tflops, frac = mfu(m, n_local, dt)
             tokens = m * E // TOP_K
-            line = f"{m:>6} {tokens:>9} {1000*dt:>11.3f} {tflops:>9.1f} {100*frac:>7.2f}"
+            line = f"{m:>6} {tokens:>9} {1000*dt:>9.3f} {100*frac:>8.2f}"
             row = {"m_per_expert": m, "tokens_per_rank": tokens, "grouped_ms": 1000 * dt,
                    "grouped_tflops": tflops, "grouped_mfu": frac}
+            if args.grouped_mm:
+                dtg = bench_grouped_mm(m, n_local, args.iters, dtype)
+                tflopsg, fracg = mfu(m, n_local, dtg)
+                line += f" {1000*dtg:>8.3f} {100*fracg:>8.2f}"
+                row["grouped_mm_ms"] = 1000 * dtg
+                row["grouped_mm_mfu"] = fracg
             if args.loop:
                 dtl = bench_loop(m, n_local, max(3, args.iters // 4), dtype)
                 tflopsl, fracl = mfu(m, n_local, dtl)
