@@ -64,51 +64,58 @@ engine venv (`/home/apanda/xorl-internal/.venv`) and the engine worktree on
 `PYTHONPATH` (see Artifacts). These resolve the root-cause question and produce a
 validated, gradient-identical memory fix for the AMDAHL-029..033 blocker.
 
-### Root cause of low MFU = small MoE expert GEMMs (`microbench_moe_gemm.py`)
+### MoE expert-GEMM size sweep (`microbench_moe_gemm.py`)
 
-The student is an A3B MoE. With balanced routing each expert sees only
-`M_per_expert = tokens_in_EP_group * top_k / E` tokens, i.e. a
-`[M, 2048] @ [2048, 512]` GEMM. Sweeping M (grouped `bmm`, the kernel ceiling),
-`MFU = achieved / 989 TF` bf16:
+The student is an A3B MoE. Each expert is a `[M, 2048] @ [2048, 512]` SwiGLU
+FFN where `M_per_expert = tokens_in_EP_group * top_k / E`. Sweeping M
+(grouped `bmm` ceiling; `torch._grouped_mm` = engine `native` primitive;
+per-expert loop floor), `MFU = achieved / 989 TF` bf16, EP=8 local_experts=32:
 
-| M/expert | tokens/rank | grouped MFU (EP=8) | grouped MFU (EP=1) | per-expert **loop** floor |
-|---|---|---|---|---|
-| 8  | 256   | 1.4%  | 2.2%  | 0.07% |
-| 64 | 2048  | 10.8% | 13.9% | 0.53% |
-| **72** | **2304** | **11.7%** | **15.2%** | **0.59%** |
-| 128 | 4096 | 18.8% | 22.8% | 1.05% |
-| 256 | 8192 | 28.7% | 33.6% | 2.12% |
-| 512 | 16384 | 37.0% | 40.9% | 4.22% |
-| 1024 | 32768 | 42.1% | 44.2% | 8.58% |
+| M/expert | grouped `bmm` MFU | `torch._grouped_mm` MFU | per-expert **loop** floor |
+|---|---|---|---|
+| 8  | 1.4%  | 1.3%  | 0.07% |
+| 64 | 11.1% | 10.4% | 0.53% |
+| 128 | 19.0% | 18.9% | 1.05% |
+| 256 | 28.7% | 30.4% | 2.12% |
+| 512 | 37.0% | 39.1% | 4.22% |
+| 1024 | 42.2% | 44.0% | 8.58% |
+| 2048 | 44.6% | 46.1% | 17.2% |
+| 4096 | 45.6% | 48.5% | 32.1% |
 
-Conclusions, in order of importance:
+Conclusions:
 
-1. **It is small GEMMs, and it is fixable.** A grouped expert GEMM crosses 10% MFU
-   at `M=64` (≈2048 real tokens/rank) and reaches **37% at M=512**. The OPD
-   operating point (~2.3k tok/rank → M≈72) sits at ~12-15% on the ideal grouped
-   curve. The lever is **more real tokens per expert per forward**: denser
-   packing, larger microbatch, larger EP group, and fewer DP/dummy ranks. EP
-   *increases* M for fixed per-rank tokens (the all-to-all gathers the EP group's
-   tokens before the expert GEMM), so collapsing to 1 node does NOT shrink M as
-   long as packing stays dense.
-2. **A per-expert Python/loop path would be catastrophic** (0.6% at M=72, ~20×
-   worse than grouped, and ~matches the observed ~1% number). The engine MoE uses
-   real grouped-GEMM kernels (`triton`/`native` `torch._grouped_mm`/`quack`,
-   default `triton`), so production is on the grouped curve, not the loop floor —
-   **do not** regress onto an eager/loop expert path.
-   - Confirmed with the engine's actual production primitive: `torch._grouped_mm`
-     (the `native` backend, SwiGLU gate_up+down fwd+bwd) tracks the `bmm` ceiling
-     within ~1pp at every M — **11.3% vs 11.8% at M=72**, 39% vs 37% at M=512,
-     48% vs 46% at M=4096. So the small-M deficit is **not** a kernel
-     inefficiency; the grouped kernel is already at the ceiling. The only lever is
-     bigger M. (`microbench_moe_gemm.py --grouped-mm`.)
-3. The headline "~1.37% executed MFU" is **student-model FLOPs ÷ total wall time**.
-   The FLOP counter counts only the student model, but the 4.46 s wall also pays
-   for teacher forward (0.85 s), KL/loss (0.91 s), backward (1.59 s), clear-grad
-   (0.59 s), and — at 32 GPUs — an **85% dummy-rank waste** (5 packed rows spread
+1. **CORRECTION (important): the MoE expert GEMM is NOT the bottleneck at the
+   real EP=8 operating point.** `M_per_expert = ep_group_tokens * top_k / E`, and
+   with expert parallelism the all-to-all gathers the WHOLE EP group's tokens
+   before the expert GEMM. The 1-node trainer config
+   (`..._1node_warm009_deepep36.yaml`) is `expert_parallel_size=8`,
+   `data_parallel_shard_size=8`, `moe_implementation=quack`, `ep_dispatch=deepep`
+   ("deepep36" = `deepep_num_sms=36`, **not** EP=36). The full 64-sample OPRD
+   batch is ~71804 real student tokens, so `M ≈ 71804*8/256 ≈ 2244` → **~45% MFU**
+   on the expert GEMM. A small `M≈72` only happens at **EP=1** (pure DP), i.e.
+   `tokens_per_rank/32` — and EP=1 was already tested and lost. An earlier version
+   of this section wrongly mapped the operating point to `M≈72/12%` using EP=1
+   semantics; the corrected number is `M≈2244/~45%`.
+2. The grouped kernel is already at the ceiling: `torch._grouped_mm` (the engine
+   `native` primitive) tracks `bmm` within ~1pp across the whole sweep. So when M
+   *is* small, the deficit is small-M, not a fixable kernel inefficiency — and a
+   per-expert loop would be catastrophic (0.6% at M=72, ~20× worse). **Do not
+   regress onto an eager/loop expert path; do not chase a "better MoE kernel" at
+   the EP=8 operating point — there is no MoE-GEMM win to get there.**
+3. Where small GEMMs *would* bite: EP=1, or very sparse per-rank batches (few
+   real tokens packed). Keep packing dense and EP≥8 and the expert GEMM stays in
+   the 40-45% band. The lever "more tokens/expert" is real but already satisfied
+   at EP=8 — it is NOT the explanation for ~1.37%.
+4. So what IS the ~1.37%? It is **student-model FLOPs ÷ total wall time**, and the
+   model GEMMs (MoE ~45%, lm-head KL ~20% — see below) are fine. The 4.46 s wall
+   is dominated by work that is NOT student-model FLOPs: teacher forward (0.85 s),
+   KL/loss (0.91 s), clear-grad (0.59 s), comms (DeepEP all-to-all), and — at 32
+   GPUs — an **85% dummy-rank waste** (5 packed rows spread
    over 32 DP ranks; `dispatcher_dummy_executed_tokens=425088` of `497280`). So
-   the path to 10%+ is: kill dummy-rank waste (1-node/dense packing) + grow M +
-   trim clear-grad/teacher-recompute wall time.
+   the path to 10%+ is **NOT** a MoE-GEMM change: kill dummy-rank waste
+   (1-node / pack so rows ≈ DP size), cut clear-grad (0.59 s ≈ 13% of wall), and
+   stop recomputing the teacher every step (0.85 s; the OPRD cache should serve
+   it). Keep packing dense so M stays ≥256; that is already true at EP=8.
 
 ### lm-head streaming-KL is a MEMORY problem, not a small-GEMM problem (`microbench_lmhead_kl.py`)
 
@@ -185,6 +192,13 @@ Failed / discarded hypotheses this cycle (recorded so they are not retried):
 - *"Going to 1 node shrinks the MoE GEMMs (smaller M)."* **False** — EP gathers the
   whole EP group's tokens before the expert GEMM, so M depends on packing density,
   not node count. 1 node helps by removing dummy-rank waste, not by changing M.
+- *"Small MoE expert GEMMs (M≈72) are the cause of ~1% MFU."* **False at the EP=8
+  operating point** (this was my first-pass conclusion, corrected same day). M≈72
+  is the EP=1 mapping; with `expert_parallel_size=8` the all-to-all gathers the
+  whole ~71804-token OPRD batch, so M≈2244 → ~45% MFU on the expert GEMM. The
+  small-GEMM curve is real but the stack does not operate on its bad end. The ~1%
+  is student-FLOP ÷ total-wall (teacher fwd + KL + clear-grad + comms) plus the
+  32-GPU dummy-rank waste — a phase-mix/occupancy problem, not a GEMM-size one.
 
 ## Next Throughput Target
 
@@ -219,16 +233,19 @@ on one GPU. The remaining throughput work splits cleanly:
    `opd_vocab_chunk_size: 8192` (candidate `AMDAHL-034`). Expect the lm-head OOM
    to clear (~4-6 GB reclaimed). Capture a real 1-node executed MFU number — this
    is the first true 1-node fwd/bwd data point.
-2. **Grow M to climb the MoE curve.** Once 1 node runs, push real tokens/rank up
-   (denser packing seq_len so packed-row count ≈ DP size → no dummy ranks; larger
-   `opd_microbatch_size`/`opd_prepare_batch_size`). Target M≥256-512 (8k-16k
-   tok/rank) where the grouped expert GEMM is 30-40% MFU. Verify with
-   `microbench_moe_gemm.py` for the chosen token count first (free), then in the
-   trainer.
-3. **Trim non-GEMM wall time.** `clear_gradients_s≈0.59 s` (13% of wall) is pure
-   overhead — check for `set_to_none`/fused zeroing. Teacher forward (0.85 s,
-   3.3× student tokens) is recomputed each step; the OPRD cache is meant to avoid
-   this — confirm it is actually hit, not recomputed.
+2. **Get a per-phase wall breakdown on 1 node, then attack the biggest non-GEMM
+   phase — NOT the MoE GEMM.** The MoE expert GEMM is ~45% MFU at EP=8 and the
+   lm-head KL ~20%; there is no GEMM-size win at this operating point. The wall is
+   eaten by: clear-grad (0.59 s ≈ 13% — check `set_to_none`/fused zeroing first,
+   cheapest possible win), teacher forward (0.85 s — confirm the OPRD cache is hit
+   instead of recomputing the teacher every step), the streaming KL (0.91 s — it
+   recomputes teacher logits 3×; caching teacher logsumexp/logits could cut it),
+   and comms. Keep packing dense (rows ≈ DP size) so there are no dummy ranks and
+   M stays ≥256 — verify with `microbench_moe_gemm.py` for the chosen token count.
+3. **Mind the denominator.** "Executed MFU" is student-model FLOPs over the full
+   fwd/bwd wall (which includes teacher fwd + KL + clear-grad). Report a phase
+   breakdown alongside any MFU number, or the headline will keep looking like a
+   "small-GEMM" problem when it is a phase-mix / dummy-waste problem.
 4. **Only then** confirm a 1-node win on the 4-node trainer-only replay, then a
    short full OPD promotion gate if the batch shape changed.
 
