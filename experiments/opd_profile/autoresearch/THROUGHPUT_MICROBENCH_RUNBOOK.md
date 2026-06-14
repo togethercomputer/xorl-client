@@ -315,8 +315,212 @@ Closed/deprioritized levers from this pass:
   measured negative, irrelevant at EP=8, or science-recipe changes rather than
   throughput fixes.
 
+## 2026-06-14 (cycle 3) — standalone-trainer MFU ceiling, CP verdict, fp32 lm-head memory recipe
+
+**Methodology note (honest).** This cycle did NOT extend the AMDAHL-021 *server-replay*
+ladder directly, for two reasons: (a) the real 1-node OPD *server* `forward_backward`
+is blocked by a rank-0 **dispatch deadlock** (orchestrator→ZMQ→Rank0Protocol never
+broadcasts the fb command at world_size=8; works at ≥2 nodes and for
+`register_session`) — root-caused by the live-slot agent via faulthandler, so the
+1-node server-replay inner loop cannot run regardless of memory; and (b) the work was
+redirected (by the owner) to the MFU-ceiling, CP, and loss-mode-memory questions. So
+the ladder here is the **bare `xorl.cli.train` standalone trainer** (Tier-0 ceiling
+probe in §7e) on the real Qwen3.6 shapes + a single-GPU lm-head loss-mode microbench.
+These directly attack the AMDAHL-029..033 **streaming-KL/lm-head gradient memory**
+blocker the goal names. Full per-attempt detail + raw numbers:
+`/shared/apanda/tput-mine/NOTES.md`. Bench stacks (mine, isolated): `q36-tput-mine`
+(1-node), `q36-tput-2node`, `q36-tput-4node`.
+
+### AMDAHL-021 payload reproduction (re-run this cycle, grounds the memory attack)
+
+Re-ran `audit_forward_backward_denominator.py` on the AMDAHL-021 captured payload
+(`fb_replay/amdahl-021-oprd-prep64-deepep36-strictchunk4.json`) — reproduces its exact
+packed/dummy/valid shape and the low executed-MFU (output:
+`fb_replay/mfu_denominator_audit_cycle3_20260614.json`):
+
+- 22 packed rows @4096 = 73,088 row-padded tokens; +10 dispatcher dummy rows
+  (+34,560 tok) → 107,648 dispatcher-executed student tokens.
+- **3,049 valid target tokens (2.83% of executed)** → **reconstructed executed-MFU
+  = 1.37%** (0.039% valid-scaled), `server_forward_backward_s = 4.46` (4-node replay
+  baseline; loss split fwd 1.60 / bwd 1.58 / clear-grad 0.63 / kl 0.046 s).
+
+This is the prescribed "start from the AMDAHL-021 payload, preserve packed/dummy/valid
+shape, reproduce the low executed-MFU" step. **The memory attack below is at this exact
+payload's lm-head shape:** the streaming-KL/lm-head loss runs over the **3,049 valid
+tokens** at `V=248320, H=2048`, which is precisely the `N=3049` used in the
+`microbench_kl_backends_mem.py` / `validate_lmhead_kl_lowmem.py` comparisons — so the
+lowmem fix and the loss-mode memory table are measured on the AMDAHL-021 lm-head
+gradient state (AMDAHL-033), not a synthetic surrogate. The 1-node *server* replay of
+this payload remains blocked by the orchestrator→rank0 dispatch deadlock (live-slot
+agent), so the lm-head memory blocker is attacked via the single-GPU bare-tensor
+microbench at the payload's shape rather than the server replay.
+
+### Reproduced the low 1-node executed-MFU AND root-caused it (it is NOT GEMM-starving)
+
+Standalone-trainer fwd/bwd MFU at the OPD topology (EP=8, quack, deepep36, recompute,
+synthetic balanced routing, MFU is recompute-fair), sweeping node count / sharding:
+
+| topology | dp_shard | tokens/rank | peak mem | MFU | note |
+|---|---|---|---|---|---|
+| 1-node | 8 | 16,384 | **69 GB** | **~5%** | flat 4.3% (8k) → 5.3% (16k); does NOT climb |
+| 2-node | 16 | 16,384 | 40 GB | **~10.6%** | `nocp_mbs4` best |
+| 4-node | 32 | 16,384 | 28 GB | ~10.0% | `nocp_mbs4` |
+| 4-node | 32 | 32,768 | 39 GB | ~10.5% | `nocp_mbs8` — bigger GEMM ~neutral |
+
+**Root cause of the flat ~5% at 1 node: MEMORY PRESSURE, not small GEMMs.** At
+dp_shard=8 the peak is 69/80 GB (86%), leaving no headroom for FSDP forward-prefetch
+to overlap → comms serialize → ~5% regardless of tokens/rank, async-combine, or
+offload. dp_shard≥16 (≥2 nodes) drops peak to ~40 GB → prefetch overlaps → **2×
+MFU (~10%)**. The model's clean fwd/bwd ceiling is **~10–10.6%** and it **plateaus**
+there (bigger GEMMs/more nodes/CP do not beat it). The lever is *enough FSDP sharding
+for memory headroom*, not node count. (Independently corroborated by the Wordle
+agent's raw-transformer ~9% server-path peak.)
+
+### CP (context/ulysses parallelism) MONOTONICALLY HURTS here — not the lever
+
+| config | MFU |
+|---|---|
+| 2-node no-CP mbs4 | ~10.6% |
+| 2-node CP=2 mbs4 | ~6–7.5% |
+| 2-node CP=2 mbs8 | ~9.4% |
+| 4-node CP=2 mbs8 | ~8.9% |
+| 4-node CP=4 mbs8 | ~6.4% |
+
+CP splits the sequence, but OPD samples are short (~1138 tokens) so there is nothing
+to split; CP only adds all-to-all/all-gather comms. More CP = lower MFU. **Do not use
+CP for this short-sequence MoE.** (offload and `deepep_async_combine` also did not
+help: ~5.5–7.4% and neutral, respectively.)
+
+### fp32 lm-head memory — which loss mode helps (owner directive: keep fp32)
+
+Keep `lm_head_fp32=true` (reverse-KL accuracy on rare near-certain tokens) and pick
+the loss mode that minimizes the 1.89 GiB fp32 `grad_weight` blocker. Single-GPU
+microbench (`microbench_kl_backends_mem.py`, V=248320 H=2048 N=3049, fp32):
+
+| reverse-KL backend | peak (no accum) | peak (grad-accum) | numerics vs fp32 baseline |
+|---|---|---|---|
+| `streaming` (baseline OPD) | 9.63 GB | 13.27 GB | reference |
+| **`streaming_lowmem`** (PR #373) | **5.86 GB** | **7.79 GB** | **bit-exact (max\|Δ\|=0)** |
+| `compiled` / auto_chunker ("fused") | 16.35 GB | OOM / dtype-error | NOT bit-exact (Δkl=2.3e-3) |
+
+**The "fused" compiled/auto_chunker path is WORSE on memory** (1.7× baseline — it still
+does `student_weight.float()` full fp32 copies plus compile/chunk intermediates), is
+not bit-exact, and errors in the grad-accum case. **`streaming_lowmem` is the only mode
+that keeps lm-head fp32 *bit-exact* while cutting memory.** Do NOT drop to bf16-head
+(the Wordle agent's +16% lever) — it carries the rare-token KL accuracy risk the owner
+wants to avoid.
+
+**FSDP-safe by ENGINE DESIGN (definitively resolves the prior "lowmem multi-rank
+unverified / DTensor slicing may break" caveat).** The lm-head weight is a **full
+local tensor at the loss, not a sharded DTensor** — by deliberate engine design, not
+luck: `torch_parallelize.py:381-385` groups `norm + lm_head` into one FSDP unit with
+`reshard_after_forward=False`, "so that when `norm.forward()` runs FSDP all-gathers
+both, and **they stay gathered so external `compute_loss()` can access `lm_head.weight`
+without a redundant all-gather**." The vocab-sharded loss path (`fsdp_sharded_lm_head_loss`)
+is opt-in and requires CP + `dp_size=1`, which OPD does not use. So the streaming KL
+(baseline AND lowmem) always slices a **full local** `student_weight[start:end]` — never
+a DTensor. (This also corrects Agent A's suspected mechanism: it is the norm+lm_head
+FSDP grouping that keeps the weight gathered, not `weight.float()`.) Additionally the
+wired mode uses `inplace_weight_grad=False` → returns a native-dtype grad through
+standard autograd (same reduction path as baseline), so even the grad accumulation is
+identical. Confirmed bit-exact in this mode (`validate_lmhead_kl_lowmem.py --no-inplace
+--preexisting-grad`: max|Δ|=0, saves 5.59 GB). A 4-node trainer-only replay with
+`opd_streaming_lowmem=true` is now only optional belt-and-suspenders, not a correctness
+gate.
+
+**Memory recipe (keep fp32):** `opd_kl_backend=streaming` + `lm_head_fp32=true` +
+`opd_streaming_lowmem=true` (inplace off). Bit-exact, ~5.6 GB saved, FSDP-safe.
+
+### Convergent production recipe toward the ~10% ceiling (this cycle + live-slot + Wordle agents)
+
+≥2 nodes (memory headroom for FSDP prefetch + sidesteps the 1-node fb dispatch
+deadlock) · no-CP · dense `mbs4` · lm-head fp32 + `streaming_lowmem` · 0-dummy packing
+(pack so rows divide dp_size) · cache the teacher forward. The model ceiling (~10.6%)
+is proven; OPD reaches it by removing these server overheads (all engine/recipe work,
+targets now precise). Open nice-to-have: confirm `streaming_lowmem` on the 4-node
+trainer-only replay (the working multi-rank fb) before promoting PR #373.
+
+## 2026-06-14 (cycle 4, overnight, Agent #1) — lm-head KL engine work
+
+Goal this cycle: engine changes to raise MFU, prove 10% at 4-node. DeepEP
+`low_latency_mode` was triaged OUT first: it is decode-oriented (fixed-size RDMA
+buffers, FP8, forward-only) and **OPD is FP8-off**, so the all-to-all already
+sits at ~19% (Wordle's own FP8-off result), not the bottleneck. Refocused on the
+two real OPD-specific costs: the full-vocab KL on the giant lm-head, and the
+full-lm-head FSDP all-gather memory blocker.
+
+**lm-head KL backend comparison** (1-GPU microbench, V=248320 H=2048, fp32 lm-head,
+`compare_kl_backends.py`): at N=8192 fwd+bwd —
+`compiled` 138 ms / **19.1 GB** (materializes full [N,V] logits; `num_chunks` has
+no effect — auto_chunker not reducing memory in torch 2.10); `streaming` 303 ms /
+10.0 GB; `streaming_lowmem` 311 ms / **9.45 GB** (leanest). vc=32768 beats 65536 on
+memory at equal speed. So `compiled` is fast-but-hungry; streaming variants are
+slow-but-lean. (Consistent with the runbook note that KL *compute* is tiny at the
+current limit24 batch — this matters only once the batch grows.)
+
+**One-pass fused streaming reverse-KL** — landed as PR #374
+(branch `throughput/opd-fused-kl`). The streaming forward did 2 vocab passes
+(logsumexp + KL); fused to 1 via `KL = A/Z_s - logZ_s + logZ_t`,
+`A = Σ exp(s_v-s_max)(s_v-t_v)` (online-accumulable). Backward untouched →
+gradient-identical. Validated vs brute-force full-logit reference (kl rel 2.7e-4,
+grad rel 1.2e-4): **~23% faster** fwd+bwd (315→243 ms @ N=8192), same 8.0 GB peak.
+`validate_onepass_kl.py`. NB: a side win, not the MFU lever (KL compute is small
+at limit24).
+
+**Vocab-parallel reverse-KL kernel** — the real lever for the all-gather blocker.
+Validated, branch `throughput/opd-vocab-parallel-kl` (`vocab_parallel_reverse_kl.py`
++ multi-process gloo test `test_vocab_parallel_reverse_kl.py`): each rank uses only
+its [V/world,H] lm-head shard, computes full-vocab KL via all_reduce of tiny [N,1-3]
+stats — **no full lm-head, no full logits anywhere**, and each rank's logits are
+world× smaller (one fast matmul, no chunk loop). Matches the full-vocab reference to
+float32 precision (kl rel 3e-5, grad rel 1e-6) across 4 ranks.
+
+**Integration constraint discovered (the hard part, NOT yet wired):** under FSDP2
+the lm-head shard group ALSO data-shards the tokens — each rank has different tokens
+*and* a different vocab slice, which is the wrong layout for vocab-parallel. The fix
+is to **all_gather hidden states (cheap: weight 1.89 GB ≫ activations ~72 MB), keep
+the weight sharded** — i.e. invert FSDP's gather-weight/shard-activation for the
+lm-head only. Then VP-KL applies directly and comms drop ~12×. The remaining risk is
+the autograd: the activation all_gather must inject grad only into the LOCAL token
+slice (no double-count), and the lm-head shard grad must be supplied to FSDP2 without
+fighting its gather/reduce-scatter hooks. This is the next engine step; the kernel is
+de-risked. Skip `_lm_head_forward_anchor`'s gather on this path.
+
+**Scale note for the 10%-at-4-node goal:** the blockers differ by scale. 1-node is
+gather-blocked (the above). 4-node is UNDER-FILL-blocked: the 64-prompt OPRD batch
+packs to ~22 real rows spread over 32 ranks → heavy dummy waste, not the lm-head
+gather. The 4-node MFU lever is feeding (bigger prepare batch / more prompts so rows
+divide 32), a recipe/batching change — distinct from the 1-node memory fix.
+
+**LIVE 1-node trainer-replay evidence (2026-06-14 ~10:5xZ, er-opd-tput-apanda-0614,
+8 GPU, expandable_segments ON, base config recompute_before_dispatch + compiled KL,
+amdahl-031 capture).** Steady-state `server_forward_backward` mean over a `--limit-data`
+sweep (3 iters, 1 warmup each):
+
+| limit-data | fb wall | model_fwd | backward | kl_compute |
+|---|---|---|---|---|
+| 8  | 4.93 s | 0.71 s | 1.91 s | 0.000 s |
+| 16 | 4.88 s | 0.66 s | 2.09 s | 0.000 s |
+| 24 | 5.06 s | 0.71 s | 2.49 s | 0.09 s |
+
+**The fb wall is ~FLAT (4.9–5.1 s) while the data triples (8→24 datums).** The fb is
+fixed-overhead / dummy-padding dominated, NOT data-proportional, at these batches: real
+datums fill otherwise-padded/dummy slots almost for free. So throughput (datums/s) and
+MFU climb ~LINEARLY with batch size up to the memory cap — limit8→24 is ~3× the
+throughput at the same wall. Extrapolating, fitting full prep64 (64 datums) at ~the same
+~5 s would be ~2.7× the MFU of limit24 just from filling the pack. The cap is the
+lm-head FSDP all-gather (full prep64 OOMs; reproduced live — a too-big capture OOM'd
+mid-DeepEP-dispatch → rank desync → "DeepEP CPU recv timeout" + CUDA crash). KL compute
+is confirmed negligible (0.00–0.09 s), and clear_gradients (~1.28 s, ~25% at limit24) is
+a replay artifact (forced per-fb; amortized over grad-accum in real training; already
+`set_to_none`). **Net: the #1 1-node MFU lever is raising the memory cap so a bigger
+batch fits — exactly what the validated vocab-parallel reverse-KL kernel enables (drop
+the full lm-head gather). The integration is the next deep change (task #13).**
+
 ## Do Not Spend The Next Cycle On
 
+- Context/ulysses parallelism (CP) for this short-sequence MoE — measured to hurt
+  monotonically (2-node CP2 ~7%, 4-node CP4 ~6.4% vs no-CP ~10%).
 - Adding trainer nodes before the 1-node lm-head all-gather is fixed.
 - Full OPD science launches as the first test.
 - KL/top-k loss micro-optimizations; KL compute was tiny in replay.
@@ -341,6 +545,18 @@ Closed/deprioritized levers from this pass:
 - Candidate YAMLs:
   `experiments/opd_profile/autoresearch/candidates/AMDAHL-021-*.yaml`
   through `AMDAHL-035-*.yaml`
+
+### cycle-3 artifacts (2026-06-14) — MFU ceiling + loss-mode memory
+
+- KL-backend fp32 memory comparison bench:
+  `experiments/opd_profile/scripts/microbench_kl_backends_mem.py` (streaming vs
+  streaming_lowmem vs compiled/auto_chunker; the loss-mode-memory table above).
+- Standalone-trainer MFU sweep (bare `xorl.cli.train`, OPD topology), configs +
+  per-rank run.sh + results under `/shared/apanda/tput-mine/` (`configs/`,
+  `NOTES.md` = full per-attempt ledger). Bench stacks: pods `q36-tput-mine`,
+  `q36-tput-2node`, `q36-tput-4node` (control dirs `/shared/opd-control/q36-tput-*`).
+- Engine worktree with research branch + lowmem cherry-pick (for a real-OPD replay):
+  `/home/apanda/xorl-opd-mine-tput` (`throughput/opd-mine-tput-20260614`).
 
 ### 1-node microbench ladder artifacts (2026-06-14)
 
