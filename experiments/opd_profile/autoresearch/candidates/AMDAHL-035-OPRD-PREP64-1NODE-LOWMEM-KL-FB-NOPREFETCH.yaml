@@ -1,15 +1,14 @@
-id: AMDAHL-034-OPRD-PREP64-1NODE-LOWMEM-KL-FB-REPLAY
+id: AMDAHL-035-OPRD-PREP64-1NODE-LOWMEM-KL-FB-NOPREFETCH
 base_config: AM
-slug: amdahl-034-oprd-prep64-1node-lowmem-kl-fb-replay
-buffer_label: amdahl-034-oprd-prep64-1node-lowmem-kl-fb-replay
-# 1-node retry of AMDAHL-033 with the validated, gradient-identical lm-head
-# streaming-KL memory fix. AMDAHL-033 reached the streaming-KL backward then
-# OOMed on the full fp32 lm-head grad allocation. The microbench ladder
-# (2026-06-14) root-caused that to the full fp32 lm-head weight copies + full
-# fp32 grad_weight buffer (~5.7 GB at N=3049, 10.7 GB with grad-accum) and
-# validated `opd_streaming_lowmem` (per-chunk fp32 upcast, native-dtype grad):
-# 4.6-6.5 GB reclaimed, bit-exact gradients (validate_lmhead_kl_lowmem.py).
-# `opd_vocab_chunk_size: 8192` is a free, numerics-neutral ~2.2 GB transient cut.
+slug: amdahl-035-oprd-prep64-1node-lowmem-kl-fb-noprefetch
+buffer_label: amdahl-035-oprd-prep64-1node-lowmem-kl-fb-noprefetch
+# 1-node retry of AMDAHL-034 with manual FSDP module prefetch disabled.
+# AMDAHL-034 used the validated, gradient-identical lm-head lowmem path and
+# reached FSDP backward prefetch, then OOMed on a ~970 MiB all-gather with
+# <1 GiB free on most ranks. The corresponding engine code uses
+# enable_forward_prefetch as the gate for both set_modules_to_forward_prefetch
+# and set_modules_to_backward_prefetch, so this is the narrowest fit probe for
+# that observed failure.
 #
 # This is a TOOLING/MEMORY probe to get the FIRST real 1-node executed-MFU
 # number, not a science candidate. Requires the engine on
@@ -17,7 +16,7 @@ buffer_label: amdahl-034-oprd-prep64-1node-lowmem-kl-fb-replay
 # Verify the two new knobs actually reach loss_fn_params (model_runner reads
 # params.get("opd_streaming_lowmem") and params.get("opd_vocab_chunk_size"))
 # before trusting a null result.
-trainer_config: configs/opd_profile/qwen3_6_35b_a3b_opd_opdb_1node_warm009_deepep36.yaml
+trainer_config: configs/opd_profile/qwen3_6_35b_a3b_opd_opdb_1node_warm009_deepep36_noprefetch.yaml
 gdn_backend: fla
 score_mode: pause_vs_nopause
 score_min_control_n: 100

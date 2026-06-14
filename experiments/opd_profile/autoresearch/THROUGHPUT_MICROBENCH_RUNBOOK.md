@@ -163,8 +163,10 @@ clean signal). Wired through `model_runner` as `opd_streaming_lowmem`; unit test
 
 ## Failed 1-Node Attempts
 
-The desired cheap target is one-node OPD replay, but the direct path is currently
-blocked by memory. The failures are useful because they locate the next work:
+The desired cheap target is one-node OPD replay. The direct full-prep64 path is
+currently blocked by the full lm-head FSDP all-gather, but smaller rungs fit and
+are sufficient for the next inner loop. The failures are useful because they
+locate the next work:
 
 | candidate | result |
 |---|---|
@@ -174,9 +176,29 @@ blocked by memory. The failures are useful because they locate the next work:
 | AMDAHL-032 | Selected hooks removed full hidden retention, but all-layer prep64 still OOMed in model forward/final-norm. |
 | AMDAHL-033 | Every-4th-layer cache + selected hooks reached streaming-KL backward, then OOMed on full lm-head gradient allocation in `opd_streaming_kl.py`. |
 | AMDAHL-033 KL staging retry | Still OOMed because current OPD uses `lm_head_fp32=true`; the weight was already fp32 before grad allocation. |
-| AMDAHL-033 root-caused + fixed (2026-06-14) | The blocker is concretely the fp32 lm-head copies + full fp32 `grad_weight` buffer (~5.7 GB at N=3049, 10.7 GB with grad-accum). `streaming_reverse_kl_lowmem` (per-chunk fp32 upcast, native-dtype grad, in-place optional) reclaims 4.6-6.5 GB **gradient-identical** — validated 1-GPU. Still needs an 8-GPU 1-node trainer run to confirm it clears the OOM end-to-end (blocked on free GPUs, not on code). |
+| AMDAHL-033 root-caused + fixed (2026-06-14) | The blocker was concretely the fp32 lm-head copies + full fp32 `grad_weight` buffer (~5.7 GB at N=3049, 10.7 GB with grad-accum). `streaming_reverse_kl_lowmem` (per-chunk fp32 upcast, native-dtype grad, in-place optional) reclaims 4.6-6.5 GB **gradient-identical** — validated 1-GPU and then confirmed by AMDAHL-034 on the 1-node slot. |
+| AMDAHL-034 (2026-06-14, cycle 2) | **RAN** (concurrent agent, ~04:31Z). The lowmem fix **WORKED end-to-end: it cleared the AMDAHL-033 lm-head grad OOM** — the replay got *past* streaming-KL backward into FSDP backward prefetch, then OOMed on a **~970 MiB all-gather with <1 GiB free per rank** (a NEW, different blocker than 033). Replay output `fb_replay/replay-amdahl034-1node-lowmem-serveronly-6x.jsonl` is empty (OOM before any row). → AMDAHL-035 disables FSDP fwd/bwd prefetch (`enable_forward_prefetch` gate) as the narrowest fit probe. The lowmem-fix validation (AMDAHL-033 root-cause) is now confirmed on real 1-node hardware; the remaining 1-node fit gap is FSDP all-gather headroom, not the lm-head grad. |
+| AMDAHL-035 full / limit32 (2026-06-14 live slot) | `enable_forward_prefetch=false` disables XORL manual module prefetch lists but does **not** remove PyTorch FSDP2's pre-backward unshard. Full prep64 and `--limit-data 32` still OOM on the same ~970 MiB all-gather. |
+| AMDAHL-035 limit8 / limit16 / limit24 | Fit on the 1-node slot and produced phase rows. `limit24` is the current largest fitting rung: `server_forward_backward_s=2.8989`, `forward=0.7920`, `backward=1.1761`, `clear=0.3815`, `model_forward=0.6562`, `loss_compute=0.1354`, `oprd_layer_fetch=0.0859`, `valid_tokens=160`. |
+| AMDAHL-035 limit28 | Before the zero-anchor fix, it got past packing (`28` samples -> `10` packed batches, 75.9% utilization, 31104 tokens) and OOMed on `student_weight.float().sum() * 0.0`, which materialized a full fp32 lm-head copy. |
+| AMDAHL-036 limit28 anchorfix | Engine commit `e123b782` fixed the full-fp32 zero anchor and passed unit tests, but `limit28` then reached the same ~970 MiB lm-head/FSDP all-gather. This isolates the remaining blocker to the full lm-head module unshard, not the lowmem KL path or zero anchors. |
 
 Failed / discarded hypotheses this cycle (recorded so they are not retried):
+
+- *"clear-grad (0.59 s) can be cut with `set_to_none`/fused zeroing."* **Closed** —
+  `model_runner` already calls `zero_grad(set_to_none=True)` everywhere
+  (`4020/4024/4256/4260`). The 0.59 s is sync/allocator attribution at the backward
+  tail, not zeroing work; there is no fused-zeroing win to get.
+- *"The teacher-forward (0.85 s) bucket is wasted recompute that the OPRD cache can
+  remove."* **Already removed in AMDAHL-033/034** — with `opd_oprd_cache_backend:
+  sglang` the client sets `oprd_trainer_forward = False`
+  (`on_policy_distillation.py:1643`) and the trainer fetches the every4 cache. So
+  this bucket is not a remaining lever in the every4 config; do not re-attack it.
+- *"Fuse the streaming-KL forward to one pass (cache the logsumexp) to cut the KL."*
+  **Deprioritized** — algebraically valid (single-pass `KL = C/Z_s − s_logz +
+  t_logz`, ~25% of the KL matmul) but NOT bit-exact (~1e-6 drift → needs gating)
+  and worth only ~0.03 s (KL is ~0.12 s fwd+bwd in isolation). The backward must
+  recompute teacher logits regardless. The KL's value is its memory fix, not latency.
 
 - *"The lm-head streaming KL is a small-GEMM / low-MFU hotspot."* **False** — it
   runs 20%+ MFU at realistic N (the V=248320 dimension keeps the GEMM fat). It is
@@ -200,63 +222,102 @@ Failed / discarded hypotheses this cycle (recorded so they are not retried):
   is student-FLOP ÷ total-wall (teacher fwd + KL + clear-grad + comms) plus the
   32-GPU dummy-rank waste — a phase-mix/occupancy problem, not a GEMM-size one.
 
-## Next Throughput Target
+## Current 1-Node Target (2026-06-14 Live Slot Validation)
 
-Build a **1-node fwd/bwd microbench ladder** that starts cheap and only adds OPD
-fidelity when needed:
+The cheap throughput inner loop is real now: use the reprogrammable slot
+`er-opd-q36-35b-slots` and replay the captured fwd/bwd payload through the
+trainer API on **one node**. Do not move back to 32 GPUs just to make the payload
+fit. The point of this track is to remove the 1-node memory/phase-mix blockers
+first, then promote.
 
-1. Bare 1-node synthetic `xorl.cli.train` sweep to find the tokens/rank knee for
-   this model, balanced MoE routing, and checkpoint family. This is a ceiling
-   probe, not a proof of OPD behavior.
-2. 1-node bare-tensor replay from the AMDAHL-021 payload: bypass HTTP/server
-   request parsing if needed, but preserve packed rows, dummy-row participation,
-   valid-token sparsity, and student-token shapes.
-3. Add trainer-side OPRD teacher-forward/cache behavior.
-4. Add streaming KL/lm-head gradient behavior in the smallest sharded/chunked
-   form that reproduces the memory/latency bucket.
-5. Only after the 1-node reproducer shows a real win, confirm on the 4-node
-   trainer-only replay, then on a short full OPD promotion gate if the generated
-   batch shape changed.
+Validated live setup:
 
-The likely next code target is the lm-head/streaming-KL memory path that blocked
-AMDAHL-033. Prefer sharded or chunked vocab-parallel OPD KL weight-gradient
-handling over recipe changes. `lm_head_fp32=false` may be a fit probe, but it is a
-numerics change and needs static/K3 gating before promotion.
+- Engine: `/home/apanda/xorl-opd-throughput-20260614`, branch
+  `throughput/opd-lmhead-moe-gemm-20260614`, PR #373.
+- Client: `/home/apanda/xorl-opd-prefill`, branch `exp/opd-prefill`.
+- Infra: `/home/apanda/xorl-infra`, branch `opd-battery-consolidation`.
+- Slot: `er-opd-q36-35b-slots`, role `trainer-head`.
+- Capture:
+  `/shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/fb_replay/amdahl-031-oprd-prep64-deepep36-1node-sglangcache-every4.json`.
+- Replay flags:
+  `--loss-param opd_streaming_lowmem=true --loss-param opd_vocab_chunk_size=8192`.
+- Config:
+  `configs/opd_profile/qwen3_6_35b_a3b_opd_opdb_1node_warm009_deepep36_noprefetch.yaml`.
 
-### Updated next steps (2026-06-14, after the microbench ladder)
+### What The Live Slot Proved
 
-The memory blocker is now root-caused and a gradient-identical fix is validated
-on one GPU. The remaining throughput work splits cleanly:
+1. `opd_streaming_lowmem` cleared the AMDAHL-033 full lm-head grad OOM on real
+   1-node hardware. The remaining failure moved later, into FSDP all-gather.
+2. `enable_forward_prefetch=false` is not enough. It disables XORL manual module
+   prefetch lists, but PyTorch FSDP2 still performs a pre-backward unshard.
+3. Full prep64 and `--limit-data 32` fail on a ~970 MiB all-gather with less than
+   1 GiB free per rank. `970 MiB ~= 248320 * 2048 * 2 bytes`, i.e. one full bf16
+   lm-head shard/materialization boundary.
+4. `--limit-data 24` is the largest fitting rung today and is the right profiling
+   rung until the all-gather is removed.
+5. `--limit-data 28` exposed and then validated a separate zero-anchor bug:
+   `student_weight.float().sum() * 0.0` materialized a full fp32 lm-head copy
+   (~1.89 GiB). Engine commit `e123b782` replaces that with scalar-slice fp32
+   anchors in `model_runner.py` and `opd_loss.py`; after the fix, `limit28`
+   reaches the same ~970 MiB all-gather instead of dying at the anchor.
 
-1. **Unblock + measure 1 node (gated on 8 free GPUs).** Re-run the AMDAHL-033
-   every-4th-layer config with `opd_streaming_lowmem: true` and
-   `opd_vocab_chunk_size: 8192` (candidate `AMDAHL-034`). Expect the lm-head OOM
-   to clear (~4-6 GB reclaimed). Capture a real 1-node executed MFU number — this
-   is the first true 1-node fwd/bwd data point.
-2. **Get a per-phase wall breakdown on 1 node, then attack the biggest non-GEMM
-   phase — NOT the MoE GEMM.** The MoE expert GEMM is ~45% MFU at EP=8 and the
-   lm-head KL ~20%; there is no GEMM-size win at this operating point. The wall is
-   eaten by: clear-grad (0.59 s ≈ 13% — check `set_to_none`/fused zeroing first,
-   cheapest possible win), teacher forward (0.85 s — confirm the OPRD cache is hit
-   instead of recomputing the teacher every step), the streaming KL (0.91 s — it
-   recomputes teacher logits 3×; caching teacher logsumexp/logits could cut it),
-   and comms. Keep packing dense (rows ≈ DP size) so there are no dummy ranks and
-   M stays ≥256 — verify with `microbench_moe_gemm.py` for the chosen token count.
-3. **Mind the denominator.** "Executed MFU" is student-model FLOPs over the full
-   fwd/bwd wall (which includes teacher fwd + KL + clear-grad). Report a phase
-   breakdown alongside any MFU number, or the headline will keep looking like a
-   "small-GEMM" problem when it is a phase-mix / dummy-waste problem.
-4. **Only then** confirm a 1-node win on the 4-node trainer-only replay, then a
-   short full OPD promotion gate if the batch shape changed.
+Fit ladder from the live slot:
 
-Do **not** treat `opd_streaming_lowmem` as a numerics change — it is bit-exact vs
+| replay | result | mean server fwd/bwd | notes |
+|---|---:|---:|---|
+| `limit8` | fit | `2.2370 s` | `valid_tokens=68`; forward/backward/clear `0.5749 / 0.8887 / 0.3894 s`. |
+| `limit16` | fit | `2.2075 s` | `valid_tokens=105`; forward/backward/clear `0.4925 / 0.8663 / 0.3656 s`. |
+| `limit24` | fit | `2.8989 s` | `valid_tokens=160`; packed `24 -> 8` rows, 81.2% utilization, 26624 tokens; forward/backward/clear `0.7920 / 1.1761 / 0.3815 s`. |
+| `limit28` pre-anchor | fail | n/a | OOM on full fp32 zero anchor (`student_weight.float().sum()`). |
+| `limit28` post-anchor | fail | n/a | OOM on ~970 MiB full lm-head FSDP all-gather. |
+| `limit32` | fail | n/a | Same ~970 MiB full lm-head FSDP all-gather. |
+| `limit64` / full prep64 | fail | n/a | Same all-gather class; lowmem KL itself is no longer the first OOM. |
+
+### Next Engineering Target
+
+Attack the full lm-head module unshard. The suspected edge is
+`_lm_head_forward_anchor(hidden_states, student_lm_head)`: even though streaming
+OPD KL consumes the lm-head weight tensor directly, this one-token module forward
+exists to preserve graph/FSDP hook ordering and appears to force the full lm-head
+unshard. The next candidate should be an opt-in probe that either:
+
+1. skips/replaces `_lm_head_forward_anchor` for the streaming OPD KL path with a
+   graph edge that does not call `student_lm_head.forward`, or
+2. implements true sharded/vocab-parallel OPD KL weight-gradient handling so the
+   full lm-head is never materialized on a rank.
+
+Promotion order:
+
+1. Re-run `limit28`; it must get past the current all-gather.
+2. Re-run `limit32`, then full `prep64`.
+3. Capture 6 replay rows on full prep64 and report phase breakdown plus executed
+   MFU.
+4. Only after full prep64 fits and improves on one node, promote to 4-node replay
+   to measure scaling/dummy-rank behavior. Do not add nodes to hide the 1-node
+   lm-head all-gather.
+
+Do **not** treat `opd_streaming_lowmem` as a numerics change: it is bit-exact vs
 the current fp32 path. The in-place-`.grad` mode of the lowmem Function is OFF in
 the `model_runner` wiring (returns a native-dtype grad, standard autograd); flip
 it on only after checking FSDP/DTensor `.grad` semantics.
 
+Closed/deprioritized levers from this pass:
+
+- `enable_forward_prefetch=false`: tried; does not remove the FSDP2 all-gather.
+- clear-grad/fused zeroing: `model_runner` already uses
+  `zero_grad(set_to_none=True)`; the bucket is sync/allocator attribution, not
+  literal zeroing work.
+- teacher-forward recompute: with `opd_oprd_cache_backend: sglang`, the trainer
+  fetches every-4th-layer cache instead of running trainer-side teacher forward.
+- KL forward fusion: algebraically possible but not bit-exact and worth only
+  about 0.03 s in the isolated bench; the KL's value here is the memory fix.
+- small MoE GEMM, EP=1, no-checkpoint, pack2304, pause-token trimming: already
+  measured negative, irrelevant at EP=8, or science-recipe changes rather than
+  throughput fixes.
+
 ## Do Not Spend The Next Cycle On
 
-- Adding trainer nodes.
+- Adding trainer nodes before the 1-node lm-head all-gather is fixed.
 - Full OPD science launches as the first test.
 - KL/top-k loss micro-optimizations; KL compute was tiny in replay.
 - Pause-token trimming as a throughput fix; that is a science recipe change.
@@ -279,7 +340,7 @@ it on only after checking FSDP/DTensor `.grad` semantics.
   `experiments/opd_profile/scripts/audit_forward_backward_denominator.py`
 - Candidate YAMLs:
   `experiments/opd_profile/autoresearch/candidates/AMDAHL-021-*.yaml`
-  through `AMDAHL-034-*.yaml`
+  through `AMDAHL-035-*.yaml`
 
 ### 1-node microbench ladder artifacts (2026-06-14)
 
@@ -293,10 +354,16 @@ it on only after checking FSDP/DTensor `.grad` semantics.
   `/shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/microbench/`
   (`moe_gemm_ep8_20260614.json`, `moe_gemm_ep1_20260614.json`,
   `lmhead_kl_fp32_20260614.json`, `lmhead_kl_bf16_20260614.json`,
-  `lmhead_kl_fp32_preexist_20260614.json`)
+  `lmhead_kl_fp32_preexist_20260614.json`). Cycle-2 reproduction (2026-06-14
+  ~04:31Z, confirms committed `61c90e6e` reproduces exactly):
+  `moe_gemm_ep8_repro_20260614.json`, `lmhead_kl_fp32_repro_20260614.json`,
+  `lmhead_kl_fp32_preexist_repro_20260614.json`.
 - Engine fix branch: `xorl-internal` `throughput/opd-lmhead-moe-gemm-20260614`
   off `origin/apanda-dev @ 609bed76` (worktree
-  `/home/apanda/xorl-opd-throughput-20260614`). Files:
+  `/home/apanda/xorl-opd-throughput-20260614`). Commits:
+  `61c90e6e` lowmem streaming reverse-KL,
+  `a4b0ec48` streaming diagnostics dtype-match,
+  `e123b782` scalar-slice fp32 zero anchors. Files:
   `src/xorl/ops/loss/opd_streaming_kl.py` (`streaming_reverse_kl_lowmem_function`),
   `src/xorl/ops/loss/opd_loss.py` (`streaming_lowmem` param),
   `src/xorl/server/runner/model_runner.py` (`opd_streaming_lowmem` plumbing),
@@ -304,9 +371,21 @@ it on only after checking FSDP/DTensor `.grad` semantics.
 - Run recipe (single GPU):
   `CUDA_VISIBLE_DEVICES=<free> PYTHONPATH=/home/apanda/xorl-opd-throughput-20260614/src
   /home/apanda/xorl-internal/.venv/bin/python experiments/opd_profile/scripts/<bench>.py`
+- Live 1-node replay outputs:
+  `/shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/fb_replay/replay-amdahl035-limit8-lowmem-noprefetch-serveronly-3x.jsonl`,
+  `/shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/fb_replay/replay-amdahl035-limit16-lowmem-noprefetch-serveronly-3x.jsonl`,
+  `/shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/fb_replay/replay-amdahl035-limit24-lowmem-noprefetch-serveronly-3x.jsonl`,
+  `/shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/fb_replay/replay-amdahl035-limit28-lowmem-noprefetch-serveronly-3x.jsonl`
+  (pre-anchor fail), and
+  `/shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/fb_replay/replay-amdahl036-limit28-anchorfix-lowmem-noprefetch-serveronly-3x.jsonl`
+  (post-anchor all-gather fail).
+- Live 1-node server log dirs:
+  `/shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260614T043652Z-serveronly-configAMDAHL-035-OPRD-PREP64-1NODE-LOWMEM-KL-FB-NOPREFETCH`,
+  `/shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260614T044158Z-serveronly-configAMDAHL-035-OPRD-PREP64-1NODE-LOWMEM-KL-FB-NOPREFETCH`, and
+  `/shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260614T045116Z-serveronly-configAMDAHL-035-OPRD-PREP64-1NODE-LOWMEM-KL-FB-NOPREFETCH`.
 
 ## Next Agent Prompt
 
 ```text
-/goal Work on OPD filler-token throughput from @experiments/opd_profile/autoresearch/THROUGHPUT_MICROBENCH_RUNBOOK.md. Start in /home/apanda/xorl-opd-prefill. Do not launch a full OPD science run first and do not require 32 H100s for the inner loop. Build/repair the 1-node fwd/bwd microbenchmark ladder: start from the AMDAHL-021 captured payload, preserve the packed/dummy/valid-token shape, reproduce the low executed-MFU behavior on one node, then attack the memory blocker from AMDAHL-029..033, especially streaming-KL/lm-head gradient state. Use the existing 4-node trainer-only replay only as a fidelity check after a 1-node candidate shows a real win. Record every attempt and failed hypothesis back into this runbook.
+/goal Work on OPD filler-token throughput from @experiments/opd_profile/autoresearch/THROUGHPUT_MICROBENCH_RUNBOOK.md. Start in /home/apanda/xorl-opd-prefill. Use the one-node reprogrammable slot `er-opd-q36-35b-slots` for the inner loop; do not launch a full OPD science run first and do not require 32 H100s to make progress. Current state: PR #373 has the lowmem KL, diagnostics dtype, and zero-anchor fixes; `--limit-data 24` is the largest fitting 1-node replay; `limit28`, `limit32`, and full prep64 fail on a ~970 MiB full lm-head FSDP all-gather after lowmem KL has already cleared the earlier lm-head grad OOM. First target: remove/replace `_lm_head_forward_anchor` for streaming OPD KL or implement true sharded/vocab-parallel OPD KL so `limit28 -> limit32 -> prep64` fit on one node. Do not retry EP=1, no-checkpoint, pack2304, clear-grad zeroing, small MoE GEMM, or KL micro-opts without new evidence. Record every run and failed hypothesis back into this runbook.
 ```

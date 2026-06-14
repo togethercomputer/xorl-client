@@ -47,6 +47,29 @@ def _load_capture(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     return payload, request
 
 
+def _parse_loss_param(value: str) -> tuple[str, Any]:
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("--loss-param must be KEY=VALUE")
+    key, raw = value.split("=", 1)
+    key = key.strip()
+    if not key:
+        raise argparse.ArgumentTypeError("--loss-param key must be non-empty")
+    raw = raw.strip()
+    lowered = raw.lower()
+    if lowered == "true":
+        parsed: Any = True
+    elif lowered == "false":
+        parsed = False
+    elif lowered in {"none", "null"}:
+        parsed = None
+    else:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = raw
+    return key, parsed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--capture", required=True, type=Path)
@@ -62,6 +85,12 @@ def main() -> int:
         default=1,
         help="Repeat the captured data list in memory before each replay call. Throughput-only; do not use for correctness.",
     )
+    parser.add_argument(
+        "--limit-data",
+        type=int,
+        default=0,
+        help="Replay only the first N captured datums before repeat-data. Throughput fit-ladder only.",
+    )
     parser.add_argument("--xorl-client-path", default="/home/apanda/xorl-client")
     parser.add_argument("--output-jsonl", type=Path, default=None)
     parser.add_argument(
@@ -73,6 +102,13 @@ def main() -> int:
     parser.add_argument("--skip-session-registration", action="store_true")
     parser.add_argument("--learning-rate", type=float, default=0.0)
     parser.add_argument("--grad-clip-norm", type=float, default=1.0)
+    parser.add_argument(
+        "--loss-param",
+        action="append",
+        type=_parse_loss_param,
+        default=[],
+        help="Override captured loss_fn_params with KEY=VALUE. VALUE is parsed as JSON/bool/null when possible.",
+    )
     args = parser.parse_args()
 
     if args.iterations <= 0:
@@ -81,6 +117,8 @@ def main() -> int:
         raise ValueError("--warmup must be >=0 and < --iterations")
     if args.repeat_data <= 0:
         raise ValueError("--repeat-data must be positive")
+    if args.limit_data < 0:
+        raise ValueError("--limit-data must be non-negative")
 
     _add_xorl_client_path(args.xorl_client_path)
     import xorl_client as tomi  # noqa: PLC0415
@@ -89,10 +127,17 @@ def main() -> int:
     payload, request = _load_capture(args.capture)
     forward_backward_input = request["forward_backward_input"]
     data = forward_backward_input["data"]
+    original_num_datums = len(data)
+    if args.limit_data:
+        if args.limit_data > original_num_datums:
+            raise ValueError(f"--limit-data={args.limit_data} exceeds captured datum count {original_num_datums}")
+        data = data[: args.limit_data]
     if args.repeat_data > 1:
         data = [copy.deepcopy(datum) for _ in range(args.repeat_data) for datum in data]
     loss_fn = forward_backward_input.get("loss_fn", "opd_loss")
     loss_fn_params = copy.deepcopy(forward_backward_input.get("loss_fn_params") or {})
+    for key, value in args.loss_param:
+        loss_fn_params[key] = value
     if not args.no_clear_gradients:
         loss_fn_params["profile_clear_gradients_after_backward"] = True
         loss_fn_params["opd_profile_timings"] = True
@@ -179,6 +224,9 @@ def main() -> int:
         "iterations": args.iterations,
         "warmup": args.warmup,
         "repeat_data": args.repeat_data,
+        "limit_data": args.limit_data,
+        "loss_param_overrides": dict(args.loss_param),
+        "original_num_datums": original_num_datums,
         "num_datums": len(data),
         "mean_api_wall_s": _mean([row["api_wall_s"] for row in measured]),
         "p50_api_wall_s": _p50([row["api_wall_s"] for row in measured]),
