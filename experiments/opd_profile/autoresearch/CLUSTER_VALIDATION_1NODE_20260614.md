@@ -71,6 +71,54 @@ blocker is engine-level fb instability on the 1-node quack/DeepEP/FSDP path, not
 only the lm-head memory. It cannot be root-caused remotely (no `ptrace`/py-spy in
 the non-privileged pod; engine logs go silent at the stall).
 
+## ROOT CAUSE of the 1-node fb stall (2026-06-14, via faulthandler stack dumps)
+
+Used `PYTHONFAULTHANDLER=1` + SIGABRT (no ptrace needed) to dump stacks of the
+stalled ranks. **The 1-node stall is a rank-0 DISPATCH deadlock, NOT a
+compute/NCCL-GEMM/memory problem:**
+
+- **Worker ranks (1-7)** are blocked in `runner_dispatcher.py:321 _worker_event_loop`
+  → `dist.broadcast_object_list(src=0, group=cpu_group)` (Gloo) — waiting for rank 0
+  to broadcast the next command.
+- **Rank 0** is idle in `Rank0Protocol.run()` → asyncio `run_forever` (ZMQ wait) —
+  it is NOT broadcasting.
+- `register_session` dispatched fine (the replay logged "Session registered"), so
+  the rank-0→worker Gloo broadcast handshake works. The **`forward_backward`
+  command is never delivered to rank 0's `_handle_request_rank0` → never broadcast**,
+  so the workers deadlock in `broadcast_object_list`.
+
+So the deadlock is upstream of compute, in the **orchestrator (Engine Core) → ZMQ
+→ Rank0Protocol → `_handle_request_rank0`** path for `forward_backward` on the
+1-node topology (it works at 4 nodes and for `register_session` at 1 node). This
+reframes the entire 1-node blocker: it is a **dispatch/serialization stall**, not
+the small-GEMM / lm-head-memory story. The lm-head OOM is a *separate*, later
+issue that only bites once the fb actually runs (it did, once, at full batch).
+Likely suspects: the fb command/payload broadcast (large pickled OPRD batch) or an
+orchestrator queue/ZMQ handoff that stalls specifically for `forward_backward` at
+world_size=8. Next debug step: faulthandler-dump the **orchestrator/Engine-Core
+process** (not the 8 rank procs) during the stall to see where the fb forward is
+dropped.
+
+## 10% MFU IS ACHIEVED on this model+hardware (q36-tput-2node sweep, 2026-06-14)
+
+A sibling standalone-trainer sweep (`q36-tput-2node`, `xorl.trainers.trainer`,
+2 nodes / 16×H100, Qwen3.6-35B-A3B, synthetic data, lm-head as a separate
+FSDPLinear(2048→248320)) measured config `2node_nocp_mbs4` at **steady-state
+MFU = 0.1057–0.1059 (~10.6%)** (tflops≈104.7, 93k tok/s, 2.35 s/step, peak 40 GB,
+no checkpoint, microbatch 4). **So ≥10% MFU is demonstrably achievable** on this
+exact model+hardware with a clean fwd/bwd training loop — confirming the premise.
+
+**This pins down where OPD's ~1% goes:** it is NOT the model's fwd/bwd ceiling
+(that is ~10.6%). The OPD *server* path adds, on top of the model fwd/bwd:
+trainer-side teacher forward (~0.85 s), streaming-KL/lm-head loss (~0.91 s),
+clear-grad (~0.59 s), weight sync, the 32-GPU dummy-rank waste, AND — at 1 node —
+the orchestrator→rank-0 fb **dispatch deadlock** documented above. To bring OPD
+toward the 10% the model can do: (1) fix the 1-node fb dispatch deadlock; (2) kill
+dummy-rank waste (feeding result above); (3) cut the OPD-loss overhead (cache the
+teacher instead of recomputing; the lm-head memory/KL work); (4) `mbs4`-style
+dense microbatching like the winning sweep config. The standalone-trainer sweep is
+the right Tier-0 ceiling probe and should be the MFU reference going forward.
+
 ## Net status + next steps
 
 - The one clean compute reproduced the **1.89 GiB fp32 lm-head `grad_weight` OOM**
