@@ -6,15 +6,13 @@ and TrainingClient.forward(), as well as the estimate_datum_bytes fix.
 
 import asyncio
 import pytest
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
-from concurrent.futures import Future
+from unittest.mock import Mock, AsyncMock, patch
 
 from xorl_client import types
 from xorl_client.client.training_client import TrainingClient
 from xorl_client.client.client_holder import ClientHolder
 from xorl_client.client.chunked_helpers import (
     MAX_CHUNK_LEN,
-    MAX_CHUNK_BYTES_COUNT,
     estimate_datum_bytes,
     combine_fwd_bwd_output_results,
     _infer_reduction_type,
@@ -108,6 +106,16 @@ class TestEstimateDatumBytes:
         estimated = estimate_datum_bytes(datum)
         # 4096 tokens * 4 * 3 (tokens + targets + weights) = ~49152
         assert estimated > 4096 * 4
+
+    def test_r3_side_payloads_count_toward_byte_estimate(self):
+        """R3 payload side arrays should be included in chunk-size estimates."""
+        datum = _make_datum(num_tokens=10)
+        datum.routed_experts = {"data": "x" * 4096, "shape": [32, 64, 8]}
+        datum.routed_expert_logits = {"data": "y" * 8192, "shape": [32, 64, 8]}
+
+        estimated = estimate_datum_bytes(datum)
+
+        assert estimated >= 4096 + 8192
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +417,7 @@ class TestChunkedForwardBackwardIntegration:
                 MockAPIFuture.return_value = mock_internal_future
 
                 future = client.forward_backward(data, "cross_entropy")
-                result = future.result(timeout=10)
+                future.result(timeout=10)
 
             # Verify 2 POST requests were made
             assert len(post_calls) == 2
@@ -487,7 +495,7 @@ class TestChunkedForwardBackwardIntegration:
                 MockAPIFuture.return_value = _AwaitableMock()
 
                 future = client.forward_backward(data, "cross_entropy")
-                result = future.result(timeout=10)
+                future.result(timeout=10)
 
             # Should be exactly 1 POST
             assert len(post_calls) == 1
@@ -622,7 +630,7 @@ class TestChunkedForwardBackwardIntegration:
                 MockAPIFuture.return_value = mock_internal_future
 
                 future = client.forward(data, "cross_entropy")
-                result = future.result(timeout=10)
+                future.result(timeout=10)
 
             # Verify 2 POST requests to /api/v1/forward
             assert len(post_calls) == 2
