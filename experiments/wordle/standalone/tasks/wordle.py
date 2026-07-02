@@ -30,6 +30,8 @@ logs can show the differential-signal pattern from the blog):
 from __future__ import annotations
 
 import importlib.util
+import math
+import os
 import random
 import re
 from importlib import metadata as importlib_metadata
@@ -334,10 +336,16 @@ def extract_guesses(text: str) -> list[str]:
 
 
 def has_single_guess_tag(text: str) -> bool:
-    """Format reward: every assistant turn should contain exactly one guess tag."""
+    """Format reward: exactly one well-formed 5-letter <guess> tag.
+
+    Counts 5-letter guesses (`_GUESS_RE`), NOT bare ``<guess>...</guess>`` blocks
+    (`_GUESS_TAG_RE`): thinking models echo the prompt template's 4-letter
+    ``<guess>WORD</guess>``, which is not a real guess and previously inflated the
+    count to >1 — killing ~91% of turns on `not_exactly_one_guess_tag`.
+    """
     if not text:
         return False
-    return len(_GUESS_TAG_RE.findall(text)) == 1
+    return len(_GUESS_RE.findall(text)) == 1
 
 
 def public_constraints_satisfied(guess: str | None, history: list[tuple[str, str]] | None = None) -> bool:
@@ -605,6 +613,91 @@ def _wordle_shaped_reward(
     )
 
 
+def wordle_retrieval_reward(
+    turns: list[tuple[str, str]],
+    *,
+    solved: bool,
+    invalid_action: bool = False,
+    solve_weight: float = 2.0,
+    consistent_bonus: float = 0.1,
+    violate_penalty: float = 0.2,
+    reduce_weight: float = 0.1,
+    invalid_penalty: float = 0.8,
+    valid_guess_rate: float | None = None,
+    format_rate: float | None = None,
+    format_weight: float = 0.5,
+) -> dict[str, float]:
+    """Retrieval-targeted Wordle reward (env-audit recommendation, 2026-06-14).
+
+    The default rewards (`reward`, `wordle_reward`) under-price solving (a clean
+    non-solving game banks ~40% of a solve from format/info proxies) and contain
+    NO signal for the actual bottleneck skill: constrained-vocabulary retrieval.
+    This reward fixes both:
+
+      * SOLVE dominates: ``solve_weight`` (2.0) + a fast-solve length bonus, so a
+        solve is ~3-5x any non-solve.
+      * Per-turn RETRIEVAL signal (the missing lever):
+          +consistent_bonus if the guess is still a possible answer
+          (in ``remaining_candidates`` given prior feedback);
+          -violate_penalty if it violates the public constraints (a word that
+          CANNOT be the answer — the exact failure mode the model exhibits).
+      * Per-turn NARROWING: +reduce_weight * log(|cand_before|/|cand_after|),
+        rewarding each guess that genuinely shrinks the consistent set toward the
+        answer (dense, present even when the game isn't solved). >= 0 always.
+
+    ``turns`` is the list of (guess, feedback) actually played (valid turns only).
+    The opener (no prior feedback) gets no consistency term but still earns the
+    narrowing reward. Returns the scalar under ``wordle_retrieval_reward`` plus
+    its components. Additive/opt-in: nothing here changes the existing rewards.
+    """
+    history: list[tuple[str, str]] = []
+    consistent_turns = 0
+    violate_turns = 0
+    reduction = 0.0
+    for guess, feedback in turns:
+        g = str(guess).lower()
+        cand_before = remaining_candidates(history)
+        n_before = max(1, len(cand_before))
+        if history:  # constraints exist -> retrieval is being tested
+            if g in {w.lower() for w in cand_before}:
+                consistent_turns += 1
+            else:
+                violate_turns += 1
+        history.append((guess, feedback))
+        cand_after = remaining_candidates(history)
+        n_after = max(1, len(cand_after))
+        reduction += math.log(n_before / n_after)  # >= 0: a guess only narrows
+    n_played = max(1, len(turns))
+    length_bonus = 0.5 * solve_weight * (float(solved) / n_played)
+    consistency_reward = consistent_bonus * consistent_turns - violate_penalty * violate_turns
+    narrowing_reward = reduce_weight * reduction
+    solve_reward = solve_weight * float(solved)
+    # PARTIAL CREDIT (replaces the all-or-nothing -0.8*any(invalid)): when the per-turn valid-rate is
+    # supplied, penalize the INVALID RATE so a 3/4-valid game is rewarded over a 0/4 one and the
+    # per-turn advantage isn't swamped (every turn shares the trajectory advantage). Falls back to the
+    # legacy bool when no rate is given (keeps test_wordle_retrieval_reward.py behavior).
+    if valid_guess_rate is None:
+        invalid_rate = 1.0 if invalid_action else 0.0
+    else:
+        invalid_rate = max(0.0, 1.0 - float(valid_guess_rate))
+    invalid_pen = invalid_penalty * invalid_rate
+    # Dense per-turn FORMAT reward (the missing graded signal in the actual reward_key): rewards the
+    # clean single-5-letter-tag rate so the model has a smooth gradient to learn the format fast.
+    format_reward = format_weight * float(format_rate) if format_rate is not None else 0.0
+    total = solve_reward + length_bonus + consistency_reward + narrowing_reward + format_reward - invalid_pen
+    return {
+        "wordle_retrieval_reward": float(total),
+        "wr_solve": float(solve_reward),
+        "wr_length_bonus": float(length_bonus),
+        "wr_consistency": float(consistency_reward),
+        "wr_consistent_turns": float(consistent_turns),
+        "wr_violate_turns": float(violate_turns),
+        "wr_narrowing": float(narrowing_reward),
+        "wr_format": float(format_reward),
+        "wr_invalid_penalty": float(invalid_pen),
+    }
+
+
 def render_feedback_message(guess: str, feedback: str, remaining: int) -> str:
     """Render the latest feedback as a compact two-line Wordle board slice."""
     word_row = " ".join(guess.upper())
@@ -624,6 +717,22 @@ def build_examples(tokenizer, *, train_size: int = 20, eval_size: int = 64, seed
     setup here."""
     rng = random.Random(seed)
     pool = list(WORD_LIST)
+    # Keep the floor-eval held-out targets OUT of the train pool (provable disjointness).
+    # WORDLE_TRAIN_EXCLUDE_{SEED,COUNT} reserves random.Random(SEED).shuffle(WORD_LIST)[:COUNT]
+    # — the SAME shuffle the floor eval (eval_wordle_sglang._pick_targets) uses — and removes
+    # those words from TRAINING only (the global WORD_LIST the eval reads is untouched).
+    _excl_seed = int(os.environ.get("WORDLE_TRAIN_EXCLUDE_SEED", "0") or 0)
+    _excl_count = int(os.environ.get("WORDLE_TRAIN_EXCLUDE_COUNT", "0") or 0)
+    if _excl_count > 0:
+        _reserve = list(WORD_LIST)
+        random.Random(_excl_seed).shuffle(_reserve)
+        _reserved = set(_reserve[:_excl_count])
+        pool = [w for w in pool if w not in _reserved]
+        print(
+            f"[wordle.build_examples] excluded {len(_reserved)} held-out targets "
+            f"(seed={_excl_seed}, count={_excl_count}); train pool now {len(pool)} words",
+            flush=True,
+        )
     rng.shuffle(pool)
     if len(pool) < train_size + eval_size:
         raise ValueError(
@@ -662,7 +771,11 @@ def score_completion(example: Example, generated_text: str) -> dict[str, float]:
     where the client sends a single completion (e.g. for one-turn debug).
     Treats the completion as a single guess attempt."""
     target = example.metadata["target"]
-    parsed = parse_turn_response(generated_text, [])
+    # Think-contract outputs wrap a multi-line <think>...</think> block before the
+    # public <reasoning>/<guess> line; judge format on the canonical action line
+    # (same as the rollout path) so a clean think response is not spuriously scored
+    # format_rate=0 / extra_text=1 by the strict one-line parser.
+    parsed = parse_turn_response(extract_action_text(generated_text), [])
     guess = str(parsed["guess"]) or None
     single_guess_tag = float(bool(parsed["single_guess_tag_ok"]))
     format_ok = float(bool(parsed["format_ok"]))

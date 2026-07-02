@@ -16,8 +16,6 @@ trajectory's generated turns so long games do not bias the group baseline.
 from __future__ import annotations
 
 import argparse
-import base64
-import itertools
 import json
 import os
 import queue as queue_module
@@ -26,12 +24,14 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+import itertools
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pybase64
 from transformers import AutoConfig, AutoTokenizer
 
 
@@ -192,7 +192,7 @@ def _decode_routing(b64, dtype, L: int | None, K: int | None):
     if not L or not K:
         return None
     try:
-        arr = np.frombuffer(base64.b64decode(b64.encode("utf-8")), dtype=dtype)
+        arr = np.frombuffer(pybase64.b64decode(b64.encode("utf-8")), dtype=dtype)
         if arr.size == 0 or arr.size % (L * K) != 0:
             return None
         return arr.reshape(-1, L, K)
@@ -206,7 +206,7 @@ def _routing_payload_from_array(arr: np.ndarray | None, rows: int) -> dict[str, 
         return None
     clipped = np.ascontiguousarray(arr[:rows])
     return {
-        "data": base64.b64encode(clipped.tobytes()).decode("ascii"),
+        "data": pybase64.b64encode(clipped.tobytes()).decode("ascii"),
         "shape": [int(dim) for dim in clipped.shape],
     }
 

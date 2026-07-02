@@ -3063,7 +3063,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--wordle-teacher-prompt-style",
         default="answer_hint",
-        choices=["answer_hint", "policy_hint", "public_policy_hint", "no_hint"],
+        choices=["answer_hint", "policy_hint", "public_policy_hint", "public_candidates_only", "no_hint"],
         help="Teacher prompt for asymmetric Wordle OPSD.",
     )
     parser.add_argument(
@@ -3619,6 +3619,35 @@ def main() -> None:
                             row.get("error", ""),
                         )
                     log_payload["sample_eval/examples"] = table
+
+                    # HTML render of the samples for easy per-step eyeballing in wandb.
+                    def _esc(s: str) -> str:
+                        return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+                    def _hl(esc_text: str) -> str:
+                        # colorize the contract tags (already HTML-escaped)
+                        for tag, col in (("think", "#888"), ("reasoning", "#1a7f37"), ("guess", "#cf222e")):
+                            esc_text = esc_text.replace(f"&lt;{tag}&gt;", f"<b style='color:{col}'>&lt;{tag}&gt;</b>")
+                            esc_text = esc_text.replace(f"&lt;/{tag}&gt;", f"<b style='color:{col}'>&lt;/{tag}&gt;</b>")
+                        return esc_text
+
+                    _blocks = [f"<div style='font-family:monospace;font-size:12px'><h3>sample_eval step {policy_step}</h3>"]
+                    for _row in table_rows:
+                        _sc = _row.get("score") or {}
+                        _gt = _hl(_esc(_row.get("generated_text", "")))
+                        _blocks.append(
+                            f"<div style='border:1px solid #ccc;margin:6px 0;padding:6px'>"
+                            f"<b>target={_esc(_row.get('target',''))}</b> "
+                            f"exact={_sc.get('exact_match',0)} format={_sc.get('format_rate',0)} "
+                            f"valid={_sc.get('valid_guess_rate',0)} reward={_sc.get('reward',0)}"
+                            f"{(' <span style=color:#cf222e>ERR:'+_esc(_row.get('error',''))+'</span>') if _row.get('error') else ''}"
+                            f"<pre style='white-space:pre-wrap;margin:4px 0'>{_gt}</pre></div>"
+                        )
+                    _blocks.append("</div>")
+                    try:
+                        log_payload["sample_eval/samples_html"] = wandb_module.Html("".join(_blocks))
+                    except Exception:
+                        pass
             wandb_run.log(log_payload, step=policy_step)
 
     def run_teacher_sample(policy_step: int) -> None:
