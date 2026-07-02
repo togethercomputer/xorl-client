@@ -62,6 +62,7 @@ def _post_generate(
     timeout: float,
     attempts: int,
     retry_interval: float,
+    lora_path: str = "",
 ) -> list[dict[str, Any]]:
     payload = {
         "input_ids": [list(ids) for ids in input_ids_batch],
@@ -75,6 +76,8 @@ def _post_generate(
     }
     if stop:
         payload["sampling_params"]["stop"] = list(stop)
+    if lora_path:
+        payload["lora_path"] = lora_path
     url = base_url.rstrip("/") + "/generate"
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
@@ -261,6 +264,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                 timeout=args.timeout,
                 attempts=args.attempts,
                 retry_interval=args.retry_interval,
+                lora_path=args.lora_path,
             )
             attempts_by_state: dict[int, list[dict[str, Any]]] = {state.index: [] for state in batch_states}
             final_by_state: dict[int, tuple[str, str | None, bool, bool, list[int]]] = {}
@@ -306,6 +310,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                     timeout=args.timeout,
                     attempts=args.attempts,
                     retry_interval=args.retry_interval,
+                    lora_path=args.lora_path,
                 )
                 for state, retry_prompt_ids, result in zip(retry_states, retry_prompts, retry_results, strict=True):
                     text = _generated_text(result, tokenizer)
@@ -409,6 +414,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-url", required=True, help="SGLang base URL, or comma-separated URLs.")
     parser.add_argument("--model", required=True, help="Model id/path for tokenizer metadata.")
     parser.add_argument("--tokenizer-path", default="", help="Tokenizer id/path; defaults to --model.")
+    parser.add_argument("--lora-path", default="", help="Served LoRA adapter name to eval (sglang lora_path).")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--num-games", type=int, default=256)
     parser.add_argument("--seed", type=int, default=9234)
