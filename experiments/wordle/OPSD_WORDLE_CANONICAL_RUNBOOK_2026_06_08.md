@@ -1,11 +1,84 @@
 # Wordle Science Canonical Runbook (Qwen3.6-35B-A3B)
 
+> **▶ New here? Start with `WORDLE_RECIPE.md`** — the single-page recipe summary + doc map. This runbook is
+> the deep science log (read its dated UPDATEs below, newest first). Latest handoff:
+> `NEXT_AGENT_START_2026_07_02.md`; code-change map for upstreaming: `HANDOFF/UPSTREAMING_SCOPE.md`.
+
+## ⏩ 2026-07-02 UPDATE — pipeline-RL results + the high-k3 destabilization test (in-flight)
+
+- **Pipeline-RL (`--pipeline-rl --no-weight-sync-flush-cache` + unclipped IS) reaches on-policy quality.**
+  `k3pipe` (pipeline on the low-k3/k3diag recipe) hit in-training peak **0.805 @ s120** — same as on-policy
+  9dxtb (0.797@s120) — crossing reward-positive on the same ~s11-13 timeline. ⇒ the 1-step staleness costs no
+  acquisition or final quality. Throughput win is **modest (~10-25%)**, NOT 2× (rollout ~500s ≫ train ~65s, so
+  overlap hides only train). [The old "policy_loss+pipeline plateaued" was the CLIP, not the staleness.]
+- **Peeling routing replay (R3) is the meaningful "higher-k3" lever** (NOT `--logprob-temperature` — peeling
+  that is a bogus temp-surface mismatch/broken IS, and is partly why the old `8r1ur5zb` sat at 0.06). R3-peel
+  (`k3pnr3`), temp alignment kept, raises k3 to ~3-7e-3 via the real uncorrected GDN decode-route divergence,
+  and widens ratio_max to ~49 (the `8r1ur5zb` regime). Side effect: ~100-140s/step FASTER (no R3 payload
+  transport/replay — a Mooncake-R3-transport PR on apanda-dev should recover the low-k3 R3 overhead).
+- **OPEN — does high-k3 + pipeline staleness destabilize?** Run 1 (`k3pnr3`) climbed fine to peak 0.5@s38 (k3
+  rising to 7e-3, ratio_max spiking 43.9) then **died at s39 on a flaky sampler (infra, node 040)** — so
+  destabilization past s39 is **UNTESTED** (the earlier "no destabilization / k3 not a lever even under
+  staleness" was OVERSTATED — only 39 steps of a still-rising k3/ratio_max). **v2 relaunch is live** to test
+  it to ~s128 (save-interval 25, samplers off 040) — see `NEXT_AGENT_START_2026_07_02.md`.
+
+
+
 **Last rewritten: 2026-06-25 (apanda).** This is a full rewrite. The prior body (a chronological
 archive of 06-08 → 06-14 handoffs plus a "STATE OF THE SCIENCE" written before the format bug was
 found) was deleted — it was confounded and stale. Git history preserves it (`git log -p
 experiments/wordle/OPSD_WORDLE_CANONICAL_RUNBOOK_2026_06_08.md`) if you need the old narrative.
 Infra / how-to-run lives in the sibling **`THROUGHPUT_DEBUGGING_HANDOFF.md`**. SGLang↔xorl logprob
 parity lives in **`SGLANG_XORL_PARITY.md`**.
+
+---
+
+## ⏩ 2026-07-01 UPDATE — read this FIRST (honest held-out numbers; answers the k3 science Q)
+
+The 3 concurrent GRPO stacks all finished; all evaluated on the **honest gate** (`retries=0`, seed-777).
+Two headline results this session.
+
+### 1. 🟢 ANSWER to the open science Q: k3 is a DIAGNOSTIC, not a LEVER
+Full 3-way held-out at **NG=128** (retries=0; base+think floor = 0.00):
+| run | k3 regime | src | held-out val acc |
+|---|---|---|---|
+| 9dxtb | high-k3 3.6e-3 | apanda-dev | **0.672** (86/128) |
+| k3diag | low-k3 3e-4 | k3-recon | **0.648** (83/128) |
+| k3bi | BI, lowest-k3 2.6e-4 | k3-recon | **0.680** (87/128) |
+All **statistically TIED** (~0.65–0.68, spread 0.032 ≈ 0.5σ), **no monotonic relation to k3** (lowest-k3 ≈
+highest-k3). ⇒ Driving live k3 0.055→3e-4 (the §A/06-30 win) makes train/inference logprobs honest but does
+**NOT** change final policy quality. The whole GRPO-from-base line lands ~2/3 solve vs 0.00 base.
+
+**TIGHTENED (2026-07-01, paired 170 held-out ×5 tries + 512 train-sample):** held-out 5-try means 9dxtb
+**0.712±0.010** / k3diag **0.686±0.020** / k3bi **0.704±0.006** — all ~0.70, spread 0.026 ≈ the per-model SEs,
+ordering high-k3 > lowest-k3 > low-k3 = **still not monotonic** → k3-not-a-lever holds at tight bars. Per-try SD
+~0.012–0.044 (NG=64's swings were small-N). Train-sample (512 train-eligible words) = 0.758/0.699/0.725 →
+**memorization gap only +0.01..+0.05** = mild familiarity, held-out ~0.70 is real generalization. (Tightened
+~0.70 > noisy NG=128 ~0.66 — 170×5 is the better estimate.) Tooling: `eval_ckpt_multi.sh` + `run_bigeval_serial.sh`.
+Also:
+**held-out ≈ in-training at retries=0** (9dxtb s128 0.67≈0.67; the old "in-training 0.05 vs held-out 0.55"
+gap was ENTIRELY the retry crutch). Over-training: in-training peaks (9dxtb 0.797@s120, k3diag 0.775@s116,
+k3bi 0.766@s116) then mild decline to ~0.61–0.68 by s128; the peak checkpoints weren't saved
+(`save_interval 200` on k3diag/k3bi; 9dxtb's s120 peak fell between its save-25 marks) so measured held-out
+high-water = ~0.67–0.68. Full detail + memory [[wordle-eval-pipeline-and-k3-not-a-lever]].
+
+### 2. 🛑 THE HONEST-EVAL PIPELINE WAS BROKEN 06-26→06-30 — FIXED
+`eval_ckpt_generic.sh`→`prepare_checkpoint_eval_serving.py` copies the GRPO **training** config into the eval
+sync job; those configs set `engine_connect_host: 127.0.0.1` (for multi-rank p2p bring-up), which in the
+**eval** launcher forces the orchestrator to connect `:5556` while the worker binds `:25670` → permanent ZMQ
+`engine-0 not routable`/`Host unreachable`; sync never completes. **Fix:** `config.pop("engine_connect_host")`
+in prepare.py before writing `checkpoint_load_config.yaml` (dated comment in file). This is why prior agents
+couldn't pin honest retries=0 numbers on recent checkpoints. **METHOD CAVEAT:** NG=64 evals are too noisy for
+path comparisons (±~6% + temp-0.7 run-to-run sampling variance — the same 64 games gave k3diag 50/64 then
+45/64); an n=64 run made k3diag look like 0.78 >> 9dxtb 0.67, which vanished at NG=128. **Use NG≥128.**
+
+### 3. ⏸ Pipeline-RL (k3pipe) — set up, BLOCKED on cluster RDMA capacity (deferred)
+Stack `k3pipe` is fully built (8 samplers, `--pipeline-rl --no-weight-sync-flush-cache` + IS, unique
+`server_output_k3pipe8`). It does NOT launch while the cluster is RDMA-saturated: sampler Mooncake receiver
+memory registration fails (`-202`, "206 memory regions") at step-0 sync (6 attempts). Root cause = cluster-wide
+RDMA memory-region/locked-memory exhaustion from concurrent experiments (esp. `marin6279-repro`'s 48 samplers
+scattered 1-per-node, + q235/q36mtp/zorl) — freeing our own idle pools + k3bi did NOT clear it. Retry when the
+cluster's RDMA load drops. (Trainer needs a whole 8-GPU node too — EP8 can't shrink.)
 
 ---
 
@@ -46,12 +119,33 @@ Three concurrent single-node EP8 stacks, all IS-loss from base, climbing (as of 
 eval at matched/peak checkpoints** — the next agent's job. §3's over-training-decline watch still applies.
 
 ### D. 🚀 Throughput levers (with caveats)
+- **`--student-generation-workers` is NOT the bottleneck at 48 (code-derived, 2026-07-01).** The rollout
+  dispatch (`train_grpo_wordle.py:602-639`) chunks each turn's active games into `--student-generation-batch-size`
+  (16)-sized `/generate` requests and runs `_nw = min(len(batch_specs), workers)` of them concurrently. Turn-1
+  active = `train_size×group_size = 512` → `512/16 = 32` batch_specs; `min(32, 48) = 32` → **all 512 sequences
+  already dispatch concurrently** (~64/sampler predicted). The cap can't bind here (max active 512 < `48×16=768`),
+  so raising workers 48→512 is a **no-op**. (The *default* `len(infer_urls)×batch_size = 16` WOULD bind, 16<32 —
+  bumping to 48 was the real earlier uncap.) ⚠️ CAVEAT: the ~64/sampler peak is **predicted from the dispatch
+  code, not measured on training traffic** — confirm running-req peak/drain over one training step next run.
+- **The real rollout bottleneck is the turn-synchronous structure**, not concurrency: each turn dispatches all
+  active games then **waits for the slowest** (`max_new_tokens=2048` straggler) at a barrier (fast samplers idle);
+  and **active drains across turns** as games solve → later turns underfeed. So average sampler utilization is low
+  even though turn-1 is fed. Levers that actually help: **pipeline-RL** (hides the barrier idle, §D below) and
+  **trimming `max_new_tokens`** (shrinks the straggler tail). `batch_size` is marginal (turn-1 already dispatches all 512).
 - **Scale samplers** for rollout-bound runs: BI **4→8 halved rollout (710→379s), ~1.6× step**. 3 coordinated
   edits — StatefulSet `replicas`, SMG `WORKER_URLS`, builder `SAMPLER_INDICES` (→regenerate trainer) — then full rebuild.
+  (This helps by **genuine parallelism of the fixed 512 sequences** over more GPUs — 128→64 seq/sampler — NOT via any worker cap.)
 - **Pipeline RL** (`--pipeline-rl`) overlaps rollout with train (step-2 wall-clock 227s vs 487s serial).
   **REQUIRES `--no-weight-sync-flush-cache`** — else the flush races the bg worker's in-flight generation →
   `AssertionError: Cache flush failed` → all samplers SIGQUIT. Only helps when rollout<train (scale samplers
   to flip it train-bound). Keep IS loss (§2); pipeline's 1-step staleness is a tradeoff for from-base acquisition.
+  **⏩ MEASURED 2026-07-01 (k3pipe, pipeline+IS):** climbs from base on the on-policy timeline (reward-positive
+  @ step 13, exact 0.17 — matches k3bi/k3diag) ⇒ **1-step staleness does NOT throttle from-base acquisition with
+  unclipped IS** (the "policy_loss plateaued" result was the CLIP, not the staleness). But the throughput win is
+  **only ~10-25%** (warm step ~520→720s vs on-policy ~600-740s), NOT the 227s/2× above — that doesn't reproduce
+  in the long-rollout regime (rollout ~500s ≫ train ~65s → overlap hides only the train). Launch gotcha: the
+  sampler Mooncake sync `-202`s if ANY sampler lands on a bad-RDMA node (e.g. -055) → blacklist bad nodes in the
+  sampler manifest nodeAffinity.
 - **Capacity**: trainer = one whole 8-GPU node (anti-affinity keeps trainers apart); samplers = 2-GPU TP2
   (volcano bin-pack); SMG = CPU. **~3 stacks fit comfortably**; a 4th hits whole-node fragmentation (trainer
   Pending) then RDMA pinned-memory `Cannot allocate memory [12]` on packed nodes (we dropped a 4th pipeline stack).
