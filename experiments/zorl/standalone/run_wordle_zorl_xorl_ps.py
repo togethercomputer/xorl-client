@@ -178,9 +178,21 @@ def main():
         p = urlparse(url)
         # fresh_ab needs the replicas as p2p (Mooncake) weight-sync receivers so the
         # post-apply base push lands; b_only stays sampling-only (no NCCL handshake).
+        # Registration failure in fresh_ab mode is FATAL: without receivers the base
+        # sync silently no-ops and every fold after step 1 probes a stale base.
         _sync_recv = args.perturbation_mode == "fresh_ab"
-        reg = ps.register_inference_endpoint(ps_url, host=p.hostname, port=int(p.port or 30000), sync_weights=_sync_recv)
+        reg = None
+        for attempt in range(5):
+            reg = ps.register_inference_endpoint(ps_url, host=p.hostname, port=int(p.port or 30000), sync_weights=_sync_recv)
+            if reg.get("success", True) or "already registered" in str(reg.get("message", "")):
+                break
+            print(f"  register {p.hostname} attempt {attempt+1}/5 failed: {reg.get('message')}; retrying in 30s", flush=True)
+            time.sleep(30.0)
         print(f"  registered {p.hostname}:{p.port} -> {reg.get('message', 'ok')}", flush=True)
+        if _sync_recv and not (reg.get("success", True) or "already registered" in str(reg.get("message", ""))):
+            raise RuntimeError(
+                f"fresh_ab requires all replicas registered as sync receivers; {p.hostname} failed after 5 attempts"
+            )
 
     # 2. cold base+think gate: probe the FROZEN BASE on the seed-777 held-out set.
     #    GRPO's honest base+think = 0.00 (retries=0); we expect the same. The
