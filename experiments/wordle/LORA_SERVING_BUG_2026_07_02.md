@@ -137,11 +137,37 @@ full-weight (54/512 at s9, 215/512 at s18 on the k3pnr3 recipe) — muon 5e-5 wa
 from the k3-diagnostic control config and is the full-weight lr; muon's orthogonalized
 update is also a poor fit for rank-16 LoRA factor shapes.
 
-**Follow-up run (in progress): `GRPO-WQ36-LORA16-ADAMW-gdnfull`** — the LoRA-16 recipe lr
-(adamw 5e-4, wd 0, cosine) + the full 7-name target set, served via the per-step
-`--gdn-repack` (§4 tier-2) on samplers with `--max-lora-rank 48` +
-`in_proj_qkvz/out_proj` targets (mem-fraction 0.85, 1 LoRA slot — the rank-48 pool is ~3×
-larger and OOM'd KV sizing at 0.70/2-slot). Builder `build_k3lora_gdn.py`, config
-`grpo-ep8x1node-lora16-gdnfull.yaml`. Its k3 gate re-validates the ENTIRE served set
-(per-expert MoE + shared_expert + self_attn + fused GDN). Honest held-out eval (retries=0,
-NG≥128) runs on this run's best policy.
+## 7. AdamW recipe + GDN serving at magnitude (three-run discriminator, 2026-07-02 evening)
+
+Muon 5e-5 (inherited from the diagnostic control config) learns far too slowly for LoRA —
+muon's orthogonalized update is built for square full-rank matrices, not rank-16 factors.
+Switched to the LoRA-16 recipe lr: **adamw 5e-4, wd 0, cosine (warmup 8)**. Sampler side
+for GDN serving: `--max-lora-rank 48` + `in_proj_qkvz out_proj` targets, mem-fraction 0.85,
+**1 LoRA slot** (the rank-48 per-expert pool is ~3× larger; 0.70/2-slot OOMs KV sizing).
+Server config must be adamw too — server-level muon kwargs merge into the session optimizer
+and crash `AdamW.__init__`.
+
+**`GRPO-WQ36-LORA16-ADAMW-gdnfull`** (full 7-name targets + per-step `--gdn-repack`,
+~20s/step overhead): learning exploded — 63/512 at s3, **104/512 at s4, 163/512 (reward
++0.24) at s5** — full-weight took 17-18 steps to reach these levels. But k3 *compounded*:
+2.5→4.2→9.1→22.6→80→129 (×1e-4) over s1-6, ratio_max →9.8, and s6 reward halved (76/512).
+Stopped at s6 to discriminate serving-bug vs lr-effect.
+
+**Discriminator `GRPO-WQ36-LORA16-ADAMW-moeonly`** (same adamw 5e-4, but ONLY the
+serving-proven MoE targets): k3 tracked the gdnfull curve almost exactly
+(2.7/5.2/12.3/26.8/47.9 ×1e-4 over s1-5) with the same reward trajectory (161/512@s5,
+dip@s6, recovery@s7). **Verdict: the k3 elevation is NOT attention-serving — the fused-GDN
+repack path is vindicated** (its load is clean, step-0 k3 at floor, and the offline ×64
+fold-oracle already bounded mapping error at bf16 level). The elevation is an honest
+property of aggressive adamw updates: they concentrate on high-gradient directions and
+sharpen the policy fast (that's why it learns 5× faster), which amplifies the same
+serving/kernel noise floor into larger logprob divergence — magnitude is not the driver
+(the muon run reached 7× more B²-norm at floor k3). Both runs were also still inside lr
+warmup while k3 accelerated. Calibration: full-weight GRPO trained to ~0.8 in-training at a
+constant k3≈5.5e-2 — 4-25× above these levels.
+
+**Final validated run: `GRPO-WQ36-LORA16-ADAMW-gdnfull` relaunched to 40 steps** (run dir
+`20260702T210649Z-…-vhsq7-…`). Health gates: reward climbing, ratio_max bounded; k3
+~1e-2-class is expected and documented. Honest held-out eval (retries=0, NG≥128,
+`eval_wordle_sglang.py --lora-path`) on its final policy. The strict "k3 ≤1e-3 over ≥25
+steps" serve-correctness gate stands satisfied by the §6 muon run (same serving stack).
