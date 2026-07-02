@@ -3956,6 +3956,7 @@ class Config:
     opd_kl_backend: str = "streaming"
     opd_vocab_chunk_size: int | None = None
     opd_sharded_head_device_cache: bool = True
+    opd_teacher_layer_cache_device_cache: bool = False
 
     # PR #320 (xorl-internal) — VERL-parity OPD loss controls.
     # `opd_loss_mode`: one of `reverse_kl_full` (default), `forward_kl_full`,
@@ -7558,6 +7559,7 @@ async def main(config: Config) -> None:
                 "opd_kl_backend": config.opd_kl_backend,
                 "opd_vocab_chunk_size": config.opd_vocab_chunk_size,
                 "opd_sharded_head_device_cache": config.opd_sharded_head_device_cache,
+                "opd_teacher_layer_cache_device_cache": config.opd_teacher_layer_cache_device_cache,
                 "opd_loss_mode": config.opd_loss_mode,
                 "opd_emit_full_vocab_diagnostics": config.opd_emit_full_vocab_diagnostics,
                 "opd_use_policy_gradient": config.opd_use_policy_gradient,
