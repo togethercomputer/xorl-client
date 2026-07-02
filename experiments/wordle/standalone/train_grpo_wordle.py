@@ -923,6 +923,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sampler-load-url", action="append", default=[])
     parser.add_argument("--server-output-dir", default="")
     parser.add_argument("--sampler-lora-name", default="")
+    parser.add_argument(
+        "--gdn-repack",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Repack each per-step LoRA export into the fused GDN layout (in_proj_qkvz/out_proj, "
+        "uniform rank 3r) before loading on SGLang. Required when lora_target_modules include "
+        "the GDN attention projections.",
+    )
     parser.add_argument("--sampler-save-prefix", default="")
     parser.add_argument("--seed", type=int, default=9234)
     parser.add_argument("--train-size", type=int, default=16)
@@ -1253,6 +1261,7 @@ def main() -> None:
             lora_name=sampler_lora_name,
             save_name=save_name,
             future_timeout=args.future_timeout,
+            gdn_repack=bool(args.gdn_repack),
         )
         print(
             f"[sampler step={policy_step}] loaded {sampler_lora_name} from {sampler_path} "

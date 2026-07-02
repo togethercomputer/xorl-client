@@ -27,6 +27,7 @@ import random
 import re
 import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -1631,12 +1632,29 @@ def export_and_load_sampler(
     lora_name: str,
     save_name: str,
     future_timeout: float,
+    gdn_repack: bool = False,
 ) -> str:
     if not infer_urls:
         raise RuntimeError("export_and_load_sampler requires at least one infer URL")
     save_request_id = submit_save_weights_for_sampler(train_url, model_id, save_name)
     lora_path = server_output_dir / "sampler_weights" / save_name
     wait_for_sampler_export(lora_path, timeout=future_timeout)
+    if gdn_repack:
+        # SGLang serves GDN LoRA only in the fused in_proj_qkvz/out_proj layout
+        # (see repack_gdn_lora.py); repack the per-step export before loading.
+        fused_path = lora_path.parent / (lora_path.name + "-fused")
+        repack_started = time.time()
+        subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).resolve().parent / "repack_gdn_lora.py"),
+                "--input", str(lora_path),
+                "--output", str(fused_path),
+            ],
+            check=True,
+        )
+        print(f"[gdn-repack] {lora_path.name} -> {fused_path.name} in {time.time() - repack_started:.1f}s", flush=True)
+        lora_path = fused_path
     load_started = time.time()
 
     def load_one(infer_url: str) -> dict[str, Any]:
@@ -1648,6 +1666,12 @@ def export_and_load_sampler(
     max_workers = max(1, min(len(infer_urls), _env_int("OPSD_SGLANG_LOAD_WORKERS", len(infer_urls))))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         load_results = list(executor.map(load_one, infer_urls))
+    if gdn_repack:
+        # Fused repacks are ~3x the raw export (uniform 3r rank padding); once the
+        # samplers hold this step's weights in memory, earlier fused dirs are dead.
+        for stale in sorted(lora_path.parent.glob("*-fused")):
+            if stale != lora_path and stale.is_dir():
+                shutil.rmtree(stale, ignore_errors=True)
     _jsonl(
         output_dir / "sampler_exports.jsonl",
         {
