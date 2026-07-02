@@ -41,21 +41,27 @@ def _read_jsonl_metrics(path: Path) -> tuple[list[dict[str, Any]], list[dict[str
     return rollouts, train_updates, syncs, counts
 
 
-def _read_reference(path: Path) -> list[dict[str, float]]:
-    rows: list[dict[str, float]] = []
+def _read_reference(path: Path) -> dict[int, dict[str, float]]:
+    """Read the reference metrics.csv keyed by ``trainer/global_step``.
+
+    The reference CSV concatenates one block per SLURM restart segment, so
+    global steps overlap across blocks (e.g. 1-82, 51-134, 101-145). Later
+    rows are the resume-authoritative ones; keep the LAST occurrence of each
+    global step. Row position must never be used as the step axis.
+    """
+    rows: dict[int, dict[str, float]] = {}
     with path.open() as handle:
         for idx, row in enumerate(csv.DictReader(handle)):
-            rows.append(
-                {
-                    "step": float(idx),
-                    "reward": float(row["loss/avg_final_rewards"]),
-                    "pass16": float(row["reward/avg_pass_at_16"]),
-                    "step_s": float(row["timing/step"]),
-                    "generate_s": float(row["timing/generate"]),
-                    "policy_train_s": float(row["timing/policy_train"]),
-                    "avg_tokens": float(row["generate/avg_num_tokens"]),
-                }
-            )
+            global_step = int(float(row.get("trainer/global_step", idx + 1)))
+            rows[global_step] = {
+                "step": float(global_step),
+                "reward": float(row["loss/avg_final_rewards"]),
+                "pass16": float(row["reward/avg_pass_at_16"]),
+                "step_s": float(row["timing/step"]),
+                "generate_s": float(row["timing/generate"]),
+                "policy_train_s": float(row["timing/policy_train"]),
+                "avg_tokens": float(row["generate/avg_num_tokens"]),
+            }
     return rows
 
 
@@ -144,7 +150,7 @@ def summarize(args: argparse.Namespace) -> int:
     metrics_path = Path(args.metrics_jsonl)
     reference_path = Path(args.reference_csv)
     rollouts, train_updates, syncs, counts = _read_jsonl_metrics(metrics_path)
-    reference = _read_reference(reference_path) if reference_path.exists() else []
+    reference = _read_reference(reference_path) if reference_path.exists() else {}
     train_by_step = _train_by_step(train_updates)
     rollout_by_step = _rollout_by_step(rollouts)
     by_step = _events_by_step(metrics_path)
@@ -180,7 +186,9 @@ def summarize(args: argparse.Namespace) -> int:
         step = rollout.get("step")
         if not isinstance(step, int):
             continue
-        ref = reference[step] if step < len(reference) else {}
+        # Our driver steps are 0-indexed; the reference global_step is 1-indexed,
+        # so our step s is the same nth policy update as reference step s + 1.
+        ref = reference.get(step + 1, {})
         train = train_by_step.get(step, {})
         derived = train.get("derived_train_metrics") if isinstance(train.get("derived_train_metrics"), dict) else {}
         policy_lag = _policy_lag(rollout)
