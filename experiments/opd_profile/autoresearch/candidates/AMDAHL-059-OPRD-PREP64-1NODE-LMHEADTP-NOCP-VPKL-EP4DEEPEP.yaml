@@ -1,0 +1,85 @@
+id: AMDAHL-059-OPRD-PREP64-1NODE-LMHEADTP-NOCP-VPKL-EP4DEEPEP
+base_config: AM
+slug: amdahl-059-oprd-prep64-1node-lmheadtp-nocp-vpkl-ep4deepep
+buffer_label: amdahl-059-oprd-prep64-1node-lmheadtp-nocp-vpkl-ep4deepep
+# Throughput-only one-node topology screen for the current real all-layer
+# SGLang-cache path. Same workload as the AMDAHL-044/048/058 DeepEP/SMS36
+# baseline, but expert_parallel_size is 4 instead of 8. On one 8-GPU node this
+# makes the expert mesh EP4 x ep_fsdp2 instead of EP8 x ep_fsdp1.
+#
+# Hypothesis: the current EP8 singleton expert-FSDP shape may be the poor
+# backward/communication point. EP4 narrows DeepEP exchange groups while keeping
+# per-rank expert parameter memory roughly comparable through ep_fsdp=2. If the
+# extra expert FSDP all-gather/reduce overhead dominates, reject it quickly.
+#
+# Not a science/default candidate and not promotable without static/K3 plus the
+# same-workload 4-node real-cache gate. It must beat the chunk4/SMS36 baseline
+# (`server_forward_backward_s=4.6591`, loss `2.3550419`) with matching loss.
+#
+# Result 2026-06-15: rejected. First launch reached EP4 mesh setup but failed
+# loading EP8-shaped optimizer state from the DCP checkpoint. The retry used the
+# default-true engine knob `load_checkpoint_optimizer:false` only for this
+# server-only topology screen. It measured `server_forward_backward_s=4.5983`
+# and `api_wall_s=4.8492` (1.3%/2.6% faster than baseline), but shifted reported
+# loss/KL to `2.3731350`/`2.3518243` from the baseline `2.3550419`/`2.3337434`.
+# Do not promote EP4 or spend 4-node/static/K3 gates without first explaining
+# and eliminating that loss drift.
+trainer_config: configs/opd_profile/qwen3_6_35b_a3b_opd_opdb_1node_warm009_deepep36_noprefetch_lmheadtp_nocp_ep4.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 100
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/arith_ops6_nonempty_cot.json
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 1
+default_prompts_per_step: 64
+profile_warmup_steps: 0
+supervise_student_cot: false
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 1.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 128
+eval_accuracy_every: 0
+eval_control_start_step: 0
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: false
+eval_answer_logprob_every: 0
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: false
+opd_pipeline_rl: false
+sampler_quiesce_before_sync: false
+sync_method: p2p
+sync_weights: false
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 10.0
+opd_prepare_batch_size: 64
+opd_microbatch_size: 64
+save_every: 0
+client_args:
+  opd_oprd_layers: every1
+  opd_oprd_num_layers: 40
+  opd_oprd_student_capture: selected_hooks
+  opd_hidden_match_mode: mse
+  opd_oprd_cache_backend: sglang
+  opd_strict_prepare_overlap_chunks: 0
+  opd_streaming_lowmem: true
+  opd_vocab_chunk_size: 8192
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: false
+  opd_mask_prompt_kl: true
+  eval_heldout_num_problems: 0

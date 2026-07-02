@@ -1,0 +1,78 @@
+id: AMDAHL-040-OPRD-1NODE-PACK2304-NORECOMPUTE
+base_config: AM
+slug: amdahl-035-oprd-prep64-1node-lowmem-kl-fb-noprefetch
+buffer_label: amdahl-035-oprd-prep64-1node-lowmem-kl-fb-noprefetch
+# 1-node retry of AMDAHL-034 with manual FSDP module prefetch disabled.
+# AMDAHL-034 used the validated, gradient-identical lm-head lowmem path and
+# reached FSDP backward prefetch, then OOMed on a ~970 MiB all-gather with
+# <1 GiB free on most ranks. The corresponding engine code uses
+# enable_forward_prefetch as the gate for both set_modules_to_forward_prefetch
+# and set_modules_to_backward_prefetch, so this is the narrowest fit probe for
+# that observed failure.
+#
+# This is a TOOLING/MEMORY probe to get the FIRST real 1-node executed-MFU
+# number, not a science candidate. Requires the engine on
+# throughput/opd-lmhead-moe-gemm-20260614 (off origin/apanda-dev @ 609bed76).
+# Verify the two new knobs actually reach loss_fn_params (model_runner reads
+# params.get("opd_streaming_lowmem") and params.get("opd_vocab_chunk_size"))
+# before trusting a null result.
+trainer_config: configs/opd_profile/qwen3_6_35b_a3b_opd_opdb_1node_warm009_deepep36_noprefetch_pack2304_norecompute.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 100
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/arith_ops6_nonempty_cot.json
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 1
+default_prompts_per_step: 64
+profile_warmup_steps: 0
+supervise_student_cot: false
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 1.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 128
+eval_accuracy_every: 0
+eval_control_start_step: 0
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: false
+eval_answer_logprob_every: 0
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: false
+opd_pipeline_rl: false
+sampler_quiesce_before_sync: false
+sync_method: p2p
+sync_weights: false
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 10.0
+opd_prepare_batch_size: 64
+opd_microbatch_size: 64
+save_every: 0
+client_args:
+  opd_oprd_layers: every4
+  opd_oprd_num_layers: 40
+  opd_oprd_student_capture: selected_hooks
+  opd_hidden_match_mode: mse
+  opd_oprd_cache_backend: sglang
+  opd_strict_prepare_overlap_chunks: 0
+  # --- AMDAHL-034 memory levers (validated 1-GPU, gradient-identical) ---
+  opd_streaming_lowmem: true
+  opd_vocab_chunk_size: 8192
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: false
+  opd_mask_prompt_kl: true
+  eval_heldout_num_problems: 0

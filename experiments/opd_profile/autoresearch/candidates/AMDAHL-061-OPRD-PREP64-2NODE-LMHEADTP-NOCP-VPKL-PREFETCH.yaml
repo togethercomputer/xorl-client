@@ -1,0 +1,91 @@
+id: AMDAHL-061-OPRD-PREP64-2NODE-LMHEADTP-NOCP-VPKL-PREFETCH
+base_config: AM
+slug: amdahl-061-oprd-prep64-2node-lmheadtp-nocp-vpkl-prefetch
+buffer_label: amdahl-061-oprd-prep64-2node-lmheadtp-nocp-vpkl-prefetch
+# Throughput-only two-node screen for the current real all-layer SGLang-cache
+# path. Same workload as the AMDAHL-048 2-node DeepEP/SMS36 baseline, but sets
+# `enable_forward_prefetch:true` in the trainer config.
+#
+# Hypothesis: AMDAHL-051 was neutral on one node because memory pressure leaves
+# too little room for useful FSDP module prefetch overlap. The two-node topology
+# has ep_fsdp=2 and materially more memory headroom; if communication overlap is
+# the missing win, prefetch should reduce model forward/backward wall here.
+#
+# Not a science/default candidate and not promotable without static/K3 plus the
+# same-workload 4-node real-cache gate. It must beat the AMDAHL-048 2-node
+# baseline (`server_forward_backward_s=4.4441`, loss `2.3550419`) with matching
+# loss before spending wider gates.
+#
+# Result 2026-06-15: rejected for promotion despite a real speed win. The
+# trainer-only replay ran on trainer-head `research-common-h100-077` plus
+# worker-1 `research-common-h100-089` with explicit `nodeSelector:
+# node-group=nccl,node-pool=compute` and the same AMDAHL-048 capture/loss
+# overrides. Mean over 3 measured rows after warmup was
+# `server_forward_backward_s=3.677469`, `api_wall_s=3.863640`,
+# `model_forward_s=0.806941`, `backward_compute_s=1.689998`,
+# `clear_gradients_s=0.520730`, loss `2.359620273`, and
+# `opd_kl=2.338320834`. Versus AMDAHL-048 this is a strong wall-time win
+# (`server_forward_backward_s` -17.25%, API wall -18.26%), but KL/loss shift by
+# about `+0.00458` on the same capture while hidden loss is unchanged. Treat
+# `enable_forward_prefetch:true` as a correctness-risk speed lever for this path
+# until the KL drift is explained; do not spend 4-node/static/K3 promotion gates
+# on AMDAHL-061 as-is.
+trainer_config: configs/opd_profile/qwen3_6_35b_a3b_opd_opdb_2node_warm009_deepep36_prefetch_lmheadtp_nocp.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 100
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/arith_ops6_nonempty_cot.json
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 1
+default_prompts_per_step: 64
+profile_warmup_steps: 0
+supervise_student_cot: false
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 1.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 128
+eval_accuracy_every: 0
+eval_control_start_step: 0
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: false
+eval_answer_logprob_every: 0
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: false
+opd_pipeline_rl: false
+sampler_quiesce_before_sync: false
+sync_method: p2p
+sync_weights: false
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 10.0
+opd_prepare_batch_size: 64
+opd_microbatch_size: 64
+save_every: 0
+client_args:
+  opd_oprd_layers: every1
+  opd_oprd_num_layers: 40
+  opd_oprd_student_capture: selected_hooks
+  opd_hidden_match_mode: mse
+  opd_oprd_cache_backend: sglang
+  opd_strict_prepare_overlap_chunks: 0
+  opd_streaming_lowmem: true
+  opd_vocab_chunk_size: 8192
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: false
+  opd_mask_prompt_kl: true
+  eval_heldout_num_problems: 0

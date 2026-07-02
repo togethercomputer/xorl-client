@@ -1,32 +1,59 @@
 # CANONICAL SCIENCE RUNBOOK — OPD / OPRD prefill-time-compute
 
+> ## ▶ 2026-07-02 UPDATE — filler-helps-REASONING test (35B): restatement, NOT filler, is the lever
+> Full record: `experiments/opd_profile/FILLER_HELPS_REASONING_35B_HANDOFF_20260702.md`.
+> Ran the filler question cheaply on **Qwen3.6-35B-A3B GRPO** on a *scan/count* task
+> (`count_reassignments` — "how many times is var X reassigned in this snippet?") where extra
+> forward-pass compute over filler *could* plausibly help (arithmetic can't — random tokens don't
+> compute: 4-digit near-ceiling ~0.8, 6-digit floor 0.0, 5-digit washes out). **Step-0 2×2 (base model,
+> same seed = same problems):** mega-filler+restate **A=0.73**, restate-only-no-filler **C=0.75**,
+> no-filler-no-restate **B=0.42** → **C≈A≫B: the +31 is entirely the question-RESTATEMENT** (question
+> placed right before the answer), **the 8192 random filler tokens add nothing on top.** Prescribed
+> random filler = a prompt-structure artifact, not useful compute (consistent with the arithmetic
+> nulls). (D = mega+no-restate, expected ≈B, was blocked on cluster capacity.)
+>
+> **ZA lesson (important):** binary exact-match reward + a task the model can near-solve → GRPO climbs
+> to ceiling → all-correct groups → **zero advantage** → gradient stalls. `max_za_replacements`
+> resampling does **NOT** fix structural ZA (redraws the same distribution). **Proper fix = graded
+> reward** (`reward_proximity` — partial credit by distance, so differing rollouts keep reward variance)
+> **+ harder difficulty** (contested band, no saturation). Validated: za/rate 0.25–0.69 → **0.000**,
+> train_problems full, no refill needed.
+
 > ## ▶ NEXT-AGENT START HERE (post-consolidation, 2026-06-14)
 >
-> **This is the canonical science home now.** After the 2026-06-13/14 consolidation the OPD/prefill
-> harness lives in **`xorl-client` (branch `apanda-dev`), `experiments/opd_profile/`** — instantiate the
-> next agent **from `/home/apanda/xorl-client`** (this checkout; `xorl-client-chat-completions` is a
-> symlink to it). The OPD client + the `opd_correct_prefix_only` CPF knob are in `examples/on_policy_distillation.py`.
+> **You are in the next-agent home: `/home/apanda/xorl-opd-prefill`** (a dedicated `xorl-client` worktree on
+> branch **`exp/opd-prefill`**, off the consolidated `apanda-dev`). The OPD/prefill harness is here in
+> `experiments/opd_profile/`; the OPD client + the `opd_correct_prefix_only` CPF knob are in
+> `examples/on_policy_distillation.py`. Commit your runbook verdicts / new candidates on `exp/opd-prefill`
+> (do NOT use the shared `/home/apanda/xorl-client` checkout — that's the consolidation/wordle branch).
 > To *launch OPD-stack training* you also need: the **engine** = `xorl-internal` `apanda-dev` (OPD landed via
 > B1 #370/#372 — use a fresh checkout, NOT the deprecated `xorl-apanda-dev-opd-port`); **k8s/configs/generator**
 > = `xorl-infra` (PR #1); the live stack is `er-opd-q36-35b-slots` (infra runbook).
 >
-> **Read first:** `experiments/opd_profile/FAILURE_MODE_FROM_SAMPLES_2026_06_13.md` (the samples-driven
-> diagnosis) + §1f + §7 below. **One-line state:** the wall is single-pass computational **DEPTH** (`|gold|≥10k`
-> solved 0× across every run; the model regresses magnitude, not value) — every on-policy distillation objective
-> (KL/OPRD/SFT, any coef/temp) hits it. The **live new direction** is value-grounded **PREFILL compute** (RiM-style).
+> **MISSION (user, 2026-06-14): MAKE prefill-time-compute work — on arithmetic.** Keep arithmetic: it's
+> uncontaminated, has infinite exact training data, real 5×5 headroom, and **exact intermediate labels for free**.
+> **DOCTRINE: a flatline is a measurement target, not a verdict.** When a loss flatlines, find the EXACT cause —
+> shortcut optimum / answer-decoupling / un-recruited capacity / broken readout / genuine depth — with a
+> *diagnostic* BEFORE abandoning the direction. "Impossible" is not an acceptable conclusion; prefer cheap
+> diagnostics + controls over blind training runs.
 >
-> **⚡ FIRST ACTION — the decisive experiment is RUNNING (separate repo):** RiM value-grounded prefill on ops6,
-> in **`/home/apanda/xorl-rim-repro`, `experiments/rim/`** (Qwen3-30B-A3B; see `ARITH_EXPERIMENT_NOTE.md` there).
-> Two budget-matched arms (RiM grounded blocks vs SFT-no-CoT) launched 2026-06-13 ~22:00Z, ~5.5h wall.
-> Check pods `rim-qwen3-30b-arith-{rim,baseline}`; results land in `experiments/rim/results/*/eval_*.jsonl`.
-> **Analyze:** `python experiments/rim/analyze_arith_eval.py results/rim-qwen3-30b-arith-rim results/rim-qwen3-30b-arith-baseline`.
-> **Decision gate = per-`|gold|`-bucket accuracy, NOT aggregate** (gold=0 attractor masks the hard buckets):
-> does RiM lift `|gold|≥1k`/`≥10k`? If yes → first prefill-compute signal on a depth-limited task → port to
-> Q3.6-35B. If no → prefill compute at this depth is genuinely hard → curriculum / process supervision.
-> Record the verdict in §7 item 6. (Also queued, lower priority: confirm §1f.3's prediction that CPF/ARITH-021
-> ties SFT because correct samples skew small-magnitude.)
+> **State in one paragraph:** every prefill-compute attempt so far flatlines at the same place — trace-distillation
+> into the buffer (forward/reverse-KL and hidden-MSE), OPRD answer-hidden match, and RiM value-grounded
+> forcing-blocks all leave `|gold|≥10k` at 0 with the model regressing magnitude-not-value (§1e, §1f, RiM verdict
+> §7 item 6). A fixed-depth single-pass ceiling is the leading hypothesis — **but we have NOT separated the three
+> candidate causes, which have different fixes:** (1) the objective is minimizable WITHOUT computing (a shortcut)
+> and decoupled from answer-correctness, so the buffer's real capacity is never recruited; (2) the buffer computes
+> but the answer head can't read it (readout); (3) genuine depth. We don't yet know which we're in.
+>
+> **⚡ FIRST ACTION — run the §8 diagnostic suite, NOT another training arm.** §8 is the constructive
+> 'make-it-work' program (capacity argument → mechanism → diagnostics → builds) and is the LIVE direction
+> (it supersedes the 'pivot/curriculum' tone of §1f/§7 — see §8.5). Start with the two cheap controls in §8.3:
+> the **shuffled-prefix control** (is the KL floor the no-compute marginal, or did the buffer compute *something*?)
+> and the **linear-probe of buffer hiddens** (are the *exact* intermediate values decodable on *wrong* examples?).
+> Their 2×2 tells you recruitment vs readout vs depth → which §8.4 build to fund. RiM is DONE/negative (§7 item 6;
+> one optional M≥8 retry); CPF/ARITH-021 is confirmatory, not the headline.
 
-The scientific findings + how to measure them correctly. Operations are in `CANONICAL_INFRA_RUNBOOK.md`. Last updated **2026-06-14 ~0Xz** (post-consolidation: canonical home = `xorl-client` apanda-dev; next-agent orientation block added above. Prior **2026-06-13 ~22:45Z**: samples-driven failure-mode diagnosis §1f — the wall is single-pass computational DEPTH; the live new direction is value-grounded PREFILL compute, RiM-style, running. Full diagnosis: `FAILURE_MODE_FROM_SAMPLES_2026_06_13.md`. Prior: lever-1 × OPRD-coef wave §1e.).
+The scientific findings + how to measure them correctly. Operations are in `CANONICAL_INFRA_RUNBOOK.md`. Last updated **2026-06-14** — **§8 added: the constructive "make prefill-time-compute WORK" program (capacity argument → why-it-flatlined mechanism → diagnostic suite → recruitment build queue); §8 is the LIVE direction and the START-HERE/§7 reflect it.** The mission is to make it work, not to declare the depth wall final: every flatline (§1c–§1f, RiM §7 item 6) is now an input to the §8.3 diagnostics (shuffled-prefix control + buffer-hidden probe → recruitment vs readout vs depth), not a stop sign. Priors: §1f samples-driven depth diagnosis (`FAILURE_MODE_FROM_SAMPLES_2026_06_13.md`); §1e lever-1 × OPRD-coef wave.
 
 > **VALIDITY BANNER:** between the sglang worktree drift (~2026-06-08) and the 2026-06-10 fixes, EVERY chat-sampled run trained and evaluated under up to three serving bugs (think-open rendering + train/sample context mismatch + batched-decode KV corruption — infra runbook §9b). This includes the **entire 5×5 / PTC-300-series campaign**: its conclusions (§2's 5×5 decay, §4's K=C results) are SUSPECT until re-validated on the fixed stack. The 4×4 line was re-validated cleanly on 2026-06-10 (§1a).
 >
@@ -144,9 +171,50 @@ A distillable filler/pause lift needs the rare intersection of (a) a **large** m
 
 ## 7. What to run next (rewritten 2026-06-13 after the lever-1 × coef wave, §1e)
 
+> **→ SUPERSEDED as the LIVE DIRECTION by §8 (2026-06-14, user).** §7 is correct that blind objective-knob
+> cycling is done, but its "pivot to curriculum / soft-reasoning" is a *fallback*, not the plan: the exact cause
+> of the flatline (recruitment vs readout vs depth) was never measured. §8 measures it first, then builds the
+> recruitment objective the measurement selects — staying on arithmetic. Read §8 as the plan; §7 below is the
+> evidence + the fallback. Item 6's RiM verdict (NEGATIVE) is load-bearing evidence; keep it.
+
 1. **Realize the bootstrap — temperature and coef are EXHAUSTED (§1e); correct-prefix filtering is the surviving lever, and its knob is now BUILT.** Lever (a) lower prepare temperature: CLOSED, negative (T=0.3 inert/harmful). OPRD coef dose: CLOSED, peak at coef 1 = 0.145, still SFT-dominated. **The decisive untested arm is (b) correct-prefix filtering** — supervise the KL only on on-policy samples whose sampled answer scored correct, so it lands on the right manifold instead of the ~95% wrong prefixes. **Client knob SHIPPED 2026-06-13 (built unattended while the perf agent held the stack): `opd_correct_prefix_only` (default False) in `on_policy_distillation.py`** — masks the whole target for any sample with `sample_ok != 1` (reuses the `-100` masking; the per-sample correctness flag was already plumbed). Unit-tested (3 tests in `tests/test_on_policy_distillation_example.py`, all 69 pass), client-side only (no server loss-op change), generator passes it through `client_args`. **Ready-to-launch candidate: `ARITH-021-CPF-OPRD-WARM.yaml`** (CPF + OPRD coef-1 + warm009, T=0.6 to keep the surviving correct-sample fraction workable). **Before trusting any CPF run: (i) run the infra §9c step-0 KL gate (datum-path change), (ii) watch valid-tokens/step — CPF shrinks the effective batch to the correct fraction (~5–24%), so raise prompts/step or temperature if it gets too sparse.** Also (c) mixed objective (CE on gold + KL on correct-prefix samples only). Any arm beating BOTH the 0.238 seed and the ~0.23 SFT ceiling is the program's first genuine OPD-beats-SFT result. If CPF ALSO ties SFT, the honest conclusion is: on-policy distillation has no advantage over answer-only SFT on a floored task, and the lever must move to **curriculum** (train easier sub-bands first to raise the bootstrap) or off-policy/process supervision — NOT more KL/OPRD knobs.
 2. **OPRD is characterized, do not re-sweep it.** §1e: coef ∈ {0.5,1,3,10} all done; c1=0.145 peak is favorable variance (the 201-step extend does not reproduce it). Do not run more coef points or temperature crosses. The one open OPRD question is whether correct-prefix-filtered supervision (lever 1b) lets the hidden-match term finally beat SFT — fold OPRD coef-1 into the lever-1b arm, don't dose it standalone.
 3. **Always pair every arm with its budget-matched SFT control** (unchanged doctrine), and read §1d.3: buffer content doesn't matter under SFT, so the no-buffer SFT IS the control for any buffer arm.
 4. The 5×5 re-validation and the K=C scoring items remain queued behind the arithmetic program (unchanged from 06-10).
 5. Measurement doctrine additions (user, 06-12): the corrupt-buffer arm is NOT decision-relevant for prompt-independent buffers (nothing prompt-specific to corrupt); never gate on acc_pause−acc_nopause (collapse confound); cross-run comparisons must be substrate- AND optimizer-matched (infra §5b); run the infra §9c step-0 KL gate after any datum-path change.
-6. **THE LIVE NEW DIRECTION (2026-06-13, §1f) — value-grounded PREFILL compute, RiM-style.** Since the wall is *depth* (§1f.1), the only untested quadrant is giving the buffer a **serial computation with dense per-step grounding to the intermediate REDUCTION VALUES** (not pause, not CoT prose, not answer-hiddens — all falsified) under a **forcing mask** that routes the answer through the buffer. This is RiM (`~/xorl-rim-repro`: trainable memory tokens + block-causal mask + step grounding; its mechanism fires +22pp@30B and only "failed" on *saturated* GSM8K — our floored ops6 is the hard, non-saturated task RiM never got). Tooling: `autoresearch/arith_reduction_trace.py` emits the exact 6-step trace (`/shared/opd-coord/arith_ops6_*_redtrace.json`); the RiM adapter + run is in `~/xorl-rim-repro/experiments/rim/` (`arith_data.py`, `k8s/rim-qwen3-30b-arith-{rim,baseline}.yaml`, `analyze_arith_eval.py`). **RUNNING 2026-06-13 ~22:00Z** on Qwen3-30B-A3B (model caveat: not Q3.6-35B — internal comparison): RiM value-grounded blocks vs budget-matched SFT-no-CoT. **Decision gate: does RiM lift the `|gold|≥1k`/`≥10k` buckets single-pass NEVER solves (§1f.1)?** If yes → first prefill-compute signal on a depth-limited task → port to Q3.6-35B. If no → prefill compute at this depth is genuinely hard; move to curriculum / process supervision.
+6. **THE LIVE NEW DIRECTION (2026-06-13, §1f) — value-grounded PREFILL compute, RiM-style.** Since the wall is *depth* (§1f.1), the only untested quadrant is giving the buffer a **serial computation with dense per-step grounding to the intermediate REDUCTION VALUES** (not pause, not CoT prose, not answer-hiddens — all falsified) under a **forcing mask** that routes the answer through the buffer. This is RiM (`~/xorl-rim-repro`: trainable memory tokens + block-causal mask + step grounding; its mechanism fires +22pp@30B and only "failed" on *saturated* GSM8K — our floored ops6 is the hard, non-saturated task RiM never got). Tooling: `autoresearch/arith_reduction_trace.py` emits the exact 6-step trace (`/shared/opd-coord/arith_ops6_*_redtrace.json`); the RiM adapter + run is in `~/xorl-rim-repro/experiments/rim/` (`arith_data.py`, `k8s/rim-qwen3-30b-arith-{rim,baseline}.yaml`, `analyze_arith_eval.py`). Ran 2026-06-13/14 on Qwen3-30B-A3B (model caveat: not Q3.6-35B — internal comparison): RiM value-grounded blocks vs budget-matched SFT-no-CoT. **VERDICT (2026-06-14): NEGATIVE — value-grounded prefill does NOT break the depth ceiling.** All three arms (eval n=1024 disjoint, per-`|gold|` bucket): `<10k` 12/231 (RiM blocks) / 13/231 (no-blocks) / 13/231 (SFT-no-CoT); **`≥10k` 0/139 for ALL THREE**; aggregate **0.282 (blocks) ≈ 0.306 (no-blocks) ≈ 0.289 (SFT)** — all within noise with IDENTICAL per-bucket profiles. The forcing-mask blocks carry **no useful computation** (blocks ≈ no-blocks ≈ plain SFT — the RiM apparatus reduces to "good SFT") and the `≥10k` bucket stays 0 for everything — the OPPOSITE of RiM's +22pp on (soft-reasoning) GSM8K. The depth/exactness wall holds: grounded prefill memory cannot internalize exact multi-digit arithmetic into a fixed-depth pass. **Caveats before fully closing:** (a) M=2 memory tokens/block may bottleneck exact-integer capacity — one cheap retry at **M≥8** is the only RiM knob worth trying; (b) Qwen3-30B-A3B not Q3.6-35B. **Next move (do NOT keep cycling OPD/RiM/CPF knobs): curriculum (easy sub-bands first to raise the bootstrap) or process/step supervision, OR retarget the program to a "soft-reasoning" task (where RiM demonstrably works) instead of exact arithmetic, whose exactness is precisely what defeats single-pass internalization.** (Stack: RiM ran on separate `rim-qwen3-30b-arith-*` pods, not the slots stack; results `~/xorl-rim-repro/experiments/rim/results/*/eval_*.jsonl`.)
+
+## 8. MAKING PREFILL-TIME-COMPUTE WORK — the constructive program (2026-06-14; LIVE direction, supersedes §7's "pivot" framing)
+
+**Doctrine (user).** The goal is to make prefill-time-compute work, and arithmetic is the right testbed (clean, uncontaminated, infinite, exact intermediate labels for free, real 5×5 headroom). Treat every flatline as a *measurement target*: identify the EXACT cause before declaring a direction dead. Diagnostics and controls beat more blind training runs. "It's impossible" is not a deliverable — if something we optimize flatlines, we owe a mechanism, not a shrug.
+
+### 8.1 Why this should be possible — the capacity argument
+Prefill over `[prompt, buffer×K]` is parallel across positions but **not compute-free**: every layer, each position attends to all earlier positions, so information propagates across layers. The budget is specific:
+- **Serial depth ≈ L (number of layers, ~40–64 for Q3.6-35B)** — each serial dependency costs ≈1 layer to propagate (position `i` reads position `j<i`'s *previous-layer* hidden).
+- **K (buffer width) buys working memory / parallel scratch, not serial depth.**
+
+So a 40–64-layer model with a wide buffer has real multi-step compute available. Prediction: ops6 with small operands needs few serial steps → should fit; exact 5-digit carry chains (~10 serial digit-steps × several ops) approach the layer budget → the concrete candidate for a *genuine* depth cliff. **Filler-token identity is irrelevant** (random ≈ pause, ARITH-012A); the only open question is whether training **recruits** the buffer's KV-mixing for the answer.
+
+### 8.2 Why the attempts flatlined — mechanism (with the open question flagged, not assumed)
+- **Trace-distillation (pause-i ↔ teacher-CoT-i; forward/reverse-KL, hidden-MSE; ARITH-007F/008/010/011).** Forward-KL on the buffer drops 16.6 → ~3.9 nats by step ~40 then flatlines, `clamp_frac=0` (live gradient — so **not** optimization-stuck, **not** time, **not** hyperparams: coef/temp/direction all floor the same), accuracy flat at base. **Leading mechanism, NOT YET CONFIRMED:** forward-KL is minimized — over what the buffer can compute from `[prompt, pause×i]` — by the prefix-agnostic *marginal* next-CoT-token distribution, which needs **no computation**; and the buffer is supervised by the trace, not by answer-correctness, so its capacity is never recruited (the sole buffer→answer gradient is "context," satisfiable by ignoring uninformative filler). The ~3.9-nat floor is *hypothesized* to be the marginal→conditional gap. **This is the thing to measure (§8.3 #1), not assert.**
+- **Hidden-MSE (008/011).** Halved (10.3→4.85) then floored: matches the easy/parallel component of the teacher hidden (format, scale — the §1f magnitude-regression) and floors on the computed component. MSE-on-hiddens is under-determined (matches geometry, not function), so the norm can drop without transferring the computation.
+- **RiM value-grounded forcing-blocks (§7 item 6).** blocks ≈ no-blocks ≈ SFT, `≥10k`=0 for all — but at **M=2** memory tokens/block (a width bottleneck per §8.1) and on **Qwen3-30B** (not the program model). Negative, with two real untested caveats.
+
+### 8.3 The diagnostic suite — RUN FIRST (cheap; tells you recruitment vs readout vs depth)
+1. **Shuffled-prefix control** *(behavioral — is the KL floor the no-compute marginal?)*: retrain the pause↔CoT-KL with prompt↔CoT **shuffled** (CoT from a different problem). The shuffled model can only learn the prompt-independent marginal. **shuffled-floor ≈ 3.9 → the real buffer learned only the marginal (zero problem-specific computation) → recruitment problem.** **shuffled-floor ≫ 3.9 → the real buffer beat the marginal (computed something) → readout problem.** One training run.
+2. **Linear-probe the buffer hiddens** *(representational — are the partials there?)*: on examples the model gets WRONG, fit a probe (trained on held-out problems) to decode the **exact** intermediate values — sub-expression results, partial products, low-order/carry digits, **not** magnitude (the model already encodes scale, §1f). Report per-`|gold|`-bucket. Separates "buffer computes, readout broken" from "no computation."
+3. **MI / entropy decomposition** *(what 3.9 should equal if #1 holds)*: measure teacher CoT next-token entropy WITH its real prefix (≈ teacher's own, low) vs the prefix-agnostic marginal; the gap is the predicted floor. Quantitative cross-check on #1.
+4. **Depth-bucketing** *(recruitment vs genuine depth)*: stratify accuracy AND probe-accuracy by serial-step count / expression depth / `|gold|`. A clean cliff at a step threshold ≈ L/c → **depth-bound** (→ looping, §8.4). Flat-low with no cliff → **recruitment-bound** (→ coupling objectives).
+
+**The fork (controls #1 + #2 as a 2×2):** beats-marginal & probe-positive → compute is happening, **readout** is broken (→ force the answer to attend to the buffer / train the head). at-marginal & probe-negative → **recruitment** (the buffer never computes → fix the objective). depth cliff in #4 → **depth** (→ looping). **Do not fund a §8.4 build before this fork is measured.**
+
+### 8.4 The build queue — interventions that RECRUIT the buffer (pick by §8.3; all general, all on arithmetic)
+- **Deep supervision** (general form of value-supervision, no AST): train EVERY buffer position to predict the **gold answer** → a serial refinement chain (early rough, late refined via KV-mixing), answer-coupled at every position. Directly creates the answer-coupled gradient the trace objective lacked.
+- **Forced routing (RiM done right):** block-causal mask (answer attends ONLY to the buffer) with **K≫2** buffer tokens — RiM's M=2 was likely the width bottleneck (§8.1). The cleanest test of "capacity is there."
+- **RL on the answer with a free buffer:** reward = answer correct, buffer unsupervised → rewards the OUTCOME, so SGD can *discover* a buffer-use the shortcut-prone KL can't (KL's marginal optimum is the trap). Prior filler-RL lifted pass@8; open question is pass@1 at this scale + width.
+- **Anneal the direct path:** progressively mask the answer's direct attention to the prompt → forces routing through the buffer (a *curriculum* bottleneck, softer than RiM's hard mask, so training can find the layout).
+- **Looped / serial latent (Coconut):** feed buffer-position-`i`'s final hidden as the input embedding of `i+1` (or loop one slot T×) → adds *effective serial depth*. Reserve for the case §8.3 #4 shows a genuine depth cliff.
+- **Value-supervision at slots** (task-specific but exact — `autoresearch/arith_reduction_trace.py` already emits the 6-step reduction trace): supervise slot-`i` with the `i`-th reduction VALUE — computation-forcing, and a fixed per-slot target (unlike the serial conditional the trace-KL provably couldn't fit).
+
+### 8.5 What §8 supersedes / preserves
+The §1f "the wall is DEPTH" finding and §7's "pivot to curriculum / soft-reasoning" are the **leading hypothesis and a fallback**, not a closed verdict (user, 2026-06-14). They are right that *blind objective-knob cycling is over*; they are wrong to treat the flatline as final, because **the exact cause (recruitment vs readout vs depth) was never measured.** §8.3 measures it; §8.4 builds what the measurement selects. Stay on arithmetic; diagnose, then recruit. All prior flatline numbers (§1c–§1f, §7) are inputs to §8.3, not stop signs.

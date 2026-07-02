@@ -1,0 +1,43 @@
+### F7-confirm-newtasks : --tasks mult:5,add:16:3 --regimes raw_nothink,chat_hardoff --filler-kind nato --filler-counts 0,100,400 --nprob 400 --ksamp 8 --workers 96
+[F7-confirm-newtasks] 38400 requests, 12 cells -> 127.0.0.1:30060 (Qwen/Qwen3-235B-A22B)
+  ...2000/38400 (errs=0)
+  ...4000/38400 (errs=0)
+  ...6000/38400 (errs=0)
+  ...8000/38400 (errs=0)
+  ...10000/38400 (errs=0)
+  ...12000/38400 (errs=0)
+  ...14000/38400 (errs=0)
+  ...16000/38400 (errs=0)
+  ...18000/38400 (errs=0)
+  ...20000/38400 (errs=0)
+  ...22000/38400 (errs=0)
+  ...24000/38400 (errs=0)
+  ...26000/38400 (errs=0)
+  ...28000/38400 (errs=0)
+  ...30000/38400 (errs=0)
+  ...32000/38400 (errs=0)
+  ...34000/38400 (errs=0)
+  ...36000/38400 (errs=0)
+  ...38000/38400 (errs=0)
+
+=== F7-confirm-newtasks (Qwen/Qwen3-235B-A22B)  kinds=['nato'] errs=0 ===
+-- regime=raw_nothink --
+   task       kind               K     p@1     se    Δp@1     p@8    Δp@8     n
+   mult:5     base               0   0.118  0.013           0.258           400
+   mult:5     nato             100   0.108  0.013  -0.010   0.215  -0.043   400
+   mult:5     nato             400   0.104  0.013  -0.014   0.193  -0.065   400
+   add:16:3   base               0   0.069  0.007           0.279           376
+   add:16:3   nato             100   0.037  0.005  -0.031   0.181  -0.098   376
+   add:16:3   nato             400   0.026  0.004  -0.043   0.128  -0.152   376
+
+-- regime=chat_hardoff --
+   task       kind               K     p@1     se    Δp@1     p@8    Δp@8     n
+   mult:5     base               0   0.066  0.010           0.165           400
+   mult:5     nato             100   0.075  0.011  +0.009   0.163  -0.003   400
+   mult:5     nato             400   0.097  0.013  +0.031   0.185  +0.020   400
+   add:16:3   base               0   0.082  0.008           0.311           376
+   add:16:3   nato             100   0.045  0.006  -0.037   0.205  -0.106   376
+   add:16:3   nato             400   0.044  0.006  -0.038   0.178  -0.133   376
+
+samples + summary -> experiments/opd_profile/results/filler_sweep/F7-confirm-newtasks
+DONE

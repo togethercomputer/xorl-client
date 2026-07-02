@@ -1,0 +1,132 @@
+{
+  "run_id": "F1-budget-base-mult4",
+  "model": "Qwen/Qwen3-235B-A22B",
+  "nprob": 200,
+  "ksamp": 8,
+  "kinds": [
+    "pause"
+  ],
+  "errs": 0,
+  "cells": [
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "base",
+      "fcount": 0,
+      "pass1": 0.558125,
+      "se": 0.029890365784120857,
+      "passk": 0.78,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 25,
+      "pass1": 0.594375,
+      "se": 0.029140448703273952,
+      "passk": 0.815,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 50,
+      "pass1": 0.57625,
+      "se": 0.029265371986144942,
+      "passk": 0.79,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 100,
+      "pass1": 0.61,
+      "se": 0.028965626830580453,
+      "passk": 0.81,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 200,
+      "pass1": 0.595,
+      "se": 0.029816229434461397,
+      "passk": 0.805,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 400,
+      "pass1": 0.59875,
+      "se": 0.028652609789314016,
+      "passk": 0.825,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "base",
+      "fcount": 0,
+      "pass1": 0.469375,
+      "se": 0.02802795933344033,
+      "passk": 0.72,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 25,
+      "pass1": 0.401875,
+      "se": 0.025968632931996707,
+      "passk": 0.725,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 50,
+      "pass1": 0.426875,
+      "se": 0.027358554409395597,
+      "passk": 0.705,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 100,
+      "pass1": 0.485625,
+      "se": 0.028468243294173974,
+      "passk": 0.74,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 200,
+      "pass1": 0.54625,
+      "se": 0.0293259440165583,
+      "passk": 0.755,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 400,
+      "pass1": 0.57625,
+      "se": 0.02869642156354628,
+      "passk": 0.81,
+      "nprob": 200
+    }
+  ]
+}

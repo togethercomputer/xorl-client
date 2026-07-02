@@ -1,0 +1,124 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: apanda-eval-q235-sglang
+  namespace: apanda
+  labels:
+    app: apanda-eval-q235-sglang
+    team: turbo
+    scheduling.volcano.sh/queue-name: turbo
+    purpose: disposable-restatement-eval
+spec:
+  # Exclude nodes the prior stack's spec avoided (known-flaky set).
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/hostname
+            operator: NotIn
+            values:
+            - research-common-h100-005.cloud.together.ai
+            - research-common-h100-050.cloud.together.ai
+            - research-common-h100-080.cloud.together.ai
+            - research-common-h100-057.cloud.together.ai
+            - research-common-h100-040.cloud.together.ai
+            - research-common-h100-047.cloud.together.ai
+            - research-common-h100-048.cloud.together.ai
+            - research-common-h100-052.cloud.together.ai
+            - research-common-h100-055.cloud.together.ai
+            - research-common-h100-058.cloud.together.ai
+            - research-common-h100-066.cloud.together.ai
+            - research-common-h100-081.cloud.together.ai
+            - research-common-h100-090.cloud.together.ai
+            - research-common-h100-096.cloud.together.ai
+            - research-common-h100-106.cloud.together.ai
+            - research-common-h100-110.cloud.together.ai
+            - research-common-h100-116.cloud.together.ai
+            - research-common-h100-122.cloud.together.ai
+  nodeSelector:
+    node-group: default
+  schedulerName: volcano
+  priorityClassName: normal
+  restartPolicy: Never
+  runtimeClassName: nvidia
+  tolerations:
+  - operator: Exists
+  containers:
+  - name: sglang
+    image: nvcr.io/nvidia/pytorch:26.02-py3
+    imagePullPolicy: IfNotPresent
+    command:
+    - /bin/bash
+    - -lc
+    - |-
+      set -euo pipefail
+      [ -f "${HOME}/.shell_env" ] && source "${HOME}/.shell_env" || true
+      [ -f "${HOME}/.bashrc" ] && source "${HOME}/.bashrc" || true
+      SGLANG_REPO="/home/apanda/xorl-sglang-internal"
+      MODEL_PATH="/shared/huggingface/hub/models--Qwen--Qwen3-235B-A22B-Instruct-2507/snapshots/ac9c66cc9b46af7306746a9250f23d47083d689e"
+      if [ -x "${SGLANG_REPO}/.venv/bin/python" ]; then
+        PY="${SGLANG_REPO}/.venv/bin/python"
+      elif [ -x "${HOME}/miniconda3/envs/xorl/bin/python" ]; then
+        PY="${HOME}/miniconda3/envs/xorl/bin/python"
+      else
+        PY="$(command -v python3)"
+      fi
+      export PYTHONPATH="${SGLANG_REPO}/python:${PYTHONPATH:-}"
+      export TRITON_CACHE_DIR="/tmp/triton-cache-eval-q235"
+      mkdir -p "${TRITON_CACHE_DIR}"
+      echo "host=${HOSTNAME} python=${PY} model=${MODEL_PATH}"
+      exec "${PY}" -m sglang.launch_server \
+        --model-path "${MODEL_PATH}" \
+        --tokenizer-path "${MODEL_PATH}" \
+        --served-model-name Qwen/Qwen3-235B-A22B-Instruct-2507 \
+        --host 0.0.0.0 \
+        --port 30060 \
+        --tp-size 8 \
+        --dtype bfloat16 \
+        --trust-remote-code \
+        --attention-backend fa3 \
+        --disable-custom-all-reduce \
+        --mem-fraction-static 0.90 \
+        --max-running-requests 64 \
+        --max-queued-requests 32768 \
+        --chunked-prefill-size 8192 \
+        --max-prefill-tokens 16384
+    env:
+    - name: HOME
+      value: /home/apanda
+    - name: HF_HOME
+      value: /shared/huggingface
+    - name: TRANSFORMERS_CACHE
+      value: /shared/huggingface/hub
+    - name: TOKENIZERS_PARALLELISM
+      value: "false"
+    - name: CUDA_DEVICE_ORDER
+      value: PCI_BUS_ID
+    ports:
+    - containerPort: 30060
+      name: http
+      protocol: TCP
+    resources:
+      limits:
+        nvidia.com/gpu: "8"
+      requests:
+        nvidia.com/gpu: "8"
+    volumeMounts:
+    - mountPath: /shared
+      name: shared
+    - mountPath: /home/apanda
+      name: home
+    - mountPath: /dev/shm
+      name: shm
+  volumes:
+  - name: shared
+    persistentVolumeClaim:
+      claimName: shared-data
+  - name: home
+    persistentVolumeClaim:
+      claimName: home-apanda
+  - emptyDir:
+      medium: Memory
+      sizeLimit: 128Gi
+    name: shm

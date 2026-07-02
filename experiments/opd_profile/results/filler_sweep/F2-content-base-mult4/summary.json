@@ -1,0 +1,277 @@
+{
+  "run_id": "F2-content-base-mult4",
+  "model": "Qwen/Qwen3-235B-A22B",
+  "nprob": 200,
+  "ksamp": 8,
+  "kinds": [
+    "nato",
+    "random_numbers",
+    "pause",
+    "counting",
+    "lorem",
+    "states"
+  ],
+  "errs": 0,
+  "cells": [
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "base",
+      "fcount": 0,
+      "pass1": 0.660625,
+      "se": 0.027984223334823255,
+      "passk": 0.87,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "nato",
+      "fcount": 100,
+      "pass1": 0.67125,
+      "se": 0.027616103697246746,
+      "passk": 0.855,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "nato",
+      "fcount": 400,
+      "pass1": 0.6675,
+      "se": 0.028055154758844472,
+      "passk": 0.855,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "random_numbers",
+      "fcount": 100,
+      "pass1": 0.630625,
+      "se": 0.02606550834920571,
+      "passk": 0.885,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "random_numbers",
+      "fcount": 400,
+      "pass1": 0.6525,
+      "se": 0.02751427222151073,
+      "passk": 0.85,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 100,
+      "pass1": 0.690625,
+      "se": 0.02733931900566412,
+      "passk": 0.87,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 400,
+      "pass1": 0.704375,
+      "se": 0.026806254836639044,
+      "passk": 0.87,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "counting",
+      "fcount": 100,
+      "pass1": 0.646875,
+      "se": 0.027844426864492296,
+      "passk": 0.84,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "counting",
+      "fcount": 400,
+      "pass1": 0.6475,
+      "se": 0.028045637609880145,
+      "passk": 0.865,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "lorem",
+      "fcount": 100,
+      "pass1": 0.656875,
+      "se": 0.02792270913255925,
+      "passk": 0.865,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "lorem",
+      "fcount": 400,
+      "pass1": 0.681875,
+      "se": 0.026771376127757596,
+      "passk": 0.875,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "states",
+      "fcount": 100,
+      "pass1": 0.653125,
+      "se": 0.02798506505631227,
+      "passk": 0.83,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "states",
+      "fcount": 400,
+      "pass1": 0.658125,
+      "se": 0.027375768672808724,
+      "passk": 0.855,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "base",
+      "fcount": 0,
+      "pass1": 0.565625,
+      "se": 0.028930060731784227,
+      "passk": 0.815,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "nato",
+      "fcount": 100,
+      "pass1": 0.59875,
+      "se": 0.02848771554874012,
+      "passk": 0.81,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "nato",
+      "fcount": 400,
+      "pass1": 0.649375,
+      "se": 0.0287361707508518,
+      "passk": 0.82,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "random_numbers",
+      "fcount": 100,
+      "pass1": 0.59,
+      "se": 0.02812112619888235,
+      "passk": 0.83,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "random_numbers",
+      "fcount": 400,
+      "pass1": 0.621875,
+      "se": 0.028513164496826997,
+      "passk": 0.84,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 100,
+      "pass1": 0.639375,
+      "se": 0.027097579522067535,
+      "passk": 0.85,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 400,
+      "pass1": 0.69,
+      "se": 0.02763954998942802,
+      "passk": 0.875,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "counting",
+      "fcount": 100,
+      "pass1": 0.63,
+      "se": 0.02780777972196498,
+      "passk": 0.845,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "counting",
+      "fcount": 400,
+      "pass1": 0.685,
+      "se": 0.02731090768158319,
+      "passk": 0.87,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "lorem",
+      "fcount": 100,
+      "pass1": 0.6425,
+      "se": 0.028035557107208654,
+      "passk": 0.845,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "lorem",
+      "fcount": 400,
+      "pass1": 0.694375,
+      "se": 0.026593344122790682,
+      "passk": 0.865,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "states",
+      "fcount": 100,
+      "pass1": 0.63875,
+      "se": 0.02797598014054415,
+      "passk": 0.845,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "states",
+      "fcount": 400,
+      "pass1": 0.65375,
+      "se": 0.027579117573458607,
+      "passk": 0.85,
+      "nprob": 200
+    }
+  ]
+}

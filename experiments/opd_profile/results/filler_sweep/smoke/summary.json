@@ -1,0 +1,32 @@
+{
+  "run_id": "smoke",
+  "model": "Qwen/Qwen3-235B-A22B",
+  "nprob": 8,
+  "ksamp": 2,
+  "kinds": [
+    "pause"
+  ],
+  "errs": 0,
+  "cells": [
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "base",
+      "fcount": 0,
+      "pass1": 0.625,
+      "se": 0.15669579263200217,
+      "passk": 0.75,
+      "nprob": 8
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 100,
+      "pass1": 0.625,
+      "se": 0.15669579263200217,
+      "passk": 0.75,
+      "nprob": 8
+    }
+  ]
+}

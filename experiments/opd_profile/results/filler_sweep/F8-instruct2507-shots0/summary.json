@@ -1,0 +1,73 @@
+{
+  "run_id": "F8-instruct2507-shots0",
+  "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+  "nprob": 200,
+  "ksamp": 8,
+  "kinds": [
+    "pause",
+    "nato"
+  ],
+  "errs": 0,
+  "cells": [
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "base",
+      "fcount": 0,
+      "pass1": 0.41875,
+      "se": 0.026147502691173486,
+      "passk": 0.73,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 400,
+      "pass1": 0.430625,
+      "se": 0.024342766343232358,
+      "passk": 0.785,
+      "nprob": 200
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "nato",
+      "fcount": 400,
+      "pass1": 0.43,
+      "se": 0.02518212555040144,
+      "passk": 0.75,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "base",
+      "fcount": 0,
+      "pass1": 0.45,
+      "se": 0.028630815882374924,
+      "passk": 0.695,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 400,
+      "pass1": 0.533125,
+      "se": 0.027816778438353396,
+      "passk": 0.8,
+      "nprob": 200
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "nato",
+      "fcount": 400,
+      "pass1": 0.543125,
+      "se": 0.02876211646581254,
+      "passk": 0.765,
+      "nprob": 200
+    }
+  ]
+}

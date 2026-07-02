@@ -1,0 +1,44 @@
+### F8-instruct2507-shots0 : --tasks mult:4 --regimes raw_nothink,chat_hardoff --filler-kinds pause,nato --filler-counts 0,400 --nfewshot 0 --nprob 200 --ksamp 8 --workers 96
+[F8-instruct2507-shots0] 9600 requests, 6 cells -> 127.0.0.1:30060 (Qwen/Qwen3-235B-A22B-Instruct-2507)
+  ...2000/9600 (errs=0)
+  ...4000/9600 (errs=0)
+  ...6000/9600 (errs=0)
+  ...8000/9600 (errs=0)
+
+=== F8-instruct2507-shots0 (Qwen/Qwen3-235B-A22B-Instruct-2507)  kinds=['pause', 'nato'] errs=0 ===
+-- regime=raw_nothink --
+   task       kind               K     p@1     se    Δp@1     p@8    Δp@8     n
+   mult:4     base               0   0.419  0.026           0.730           200
+   mult:4     pause            400   0.431  0.024  +0.012   0.785  +0.055   200
+   mult:4     nato             400   0.430  0.025  +0.011   0.750  +0.020   200
+
+-- regime=chat_hardoff --
+   task       kind               K     p@1     se    Δp@1     p@8    Δp@8     n
+   mult:4     base               0   0.450  0.029           0.695           200
+   mult:4     pause            400   0.533  0.028  +0.083   0.800  +0.105   200
+   mult:4     nato             400   0.543  0.029  +0.093   0.765  +0.070   200
+
+samples + summary -> experiments/opd_profile/results/filler_sweep/F8-instruct2507-shots0
+DONE
+### F8-instruct2507-shots10 : --tasks mult:4 --regimes raw_nothink,chat_hardoff --filler-kinds pause,nato --filler-counts 0,400 --nfewshot 10 --nprob 200 --ksamp 8 --workers 96
+[F8-instruct2507-shots10] 9600 requests, 6 cells -> 127.0.0.1:30060 (Qwen/Qwen3-235B-A22B-Instruct-2507)
+  ...2000/9600 (errs=0)
+  ...4000/9600 (errs=0)
+  ...6000/9600 (errs=0)
+  ...8000/9600 (errs=0)
+
+=== F8-instruct2507-shots10 (Qwen/Qwen3-235B-A22B-Instruct-2507)  kinds=['pause', 'nato'] errs=0 ===
+-- regime=raw_nothink --
+   task       kind               K     p@1     se    Δp@1     p@8    Δp@8     n
+   mult:4     base               0   0.670  0.027           0.865           200
+   mult:4     pause            400   0.691  0.027  +0.021   0.875  +0.010   200
+   mult:4     nato             400   0.699  0.028  +0.029   0.840  -0.025   200
+
+-- regime=chat_hardoff --
+   task       kind               K     p@1     se    Δp@1     p@8    Δp@8     n
+   mult:4     base               0   0.707  0.028           0.845           200
+   mult:4     pause            400   0.718  0.028  +0.011   0.855  +0.010   200
+   mult:4     nato             400   0.711  0.029  +0.004   0.820  -0.025   200
+
+samples + summary -> experiments/opd_profile/results/filler_sweep/F8-instruct2507-shots10
+DONE

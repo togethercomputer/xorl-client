@@ -1,0 +1,84 @@
+id: AMDAHL-064-OPRD-PREP128-2NODE-LMHEADTP-NOCP-VPKL-FWDPREFETCH-REPEAT2
+base_config: AM
+slug: amdahl-064-oprd-prep128-2node-lmheadtp-nocp-vpkl-fwdprefetch-repeat2
+buffer_label: amdahl-064-oprd-prep128-2node-lmheadtp-nocp-vpkl-fwdprefetch-repeat2
+# Throughput-only fit/scale screen for the current real all-layer SGLang-cache
+# path. Reuses the AMDAHL-063 loss-clean 2-node trainer config and replays the
+# same full64 capture with `--repeat-data 2`, giving a 128-datum static f/b call.
+#
+# Hypothesis: the one-node repeat2 screen (AMDAHL-052) OOMed because the current
+# one-node memory envelope could not absorb the fatter FSDP pre-backward
+# all-gather. The 2-node no-CP/lm-head-TP VP-KL path has lower per-rank FSDP
+# pressure and forward-only prefetch is now loss-clean, so repeat2 may fit and
+# should expose whether larger current-path calls improve executed-token
+# throughput enough to justify a real prepare-batch increase and later 4-node
+# validation.
+#
+# Not a science/default candidate and not promotable without same-capture loss
+# parity, static/K3, and same-workload 4-node real-cache validation.
+#
+# Measured 2026-06-15 05:02Z on `research-common-h100-089/092`. It fit and
+# improved valid-token throughput versus AMDAHL-048/063, but it shifted
+# same-capture loss/KL/hidden from AMDAHL-048/063:
+# loss 2.355820715 vs 2.355041921, KL 2.334518359 vs 2.333743553, hidden
+# 0.021302296 vs 0.021298385. Treat as throughput-positive evidence for fatter
+# calls plus a packing/aggregation correctness caveat, not a promotion.
+trainer_config: configs/opd_profile/qwen3_6_35b_a3b_opd_opdb_2node_warm009_deepep36_forwardprefetch_lmheadtp_nocp.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 100
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/arith_ops6_nonempty_cot.json
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 1
+default_prompts_per_step: 128
+profile_warmup_steps: 0
+supervise_student_cot: false
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 1.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 128
+eval_accuracy_every: 0
+eval_control_start_step: 0
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: false
+eval_answer_logprob_every: 0
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: false
+opd_pipeline_rl: false
+sampler_quiesce_before_sync: false
+sync_method: p2p
+sync_weights: false
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 10.0
+opd_prepare_batch_size: 128
+opd_microbatch_size: 128
+save_every: 0
+client_args:
+  opd_oprd_layers: every1
+  opd_oprd_num_layers: 40
+  opd_oprd_student_capture: selected_hooks
+  opd_hidden_match_mode: mse
+  opd_oprd_cache_backend: sglang
+  opd_strict_prepare_overlap_chunks: 0
+  opd_streaming_lowmem: true
+  opd_vocab_chunk_size: 8192
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: false
+  opd_mask_prompt_kl: true
+  eval_heldout_num_problems: 0

@@ -1,0 +1,52 @@
+{
+  "run_id": "F4-confirm-pass8",
+  "model": "Qwen/Qwen3-235B-A22B",
+  "nprob": 1000,
+  "ksamp": 8,
+  "kinds": [
+    "pause"
+  ],
+  "errs": 0,
+  "cells": [
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "base",
+      "fcount": 0,
+      "pass1": 0.620625,
+      "se": 0.01303279855645798,
+      "passk": 0.806,
+      "nprob": 1000
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 400,
+      "pass1": 0.645,
+      "se": 0.012873790602790014,
+      "passk": 0.826,
+      "nprob": 1000
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "base",
+      "fcount": 0,
+      "pass1": 0.50775,
+      "se": 0.013089309283438814,
+      "passk": 0.737,
+      "nprob": 1000
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "pause",
+      "fcount": 400,
+      "pass1": 0.614,
+      "se": 0.013307416628983153,
+      "passk": 0.79,
+      "nprob": 1000
+    }
+  ]
+}

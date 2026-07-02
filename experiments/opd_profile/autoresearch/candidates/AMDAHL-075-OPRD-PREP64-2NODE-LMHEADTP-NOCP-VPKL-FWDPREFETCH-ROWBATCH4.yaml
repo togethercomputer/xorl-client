@@ -1,0 +1,85 @@
+id: AMDAHL-075-OPRD-PREP64-2NODE-LMHEADTP-NOCP-VPKL-FWDPREFETCH-ROWBATCH4
+base_config: AM
+slug: amdahl-075-oprd-prep64-2node-lmheadtp-nocp-vpkl-fwdprefetch-rowbatch4
+buffer_label: amdahl-075-oprd-prep64-2node-lmheadtp-nocp-vpkl-fwdprefetch-rowbatch4
+# Throughput-only engine candidate based on AMDAHL-063/074. The current OPD
+# server path packs samples into many single-row packed microbatches and then
+# runs one model forward/backward per packed row. On the current 64-datum
+# real all-layer SGLang-cache capture this is 22 model calls. PR #376 commit
+# 10d12e74 adds opt-in `opd_packed_row_batch_size`; row_batch_size=4 groups
+# those 22 packed rows into 6 backend batches with only ~3% extra padding
+# (71040 -> 73216 input tokens in local packer simulation).
+#
+# Hypothesis: fatter packed-row model calls recover the standalone 2-node
+# mbs4 utilization ceiling without changing sample content, VP-KL, topology,
+# or trainer config. This is a model-execution batching change, so it must pass
+# same-capture loss/KL/hidden comparison before any 4-node/static/K3 spend.
+#
+# Initial gates:
+# 1. 2-node server-only replay with `--loss-param opd_packed_row_batch_size=4`
+#    must fit and preserve the AMDAHL-063/074 same-capture loss/KL/hidden tuple.
+# 2. If rowbatch4 fits and is correct, compare rowbatch8 and then repeat/fatter
+#    calls only after source-rank/packing correctness is rechecked.
+# 3. Not a science/default candidate until static/K3 and same-workload 4-node
+#    real-cache MFU/fragmentation gates pass.
+trainer_config: configs/opd_profile/qwen3_6_35b_a3b_opd_opdb_2node_warm009_deepep36_forwardprefetch_lmheadtp_nocp.yaml
+gdn_backend: fla
+skip_optim_empty_cache: true
+score_mode: pause_vs_nopause
+score_min_control_n: 100
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/arith_ops6_nonempty_cot.json
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 1
+default_prompts_per_step: 64
+profile_warmup_steps: 0
+supervise_student_cot: false
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 1.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 128
+eval_accuracy_every: 0
+eval_control_start_step: 0
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: false
+eval_answer_logprob_every: 0
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: false
+opd_pipeline_rl: false
+sampler_quiesce_before_sync: false
+sync_method: p2p
+sync_weights: false
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 10.0
+opd_prepare_batch_size: 64
+opd_microbatch_size: 64
+save_every: 0
+client_args:
+  opd_oprd_layers: every1
+  opd_oprd_num_layers: 40
+  opd_oprd_student_capture: selected_hooks
+  opd_hidden_match_mode: mse
+  opd_oprd_cache_backend: sglang
+  opd_strict_prepare_overlap_chunks: 0
+  opd_streaming_lowmem: true
+  opd_vocab_chunk_size: 8192
+  opd_packed_row_batch_size: 4
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: false
+  opd_mask_prompt_kl: true
+  eval_heldout_num_problems: 0

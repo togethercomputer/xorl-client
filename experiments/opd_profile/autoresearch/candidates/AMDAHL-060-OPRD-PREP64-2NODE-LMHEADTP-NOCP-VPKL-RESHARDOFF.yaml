@@ -1,0 +1,91 @@
+id: AMDAHL-060-OPRD-PREP64-2NODE-LMHEADTP-NOCP-VPKL-RESHARDOFF
+base_config: AM
+slug: amdahl-060-oprd-prep64-2node-lmheadtp-nocp-vpkl-reshardoff
+buffer_label: amdahl-060-oprd-prep64-2node-lmheadtp-nocp-vpkl-reshardoff
+# Throughput-only two-node topology/engine screen for the current real all-layer
+# SGLang-cache path. Same workload as the AMDAHL-048 2-node DeepEP/SMS36
+# baseline, but sets `reshard_after_forward:false` in the trainer config.
+#
+# Hypothesis: the 2-node baseline has enough FSDP memory headroom that keeping
+# parameters gathered after forward can remove repeated all-gather/reshard
+# traffic during activation-checkpointed backward. If peak memory rises into OOM
+# or the wall-time win is inside noise, reject it. This is intentionally not a
+# one-node screen because the 1-node memory-pressure root cause leaves little
+# headroom for gathered params.
+#
+# Not a science/default candidate and not promotable without static/K3 plus the
+# same-workload 4-node real-cache gate. It must beat the AMDAHL-048 2-node
+# baseline (`server_forward_backward_s=4.4441`, loss `2.3550419`) with matching
+# loss before spending wider gates.
+#
+# Result 2026-06-15: rejected. A first replay client used bad shell quoting for
+# `teacher_heads` and wrote an empty JSONL; ignore that artifact. The corrected
+# replay completed on trainer-head `research-common-h100-110` plus worker-1
+# `research-common-h100-092` with `teacher_heads` parsed as JSON. Mean over 3
+# measured rows after warmup was `server_forward_backward_s=4.443982`,
+# `api_wall_s=4.643382`, `model_forward_s=1.249282`,
+# `backward_compute_s=1.738238`, `clear_gradients_s=0.762611`, loss
+# `2.355553985`, and `opd_kl=2.334234441`. Versus the AMDAHL-048 2-node
+# baseline, server wall is effectively flat (-0.003%), API wall is only 1.77%
+# lower, backward is 15.9% lower but model forward and clear-gradients increase.
+# The same-capture loss/KL shift is small (+0.00051/+0.00049) but the total wall
+# result is not a meaningful win. Do not promote `reshard_after_forward:false`.
+trainer_config: configs/opd_profile/qwen3_6_35b_a3b_opd_opdb_2node_warm009_deepep36_noprefetch_lmheadtp_nocp_reshardoff.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 100
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/arith_ops6_nonempty_cot.json
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 1
+default_prompts_per_step: 64
+profile_warmup_steps: 0
+supervise_student_cot: false
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 1.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 128
+eval_accuracy_every: 0
+eval_control_start_step: 0
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: false
+eval_answer_logprob_every: 0
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: false
+opd_pipeline_rl: false
+sampler_quiesce_before_sync: false
+sync_method: p2p
+sync_weights: false
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 10.0
+opd_prepare_batch_size: 64
+opd_microbatch_size: 64
+save_every: 0
+client_args:
+  opd_oprd_layers: every1
+  opd_oprd_num_layers: 40
+  opd_oprd_student_capture: selected_hooks
+  opd_hidden_match_mode: mse
+  opd_oprd_cache_backend: sglang
+  opd_strict_prepare_overlap_chunks: 0
+  opd_streaming_lowmem: true
+  opd_vocab_chunk_size: 8192
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: false
+  opd_mask_prompt_kl: true
+  eval_heldout_num_problems: 0
