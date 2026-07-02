@@ -290,10 +290,16 @@ _GUESS_TAG_RE = re.compile(r"<guess\b[^>]*>.*?</guess>", re.IGNORECASE | re.DOTA
 
 
 def has_single_guess_tag(text: str) -> bool:
-    """True iff the text contains exactly one <guess>...</guess> tag."""
+    """Format reward: exactly one well-formed 5-letter <guess> tag.
+
+    Counts 5-letter guesses (`_GUESS_RE`), NOT bare ``<guess>...</guess>`` blocks
+    (`_GUESS_TAG_RE`): thinking models echo the prompt template's 4-letter
+    ``<guess>WORD</guess>`` example, which is not a real guess and previously
+    inflated the `_GUESS_TAG_RE` count to >1 — killing ~91% of turns and making
+    the run measure format compliance instead of Wordle solving (2026-06 fix)."""
     if not text:
         return False
-    return len(_GUESS_TAG_RE.findall(text)) == 1
+    return len(_GUESS_RE.findall(text)) == 1
 
 
 def extract_guess(text: str) -> str | None:
@@ -314,6 +320,16 @@ def extract_guesses(text: str) -> list[str]:
     if not text:
         return []
     return [m.group(1).lower() for m in _GUESS_RE.finditer(text)]
+
+
+def strip_think_prefix(text: str) -> str:
+    """Drop a private ``<think>...</think>`` prefix; the public response follows it.
+    Think-contract models wrap reasoning (which itself routinely mentions the output
+    tags) in <think>...</think>, so the guess must be parsed from the public suffix
+    only — otherwise tags inside the think block pollute the count/extraction."""
+    if text and "</think>" in text:
+        return text.split("</think>")[-1].lstrip()
+    return text
 
 
 def compute_feedback(guess: str, target: str) -> str:
@@ -368,14 +384,51 @@ def build_examples(tokenizer, *, train_size: int = 20, eval_size: int = 64, seed
     setup here."""
     rng = random.Random(seed)
     pool = list(WORD_LIST)
-    rng.shuffle(pool)
-    if len(pool) < train_size + eval_size:
-        raise ValueError(
-            f"WORD_LIST has {len(pool)} entries, need ≥{train_size + eval_size} "
-            f"for train+eval split."
+    # Parity with the GRPO floor eval (eval_wordle_sglang._pick_targets): reserve
+    # random.Random(SEED).shuffle(WORD_LIST)[:COUNT] as the held-out set, keep it OUT
+    # of TRAINING, and PROBE on exactly that set so ZORL's held-out == GRPO's held-out.
+    # (WORD_LIST is byte-identical across the zorl/grpo repos — verified — so the
+    # shuffle picks the same words.) Set WORDLE_TRAIN_EXCLUDE_SEED=777
+    # WORDLE_TRAIN_EXCLUDE_COUNT=170 to match the canonical GRPO held-out.
+    _excl_seed = int(os.environ.get("WORDLE_TRAIN_EXCLUDE_SEED", "0") or 0)
+    _excl_count = int(os.environ.get("WORDLE_TRAIN_EXCLUDE_COUNT", "0") or 0)
+    _reserved_list: list[str] = []
+    if _excl_count > 0:
+        _reserve = list(WORD_LIST)
+        random.Random(_excl_seed).shuffle(_reserve)
+        _reserved_list = _reserve[:_excl_count]
+        _reserved = set(_reserved_list)
+        pool = [w for w in pool if w not in _reserved]
+        print(
+            f"[wordle.build_examples] excluded {len(_reserved)} held-out targets "
+            f"(seed={_excl_seed}, count={_excl_count}); train pool now {len(pool)} words",
+            flush=True,
         )
-    train_words = pool[:train_size]
-    eval_words = pool[train_size:train_size + eval_size]
+    rng.shuffle(pool)
+    # When exclusion is on, PROBE on the reserved floor-eval set (identical words +
+    # order to GRPO's _pick_targets(seed=SEED, offset=0)); otherwise keep the legacy
+    # behaviour: a disjoint slice of the (post-exclusion) train pool.
+    if _reserved_list:
+        if eval_size > len(_reserved_list):
+            raise ValueError(
+                f"eval_size={eval_size} exceeds reserved held-out count "
+                f"{len(_reserved_list)} (raise WORDLE_TRAIN_EXCLUDE_COUNT)."
+            )
+        if len(pool) < train_size:
+            raise ValueError(
+                f"train pool has {len(pool)} entries after exclusion, "
+                f"need ≥{train_size}."
+            )
+        train_words = pool[:train_size]
+        eval_words = _reserved_list[:eval_size]
+    else:
+        if len(pool) < train_size + eval_size:
+            raise ValueError(
+                f"WORD_LIST has {len(pool)} entries, need ≥{train_size + eval_size} "
+                f"for train+eval split."
+            )
+        train_words = pool[:train_size]
+        eval_words = pool[train_size:train_size + eval_size]
 
     def to_example(word: str, pid: str) -> Example:
         # Render the *first-turn* prompt so the standalone client's
@@ -471,6 +524,77 @@ def _wordle_shaped_reward(
     )
 
 
+def wordle_retrieval_reward(
+    turns: list[tuple[str, str]],
+    *,
+    solved: bool,
+    invalid_action: bool = False,
+    solve_weight: float = 2.0,
+    consistent_bonus: float = 0.1,
+    violate_penalty: float = 0.2,
+    reduce_weight: float = 0.1,
+    invalid_penalty: float = 0.8,
+    valid_guess_rate: float | None = None,
+    format_rate: float | None = None,
+    format_weight: float = 0.5,
+) -> dict[str, float]:
+    """Retrieval-targeted Wordle reward — ported verbatim from the GRPO-CONVERGING
+    science fork (OPSD_WORDLE_CANONICAL_RUNBOOK_2026_06_08, wordle.py:616).
+
+    WHY (the env-audit verdict): the legacy ``_wordle_shaped_reward`` UNDER-PRICES
+    solving (a clean non-solving game banks ~40% of a solve from format/info proxies)
+    and contains NO signal for the actual bottleneck skill — constrained-vocabulary
+    RETRIEVAL — so as an ES fitness it is nearly flat across the population (no
+    gradient; explains the ES no-lift). This reward makes SOLVE dominate (solve_weight
+    2.0 + fast-solve length bonus, ~3-5x a non-solve) AND adds a DENSE per-turn signal:
+    +consistent_bonus if the guess is still a possible answer, -violate_penalty if it
+    violates the public constraints (the exact failure mode), +reduce_weight*log(cand
+    narrowing) — present even before the game is solved. Returns the scalar under
+    ``wordle_retrieval_reward`` plus components."""
+    import math
+
+    history: list[tuple[str, str]] = []
+    consistent_turns = 0
+    violate_turns = 0
+    reduction = 0.0
+    for guess, feedback in turns:
+        g = str(guess).lower()
+        cand_before = remaining_candidates(history)
+        n_before = max(1, len(cand_before))
+        if history:  # constraints exist -> retrieval is being tested
+            if g in {w.lower() for w in cand_before}:
+                consistent_turns += 1
+            else:
+                violate_turns += 1
+        history.append((guess, feedback))
+        cand_after = remaining_candidates(history)
+        n_after = max(1, len(cand_after))
+        reduction += math.log(n_before / n_after)  # >= 0: a guess only narrows
+    n_played = max(1, len(turns))
+    length_bonus = 0.5 * solve_weight * (float(solved) / n_played)
+    consistency_reward = consistent_bonus * consistent_turns - violate_penalty * violate_turns
+    narrowing_reward = reduce_weight * reduction
+    solve_reward = solve_weight * float(solved)
+    if valid_guess_rate is None:
+        invalid_rate = 1.0 if invalid_action else 0.0
+    else:
+        invalid_rate = max(0.0, 1.0 - float(valid_guess_rate))
+    invalid_pen = invalid_penalty * invalid_rate
+    format_reward = format_weight * float(format_rate) if format_rate is not None else 0.0
+    total = solve_reward + length_bonus + consistency_reward + narrowing_reward + format_reward - invalid_pen
+    return {
+        "wordle_retrieval_reward": float(total),
+        "wr_solve": float(solve_reward),
+        "wr_length_bonus": float(length_bonus),
+        "wr_consistency": float(consistency_reward),
+        "wr_consistent_turns": float(consistent_turns),
+        "wr_violate_turns": float(violate_turns),
+        "wr_narrowing": float(narrowing_reward),
+        "wr_format": float(format_reward),
+        "wr_invalid_penalty": float(invalid_pen),
+    }
+
+
 def score_completion(example: Example, generated_text: str) -> dict[str, float]:
     """Single-shot scorer (reward-v2). Multi-turn rollout drives itself; this
     handles the degenerate single-completion case. Treats the completion as one guess."""
@@ -515,9 +639,30 @@ def score_completion(example: Example, generated_text: str) -> dict[str, float]:
     }
 
 
+from functools import lru_cache as _lru_cache
+
+
+@_lru_cache(maxsize=131072)
+def _remaining_candidates_cached(history: tuple) -> tuple:
+    """Cache-backed INCREMENTAL narrowing. remaining_candidates(history) is a pure
+    function of history (WORD_LIST is constant), and each prefix is just its parent
+    prefix filtered by ONE more (guess, feedback). So: filter the (already-tiny)
+    parent result instead of re-scanning all ~4266 words every call, and memoize —
+    each distinct prefix is computed exactly once; antithetic pairs and shared openers
+    become cache hits. This turns the retrieval reward from ~640s/step of full rescans
+    (~384M compute_feedback calls) into near-free. Returns a tuple (hashable/immutable)."""
+    if not history:
+        return tuple(WORD_LIST)
+    prev = _remaining_candidates_cached(history[:-1])
+    g, fb = history[-1]
+    return tuple(w for w in prev if compute_feedback(g, w) == fb)
+
+
 def remaining_candidates(history: list[tuple[str, str]]) -> list[str]:
-    """Words in WORD_LIST consistent with all public (guess, feedback) so far."""
-    return [w for w in WORD_LIST if all(compute_feedback(g, w) == fb for g, fb in history)]
+    """Words in WORD_LIST consistent with all public (guess, feedback) so far.
+    Cache-backed incremental narrowing (see ``_remaining_candidates_cached``) — same
+    result as ``[w for w in WORD_LIST if all(...)]`` but ~instant on warm prefixes."""
+    return list(_remaining_candidates_cached(tuple((str(g), str(fb)) for g, fb in history)))
 
 
 def _format_transcript(history: list[tuple[str, str]]) -> str:
@@ -747,13 +892,31 @@ def _turn_user_messages(*, target: str, history: list[tuple[str, str]], prompt_s
     return msgs
 
 
-def _turn_system_prompt(prompt_style: str) -> str:
-    """Map a STUDENT prompt_style to its system prompt."""
+# F_strat commit-instruction (prompt-search winner 2026-06-26): with native think
+# DISABLED, this lifts cold solve ~0.05->~0.28 and terminate ~62%->~99% by forcing the
+# model to commit instead of unboundedly enumerating candidate words inside <think>.
+_FSTRAT_COMMIT = (
+    "Pick the single most likely real five-letter answer that fits EVERY clue "
+    "(prefer common words). Give ONE short sentence of reasoning, then output "
+    "<guess>[WORD]</guess>. Do NOT enumerate or test lists of candidate words."
+)
+
+
+def _turn_system_prompt(prompt_style: str, enable_thinking: bool = False) -> str:
+    """Map a STUDENT prompt_style to its system prompt.
+
+    ``_FSTRAT_COMMIT`` (the no-think "commit to one word, don't enumerate" instruction) is
+    appended ONLY for the no-think ``public_reasoning_constraints`` style — it contradicts a
+    native <think> block, so the ``..._think`` style (which passes enable_thinking=True) gets
+    the clean GRPO floor-protocol system prompt (strict + THINK_INSTR added by the caller)."""
     if prompt_style == "enumerate":
         return ENUMERATE_REASONING_SYSTEM_PROMPT
     if prompt_style == "public_reasoning":
         return PUBLIC_REASONING_SYSTEM_PROMPT
-    if prompt_style in {"public_reasoning_constraints", "constraints_enumerate"}:
+    if prompt_style == "public_reasoning_constraints":
+        base = PUBLIC_REASONING_STRICT_SYSTEM_PROMPT
+        return base if enable_thinking else base + "\n\n" + _FSTRAT_COMMIT
+    if prompt_style == "constraints_enumerate":
         return PUBLIC_REASONING_STRICT_SYSTEM_PROMPT
     return SYSTEM_PROMPT
 
@@ -763,12 +926,30 @@ def _build_turn_input_ids(tokenizer, *, target: str, history: list[tuple[str, st
     (explicit <reasoning> then guess, public-only — paired with the policy_hint teacher),
     'enumerate' (CoT enumeration), 'public_reasoning_constraints' (board summary only),
     or 'constraints_enumerate' (board summary + student-side enumeration, counterpart to
-    the enumerate teacher)."""
-    msgs = [{"role": "system", "content": _turn_system_prompt(prompt_style)}] + _turn_user_messages(
-        target=target, history=history, prompt_style=prompt_style
+    the enumerate teacher). A trailing '_think' (e.g. 'public_reasoning_constraints_think')
+    opens the model's private <think> block (the GRPO floor-protocol that scores 0.469);
+    the base layout is identical to the non-think style."""
+    enable_thinking = prompt_style.endswith("_think")
+    base_style = prompt_style[: -len("_think")] if enable_thinking else prompt_style
+    system = _turn_system_prompt(base_style, enable_thinking=enable_thinking)
+    if enable_thinking:
+        # Opening the native <think> block is not enough: a base model rambles past
+        # the token budget and never emits a guess (cold solve 0.0156, all invalid).
+        # The GRPO floor-protocol (0.469) forces TERMINATION + a one-line format, so
+        # the think must be told to close promptly and emit exactly one guess.
+        system += (
+            "\n\nThink briefly in your private reasoning, then STOP and reply with EXACTLY ONE "
+            "line and nothing after it:\n"
+            "<reasoning>RATIONALE</reasoning><guess>[WORD]</guess>\n"
+            "- RATIONALE: one short sentence, under 15 words.\n"
+            "- WORD: exactly 5 letters.\n"
+            "Close your private reasoning promptly — do not keep thinking; the answer line is what counts."
+        )
+    msgs = [{"role": "system", "content": system}] + _turn_user_messages(
+        target=target, history=history, prompt_style=base_style
     )
     return tokenizer.apply_chat_template(
-        msgs, tokenize=True, add_generation_prompt=True, enable_thinking=False, return_dict=False
+        msgs, tokenize=True, add_generation_prompt=True, enable_thinking=enable_thinking, return_dict=False
     )
 
 
@@ -1021,16 +1202,23 @@ def rollout_completion(example: Example, *, generate_turn, lora_path: str, token
             temperature=float(args.rollout_temperature),
             max_new_tokens=int(args.rollout_max_new_tokens),
         )
-        guess = extract_guess(text or "")
-        single_guess_tag_ok = has_single_guess_tag(text or "")
+        # Lenient extraction: take the LAST 5-letter <guess> (thinking models
+        # reason first, emit the real guess last). A legal guess lets the game
+        # CONTINUE even when the format is messy — format is now a graded reward,
+        # NOT a game-ending gate. The old `not format_ok` break + template-echo
+        # tag over-count killed ~91% of turns, so the run measured format, not Wordle.
+        action_text = strip_think_prefix(text or "")
+        _guesses = extract_guesses(action_text)
+        guess = _guesses[-1] if _guesses else None
+        single_guess_tag_ok = has_single_guess_tag(action_text)
         if single_guess_tag_ok:
             single_guess_tag_hits += 1
         format_ok = single_guess_tag_ok and guess is not None
         if format_ok:
             format_hits += 1
-        if not format_ok or not is_valid_guess(guess, history):
-            # Bad format or invalid Wordle action: end this local rollout and
-            # avoid inventing public feedback for an invalid game action.
+        if guess is None or not is_valid_guess(guess, history):
+            # No legal guess extractable: end this local rollout (don't invent
+            # public feedback for a non-action). Messy-but-legal guesses continue.
             info_scores.append(0.0)
             invalid_action = True
             break
@@ -1048,20 +1236,36 @@ def rollout_completion(example: Example, *, generate_turn, lora_path: str, token
     single_guess_tag_rate = single_guess_tag_hits / max(turns_used, 1)
     valid_guess_rate = valid_hits / max(turns_used, 1)
     info_gain = sum(info_scores) / max(len(info_scores), 1)
-    reward = _wordle_shaped_reward(
+    # GRPO-converging RETRIEVAL reward (dense per-turn constraint-consistency + candidate-narrowing,
+    # solve-dominant), ported from the science fork. Computed ALWAYS so its full breakdown (wr_*) is
+    # LOGGED for GRPO parity — zorl_client.record_score surfaces every numeric score-blob key. The ES
+    # fitness IS this reward by default; the legacy _wordle_shaped_reward gave ES ~no gradient (flat:
+    # a valid non-solve banks ~40% of a solve from saturated proxies, NO retrieval signal). Env-gated
+    # for A/B + revert: XORL_WORDLE_REWARD=shaped restores the legacy fitness.
+    wr = wordle_retrieval_reward(
+        history,  # the valid (guess, feedback) turns actually played
         solved=solved,
-        format_rate=format_rate,
-        valid_guess_rate=valid_guess_rate,
-        info_gain=info_gain,
-        turns_used=turns_used,
-        max_turns=MAX_TURNS,
         invalid_action=invalid_action,
+        valid_guess_rate=valid_guess_rate,
+        format_rate=format_rate,
     )
+    if os.environ.get("XORL_WORDLE_REWARD", "retrieval").lower() == "shaped":
+        reward = _wordle_shaped_reward(
+            solved=solved,
+            format_rate=format_rate,
+            valid_guess_rate=valid_guess_rate,
+            info_gain=info_gain,
+            turns_used=turns_used,
+            max_turns=MAX_TURNS,
+            invalid_action=invalid_action,
+        )
+    else:
+        reward = wr["wordle_retrieval_reward"]
     wordle_components = _wordle_reward_components(
         solved=solved,
-        turns_with_guess=single_guess_tag_hits,
+        turns_with_guess=valid_hits,
         latest_feedback=latest_feedback,
-        format_reward=1.0 if turns_used > 0 and single_guess_tag_hits == turns_used else 0.0,
+        format_reward=single_guess_tag_rate,
         valid_guess_rate=valid_guess_rate,
         terminal_valid=not invalid_action,
         invalid_action=invalid_action,
@@ -1076,6 +1280,8 @@ def rollout_completion(example: Example, *, generate_turn, lora_path: str, token
         "turns_used": float(turns_used),
         "invalid_action": float(invalid_action),
         **wordle_components,
+        **wr,  # GRPO-parity reward breakdown: wordle_retrieval_reward, wr_solve, wr_length_bonus,
+               # wr_consistency, wr_consistent_turns, wr_violate_turns, wr_narrowing, wr_format, wr_invalid_penalty
     }
 
 
