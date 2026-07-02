@@ -92,7 +92,7 @@ Two divergent lines from the same 06-13 fork point (`609bed763`), NEITHER a supe
 
 The engine reconciliation grew to three stacks: marin parity (#431–#433), wordle
 k3-recon delta restacked ON #433 (#430), the k3 production decomposition
-(#435–#444, atomic \`k3/*\` PRs incl. #441 model-runner BI gate + loss TP group),
+(#435–#444, atomic `k3/*` PRs incl. #441 model-runner BI gate + loss TP group),
 and this line's #434. Dry-run merge-trees from #434:
 
 - #434 × #441 (incl. #435/#436): **clean auto-merge** despite shared files.
