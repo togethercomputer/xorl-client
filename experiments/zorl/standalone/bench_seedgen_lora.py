@@ -33,13 +33,20 @@ The fill kernel materializes a pool with the SAME device mapping (this is the
 (the seed-transport contract); (2) GEMM outputs are bit-equal where the dot
 lowering matches, else <=1-ULP ties on <0.01% of elements.
 
-VERDICT (H100, triton 3.5.1, 2026-07-02): in-kernel generation is NOT faster
-at any population size on kernel time — gaussian ~0.5-0.8x of LOAD, Rademacher
-0.75-1.03x — HBM delivers bf16 tiles faster than SMs can Philox them, and the
-ratio holds under a memory-bound overlap proxy too. The seeded path's real
-wins are structural: no pool (0.64 GB/candidate at this geometry), no
-max_loras_per_batch cap, no fill/eviction churn (fill measured ~2.5 ms per
-module-layer at L=256).
+VERDICT (H100, triton 3.5.1, 2026-07-02): as a STANDALONE kernel, in-kernel
+generation is not faster at any population size — gaussian ~0.5-0.8x of LOAD,
+Rademacher 0.75-1.03x — HBM delivers bf16 tiles faster than SMs can Philox
+them, and running gen kernels CONCURRENTLY with a memory-bound proxy doesn't
+fix it (separate kernels contend for SM occupancy). But FUSED into a kernel
+that streams non-LoRA bytes (the base-expert tile), Rademacher generation
+hides completely at wide populations: LoRA marginal at M=1024 L=128 is
++45us loaded vs +48us generated over a 464us base-stream floor (L=8: +18us
+vs +26us; fast-math gaussian stays ~2x). Combined with the structural wins —
+no pool (0.64 GB/candidate), no max_loras_per_batch cap, no fill/eviction
+churn (~2.5 ms per module-layer at L=256) — the viable design is: Rademacher
+noise + generation fused into the base/delta GEMM. Rademacher-B is validated
+on mult (0.891); Rademacher-A (the down-proj per-expert factor) needs a
+science gate before end-to-end adoption.
 
 Run (any idle H100):
   CUDA_VISIBLE_DEVICES=7 /home/apanda/xorl-sglang-zorl/.venv/bin/python \
@@ -185,6 +192,63 @@ def _shrink_kernel(
         acc += tl.dot(x, tl.trans(a))                               # [BM, R]
     tl.store(h_ptr + tok[:, None] * RANK + r[None, :], acc.to(tl.bfloat16),
              mask=mask_m[:, None])
+
+
+# ------------------------------------------------ fused base-stream + LoRA
+@triton.jit
+def _fused_expand_kernel(
+    h_ptr, out_ptr, base_ptr, pool_ptr, seed_ptr, sorted_ids_ptr, block_le_ptr,
+    D, sigma,
+    EXP: tl.constexpr, OUT: tl.constexpr, RANK: tl.constexpr,
+    BM: tl.constexpr, BN: tl.constexpr, BASE_ELEMS: tl.constexpr,
+    LORA: tl.constexpr, GEN: tl.constexpr, GMODE: tl.constexpr,
+    NROUNDS: tl.constexpr,
+):
+    """The strong overlap test: one kernel streams this block's base-expert
+    chunk (models the fp8 expert weight tile a fused base+delta GEMM would
+    read anyway) AND computes the LoRA expand. LORA=0 gives the base-stream
+    floor; the variant marginals over that floor are the true in-kernel cost
+    of load-vs-generate when there are non-LoRA bytes to hide behind."""
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+    le = tl.load(block_le_ptr + pid_m)
+    e = (le % EXP).to(tl.int64)
+    # stream base chunk for this (block, pid_n) slice: BASE_ELEMS fp16 values
+    bsum = 0.0
+    for i in range(0, BASE_ELEMS, 4096):
+        off = i + tl.arange(0, 4096)
+        v = tl.load(base_ptr + e * (BASE_ELEMS * (OUT // BN))
+                    + pid_n * BASE_ELEMS + off)
+        bsum += tl.sum(v.to(tl.float32))
+    if LORA:
+        tok = tl.load(sorted_ids_ptr + pid_m * BM + tl.arange(0, BM))
+        mask_m = tok < D
+        r = tl.arange(0, RANK)
+        h = tl.load(h_ptr + tok[:, None] * RANK + r[None, :],
+                    mask=mask_m[:, None], other=0.0)
+        n = pid_n * BN + tl.arange(0, BN)
+        if GEN:
+            seed = tl.load(seed_ptr + le)
+            b = (_gen_tile(seed, n * RANK, 0, RANK, GMODE, NROUNDS)
+                 * sigma).to(tl.bfloat16)
+        else:
+            b = tl.load(pool_ptr + le * OUT * RANK + n[:, None] * RANK + r[None, :])
+        acc = tl.dot(h, tl.trans(b)) + bsum * 1e-20
+        tl.store(out_ptr + tok[:, None] * OUT + n[None, :], acc.to(tl.bfloat16),
+                 mask=mask_m[:, None])
+    else:
+        tl.store(out_ptr + D * OUT + pid_m, (bsum * 1e-20).to(tl.bfloat16),
+                 mask=pid_n == 0)
+
+
+def run_fused(h, out, base, pool, seeds, sorted_ids, block_le, D, lora, mode,
+              bm, bn, base_elems):
+    grid = (block_le.numel(), GATEUP_OUT // bn)
+    _fused_expand_kernel[grid](
+        h, out, base, pool, seeds, sorted_ids, block_le, D, SIGMA,
+        EXP=E, OUT=GATEUP_OUT, RANK=R, BM=bm, BN=bn, BASE_ELEMS=base_elems,
+        LORA=lora, GEN=mode > 0, GMODE=max(mode - 1, 0), NROUNDS=10,
+    )
 
 
 # ------------------------------------------------------------- raw probe
@@ -477,10 +541,46 @@ def main():
         torch.cuda.empty_cache()
     del proxy, ppart
 
+    # ---------------- fused: stream base-expert bytes + LoRA in ONE kernel
+    # (the strong version of "overlap Philox with non-LoRA streaming")
+    print("== fused base-stream (512KB/expert-block) + LoRA expand ==")
+    base_elems = (512 * 1024 // 2) // (GATEUP_OUT // args.bn)   # fp16, per pid_n
+    base_buf = torch.randn(E * base_elems * (GATEUP_OUT // args.bn),
+                           device=device).half()
+    fused = {}
+    for m_tokens, pop in ((1024, 8), (1024, 128)):
+        rng.manual_seed(1000 + pop)
+        sorted_ids, block_le, D, n_pairs, n_blocks = build_dispatch(
+            m_tokens, pop, args.bm, device, rng)
+        seeds_b = make_seed_table(pop, 0, device)
+        pool_b = torch.empty(pop * E, GATEUP_OUT, R, device=device, dtype=torch.bfloat16)
+        fill_pool(pool_b.view(pop * E, -1), seeds_b, GATEUP_OUT, R, 1)
+        h_in = torch.randn(D + 1, R, device=device, generator=rng).bfloat16()
+        out_flat = torch.zeros((D + 1) * GATEUP_OUT + n_blocks, device=device,
+                               dtype=torch.bfloat16)
+        res = {}
+        t0 = bench(lambda: run_fused(h_in, out_flat, base_buf, pool_b, seeds_b,
+                                     sorted_ids, block_le, D, 0, 0,
+                                     args.bm, args.bn, base_elems))
+        res["base_only"] = t0
+        for name, gm in (("load", 0), ("rad4x", 3), ("gfast4x", 4)):
+            t = bench(lambda gm=gm: run_fused(h_in, out_flat, base_buf, pool_b,
+                                              seeds_b, sorted_ids, block_le, D,
+                                              1, gm, args.bm, args.bn, base_elems))
+            res[name] = t - t0
+        fused[f"M{m_tokens}_L{pop}"] = res
+        gb = n_blocks * 512 * 1024 / 1e9
+        print(f"  M={m_tokens} L={pop} blocks={n_blocks} (base {gb:.2f} GB/call): "
+              f"base_only {t0*1e3:.0f}u; lora marginal: load {res['load']*1e3:+.0f}u  "
+              f"rad4x {res['rad4x']*1e3:+.0f}u  gfast4x {res['gfast4x']*1e3:+.0f}u")
+        del pool_b, h_in, out_flat
+        torch.cuda.empty_cache()
+    del base_buf
+
     if args.json_out:
         with open(args.json_out, "w") as f:
-            json.dump({"probe": probe, "sweep": results, "overlap": overlap},
-                      f, indent=1)
+            json.dump({"probe": probe, "sweep": results, "overlap": overlap,
+                       "fused": fused}, f, indent=1)
         print(f"wrote {args.json_out}")
 
 
