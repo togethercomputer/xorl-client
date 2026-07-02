@@ -9,10 +9,18 @@ lets the small updates land). This driver:
   1. create_model on the PS  — LoRA parent (rank 16, B=0 cold start) + Muon ES
      optimizer (momentum0, match_rms_adamw, gram-NS no-restart, full_gradient) +
      ZORL session (b_only parent-perturb probe).
-  2. per step: PS /api/v1/zorl/start_generation exports candidate adapters
-     (filesystem) -> load each on the sglang replicas by path -> score with the
-     REUSED Wordle scoring (zorl_client.score_candidates) -> PS
-     /api/v1/zorl/apply_rewards folds G via Muon -> unload candidates.
+  2. per step (default --candidate-transport seeds): PS
+     /api/v1/zorl/start_generation with materialization=specs returns explicit
+     per-candidate SEED SPECS {b_seed, a_seed, direction, b_sigma,
+     perturbation_mode, rank} plus ONE exported parent checkpoint -> the driver
+     loads the parent + POSTs the spec list ONCE per replica
+     (/register_zorl_candidates; replicas materialize candidates from the seeds
+     via the sglang virtual-candidate machinery — zero candidate weight bytes)
+     -> score with the REUSED Wordle scoring (zorl_client.score_candidates) ->
+     PS /api/v1/zorl/apply_rewards folds G via Muon -> one
+     /abort_zorl_generation per replica unloads everything.
+     Fallback --candidate-transport path: PS exports every candidate adapter
+     (filesystem) and preloads each onto every replica (the 585s/step path).
 
 It REUSES the standalone harness (zorl_client) for the arg surface + Wordle task
 + candidate scoring (so the Wordle reward/rollout logic is identical to the
@@ -73,6 +81,13 @@ def build_parser():
     g.add_argument("--muon-distributed-mode", default="full_gradient", choices=["shard_local", "full_gradient"])
     g.add_argument("--muon-gram-ns-num-restarts", type=int, default=0, help="0 matches the sglang fold exactly")
     g.add_argument("--candidate-load-timeout", type=float, default=180.0)
+    g.add_argument("--candidate-transport", default="seeds", choices=["seeds", "path"],
+                   help="How candidates reach the scorer replicas. 'seeds' (default): the PS returns "
+                        "per-candidate seed SPECS (materialization=specs, no disk export) and the driver "
+                        "POSTs the spec list once per replica (/register_zorl_candidates); replicas "
+                        "materialize candidates from the seeds (virtual candidates, zero weight bytes). "
+                        "'path' (fallback): the PS exports every candidate as an on-disk adapter and "
+                        "preloads it onto every replica (N_candidates x N_replicas loads).")
     g.add_argument("--eval-interval", type=int, default=0,
                    help="Every N steps, score the current candidates on the held-out set; the "
                         "candidate MEAN is a sigma^2-accurate parent proxy (antithetic pairs cancel "
@@ -113,7 +128,8 @@ def main():
         f"[init] muon: lr={args.muon_lr} momentum={args.muon_momentum} "
         f"distributed_mode={args.muon_distributed_mode} gram_ns_restarts={args.muon_gram_ns_num_restarts} | "
         f"zorl: pairs={args.num_pairs} b_sigma={args.b_sigma} perturbation_mode={args.perturbation_mode} "
-        f"lora_rank={args.lora_rank} update_strategy={args.update_strategy}",
+        f"lora_rank={args.lora_rank} update_strategy={args.update_strategy} "
+        f"candidate_transport={args.candidate_transport}",
         flush=True,
     )
 
@@ -192,9 +208,15 @@ def main():
             print(f"[max-runtime] {args.max_runtime_seconds}s reached after {step} steps; stopping", flush=True)
             break
 
-        # preload_sampling=True: the PS exports candidate adapters and loads them on
-        # the registered scorers itself (create_sampling_session), serving each under
-        # its API lora_name (zorl/<gen>/<cid>). No manual client-side load needed.
+        # Candidate distribution.
+        #   seeds (default): PS plans the generation and returns SPECS only
+        #     (materialization=specs; one parent checkpoint export, no candidate
+        #     exports). The driver POSTs the spec list once per replica and the
+        #     replicas materialize candidates from the seeds (virtual candidates).
+        #   path (fallback): preload_sampling=True — the PS exports candidate
+        #     adapters and loads them on the registered scorers itself
+        #     (create_sampling_session), serving each under its API lora_name.
+        seeds_transport = args.candidate_transport == "seeds"
         load_t0 = time.time()
         # Robust generation: a transient scorer hiccup (e.g. a pod restart) makes the
         # PS preload throw -> start_generation returns no generation_id. Retry a few
@@ -202,7 +224,11 @@ def main():
         gen = None
         for attempt in range(5):
             try:
-                cand = ps.start_generation(ps_url, model_id=model_id, num_pairs=args.num_pairs, preload_sampling=True)
+                cand = ps.start_generation(
+                    ps_url, model_id=model_id, num_pairs=args.num_pairs,
+                    preload_sampling=not seeds_transport,
+                    materialization={"mode": "specs"} if seeds_transport else None,
+                )
                 if cand.get("generation_id") and cand.get("candidates"):
                     gen = cand
                     break
@@ -216,14 +242,75 @@ def main():
             continue
         gen_id = gen["generation_id"]
         candidates = gen.get("candidates", [])
-        # The PS preloads candidate adapters (preload_sampling=True) and assigns each an
-        # owner_url. We SCORE via SMG pinned to that owner (owner_via_smg), so a candidate's
-        # requests co-locate on one worker -> RadixCache reuses the shared prompt prefix.
-        # (True per-owner *loading* needs a server-side decouple of export from broadcast;
-        # deferred — see faithfulness doc.)
+        # Each candidate gets an owner_url. We SCORE via SMG pinned to that owner
+        # (owner_via_smg), so a candidate's requests co-locate on one worker ->
+        # RadixCache reuses the shared prompt prefix.
         for i, c in enumerate(candidates):
             c["lora_name"] = c.get("lora_name") or c["candidate_id"]
             c["owner_url"] = c.get("owner_url") or infer_urls[i % len(infer_urls)]
+
+        parent_lora_name = None
+        if seeds_transport:
+            # 1) Load the PARENT once per replica (32 loads, not 32xN_cands):
+            #    b_only candidates perturb around its LoRA-B (the PS folds into
+            #    its own copy each apply, so it is re-exported fresh every
+            #    generation); fresh_ab only needs its shapes/scaling.
+            # 2) POST the explicit specs once per replica; the replicas
+            #    materialize candidates from the seeds (zero weight bytes).
+            parent_path = gen.get("parent_path")
+            if not parent_path:
+                raise RuntimeError(
+                    "seeds transport requires the PS to return parent_path "
+                    "(xorl PS too old for materialization=specs?)"
+                )
+            parent_lora_name = f"zorl-parent/{gen_id}"
+            specs = [
+                {
+                    "candidate_id": str(c["candidate_id"]),
+                    "lora_name": str(c["lora_name"]),
+                    "perturbation_index": int(c["perturbation_index"]),
+                    "direction": str(c["direction"]),
+                    "b_seed": int(c["b_seed"]),
+                    "a_seed": None if c.get("a_seed") is None else int(c["a_seed"]),
+                    "b_sigma": float(c.get("b_sigma") or gen["b_sigma"]),
+                    "perturbation_mode": str(
+                        c.get("perturbation_mode") or gen.get("perturbation_mode") or args.perturbation_mode
+                    ),
+                    "rank": int(c.get("rank") or gen.get("lora_rank") or args.lora_rank),
+                }
+                for c in candidates
+            ]
+
+            def _register_on(url: str) -> None:
+                zc.load_lora_adapter(url, parent_lora_name, parent_path)
+                ps.register_zorl_candidates(
+                    url,
+                    session_id=model_id,
+                    generation_id=gen_id,
+                    parent_lora_name=parent_lora_name,
+                    candidates=specs,
+                    timeout=args.candidate_load_timeout,
+                )
+
+            try:
+                with ThreadPoolExecutor(max_workers=min(32, len(infer_urls))) as pool:
+                    list(pool.map(_register_on, infer_urls))
+            except Exception as e:  # noqa: BLE001
+                print(f"  step {step+1}: SKIP — seed-spec registration failed: {e}", flush=True)
+                # Best-effort teardown so the next step starts clean everywhere.
+                with ThreadPoolExecutor(max_workers=min(32, len(infer_urls))) as pool:
+                    def _teardown(url: str) -> None:
+                        try:
+                            ps.abort_replica_generation(url, session_id=model_id, generation_id=gen_id)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        zc.unload_lora_adapter(url, parent_lora_name)
+                    list(pool.map(_teardown, infer_urls))
+                try:
+                    ps.abort_generation(ps_url, model_id=model_id, generation_id=gen_id)
+                except Exception as abort_error:  # noqa: BLE001
+                    print(f"  WARN step {step+1}: PS abort failed: {abort_error}", flush=True)
+                continue
         load_s = time.time() - load_t0
 
         train_examples = zc._select_train_examples_for_step(
@@ -287,11 +374,23 @@ def main():
             except Exception as e:  # noqa: BLE001
                 held_line = f"  [held-out@{step+1}] skipped ({e})"
 
-        # Cleanup: unload this generation's candidate adapters from the scorers
-        # (parallel, best-effort; gen-unique lora_names so no reload collision).
-        unload_jobs = [(url, str(c["lora_name"])) for c in candidates for url in infer_urls]
-        with ThreadPoolExecutor(max_workers=min(64, len(unload_jobs) or 1)) as pool:
-            list(pool.map(lambda j: zc.unload_lora_adapter(j[0], j[1]), unload_jobs))
+        # Cleanup (parallel, best-effort; gen-unique names so no reload collision).
+        if seeds_transport:
+            # One abort per replica unloads ALL of the generation's virtual
+            # candidates; then drop this generation's parent copy.
+            def _cleanup(url: str) -> None:
+                try:
+                    ps.abort_replica_generation(url, session_id=model_id, generation_id=gen_id)
+                except Exception as e:  # noqa: BLE001
+                    print(f"  WARN cleanup: abort on {url} failed: {e}", flush=True)
+                zc.unload_lora_adapter(url, parent_lora_name)
+
+            with ThreadPoolExecutor(max_workers=min(32, len(infer_urls))) as pool:
+                list(pool.map(_cleanup, infer_urls))
+        else:
+            unload_jobs = [(url, str(c["lora_name"])) for c in candidates for url in infer_urls]
+            with ThreadPoolExecutor(max_workers=min(64, len(unload_jobs) or 1)) as pool:
+                list(pool.map(lambda j: zc.unload_lora_adapter(j[0], j[1]), unload_jobs))
 
         means = [float(c["reward_mean"]) for c in candidate_rewards if c.get("reward_mean") is not None]
         best = max(means) if means else 0.0

@@ -178,23 +178,88 @@ def start_generation(
     model_id: str = "default",
     num_pairs: Optional[int] = None,
     preload_sampling: bool = True,
+    materialization: Optional[Dict[str, Any]] = None,
     future_timeout: float = 1800.0,
 ) -> dict:
-    """Plan one ES generation on the PS and export candidate adapters.
+    """Plan one ES generation on the PS.
 
     Returns the generation response: {generation_id, family_id, b_sigma,
     num_pairs, candidates:[{candidate_id, perturbation_index, direction, b_seed,
-    path, ...}], ...}. With preload_sampling=True the PS eagerly loads each
-    candidate adapter on the registered inference endpoints (PS-authoritative
-    adapter export — kills the R4 seed/mixer-parity problem: replicas score
-    PS-authored adapters, never re-derive noise).
+    a_seed, b_sigma, perturbation_mode, rank, ...}], ...}.
+
+    Two candidate transports:
+      * path (materialization None/'all', preload_sampling=True): the PS
+        exports each candidate as an on-disk LoRA checkpoint and loads it on
+        the registered inference endpoints itself (PS-authoritative adapter
+        export). N_candidates x N_replicas load calls.
+      * seeds (materialization {'mode': 'specs'}, preload_sampling=False): NO
+        candidate exports; the response carries complete per-candidate seed
+        specs plus ONE exported parent checkpoint ('parent_path'); the driver
+        posts the spec list once per replica via register_zorl_candidates()
+        and the replicas materialize candidates from the seeds (the sglang
+        virtual-candidate machinery). Zero candidate weight bytes moved.
     """
     payload: Dict[str, Any] = {"model_id": model_id, "preload_sampling": bool(preload_sampling)}
     if num_pairs is not None:
         payload["num_pairs"] = int(num_pairs)
+    if materialization is not None:
+        payload["materialization"] = dict(materialization)
     return _call_future(
         ps_url, "/api/v1/zorl/start_generation", payload,
         context="start_zorl_generation", future_timeout=future_timeout,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Seed transport (replica-facing): register explicit candidate specs on one
+# sglang scorer replica / abort (unload) a registered generation.
+# ---------------------------------------------------------------------------
+def register_zorl_candidates(
+    replica_url: str,
+    *,
+    session_id: str,
+    generation_id: str,
+    parent_lora_name: str,
+    candidates: List[Dict[str, Any]],
+    timeout: float = 300.0,
+) -> dict:
+    """POST /register_zorl_candidates on ONE sglang replica (seed transport).
+
+    ``candidates`` carry explicit specs: {candidate_id, b_seed, a_seed,
+    direction, b_sigma, perturbation_mode, rank, lora_name?}. The replica
+    registers them as virtual (seed-materialized) LoRA candidates against the
+    already-loaded ``parent_lora_name`` — zero weight bytes transferred. The
+    generation is tracked so abort_replica_generation() unloads all of them.
+    """
+    return _post_json(
+        f"{replica_url.rstrip('/')}/register_zorl_candidates",
+        {
+            "session_id": str(session_id),
+            "generation_id": str(generation_id),
+            "parent_lora_name": str(parent_lora_name),
+            "candidates": list(candidates),
+        },
+        timeout=timeout,
+    )
+
+
+def abort_replica_generation(
+    replica_url: str,
+    *,
+    session_id: str,
+    generation_id: str,
+    timeout: float = 300.0,
+) -> dict:
+    """POST /abort_zorl_generation on ONE sglang replica.
+
+    Unloads every candidate registered for (session_id, generation_id) in a
+    single call — the seed-transport replacement for the per-(candidate,
+    replica) unload cross product.
+    """
+    return _post_json(
+        f"{replica_url.rstrip('/')}/abort_zorl_generation",
+        {"session_id": str(session_id), "generation_id": str(generation_id)},
+        timeout=timeout,
     )
 
 
