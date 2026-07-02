@@ -160,10 +160,10 @@ def main():
         print(f"  registered {p.hostname}:{p.port} -> {reg.get('message', 'ok')}", flush=True)
 
     # 2. cold base+think gate: probe the FROZEN BASE on the seed-777 held-out set.
-    #    GRPO's honest base+think = 0.00 (retries=0); we expect the same. CAVEAT:
-    #    sglang --enable-lora rejects lora_path=None, so this probe HTTP-400s per
-    #    example and reports 0.00 as "all errors" rather than a genuine base
-    #    generation — the true base is 0.00 anyway, but this isn't measuring it.
+    #    GRPO's honest base+think = 0.00 (retries=0); we expect the same. The
+    #    client now omits lora_path when None, so this genuinely measures the
+    #    base (previously str(None)/null 400'd per example and reported 0.00
+    #    as "all errors").
     #    The TRAINED-parent held-out eval is still approximated by the candidate
     #    mean (a BIASED O(sigma^2) proxy — see faithfulness doc §8.1); serving a
     #    zero-perturbation parent-B adapter for a true parent eval is still TODO.

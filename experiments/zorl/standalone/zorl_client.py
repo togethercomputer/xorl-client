@@ -989,7 +989,9 @@ def _make_generate_turn(infer_url, *, headers: dict | None = None):
         results = generate_with_lora(
             infer_url,
             input_ids=list(input_ids),
-            lora_path=str(lora_path),
+            # None must stay None (base-model turn): str(None) -> "None" reaches
+            # the server as an adapter name and 400s.
+            lora_path=(str(lora_path) if lora_path is not None else None),
             temperature=float(temperature),
             max_new_tokens=int(max_new_tokens),
             n=1,
