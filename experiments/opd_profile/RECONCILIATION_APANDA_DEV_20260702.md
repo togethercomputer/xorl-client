@@ -88,6 +88,22 @@ Two divergent lines from the same 06-13 fork point (`609bed763`), NEITHER a supe
    `teacher_hidden_caches` must switch to the Mooncake producer path when running
    against apanda-dev.
 
+## UPDATE (later 2026-07-02): 15-PR engine landscape + merge queue
+
+The engine reconciliation grew to three stacks: marin parity (#431–#433), wordle
+k3-recon delta restacked ON #433 (#430), the k3 production decomposition
+(#435–#444, atomic \`k3/*\` PRs incl. #441 model-runner BI gate + loss TP group),
+and this line's #434. Dry-run merge-trees from #434:
+
+- #434 × #441 (incl. #435/#436): **clean auto-merge** despite shared files.
+- #434 × #430: **2 files / 4 hunks** — all in the diagnostics-capture region
+  (moe_block `_diagnostic_capture_routing` vs `_capture_diagnostic_component`;
+  3 matching hunks in model_runner). VP-KL / packed-row / teacher-cache do not conflict.
+
+Human merge queue (per wordle agent, confirmed): #433 → #430 → #431/#432 → #434
+(rebase = the 4 hunks above; map posted as a comment on #434). Client #9 and
+infra #2 are independent.
+
 ## Coordination (three parallel consolidations, 2026-07-02)
 - **wordle agent** (bubbly-shell plan): owns sglang apanda-dev push, engine PR #430
   (wordle-validated src ⊂ Line B snapshot), infra `wordle-consolidation`, client
