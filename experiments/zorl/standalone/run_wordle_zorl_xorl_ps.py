@@ -77,6 +77,10 @@ def build_parser():
     g.add_argument("--lora-rank", type=int, default=4, help="LoRA rank of the ES parent created on the PS")
     g.add_argument("--lora-alpha", type=int, default=4, help="LoRA alpha of the ES parent created on the PS")
     g.add_argument("--muon-lr", type=float, default=2.5e-5, help="Muon LR (match_rms_adamw scale; sglang recipe)")
+    g.add_argument("--lr-warmup-steps", type=int, default=0,
+                   help="linear LR warmup steps before the schedule (GRPO recipe: 8)")
+    g.add_argument("--sync-quantization", default="fp8",
+                   help="fresh_ab post-apply sync quantization ('fp8' for the FP8 scorer fleet; '' = server default)")
     g.add_argument("--muon-momentum", type=float, default=0.0, help="Muon momentum (live recipe is 0)")
     g.add_argument("--muon-distributed-mode", default="full_gradient", choices=["shard_local", "full_gradient"])
     g.add_argument("--muon-gram-ns-num-restarts", type=int, default=0, help="0 matches the sglang fold exactly")
@@ -172,7 +176,10 @@ def main():
     print(f"[step 1b] register {len(infer_urls)} scorers on the PS (preload targets)...", flush=True)
     for url in infer_urls:
         p = urlparse(url)
-        reg = ps.register_inference_endpoint(ps_url, host=p.hostname, port=int(p.port or 30000), sync_weights=False)
+        # fresh_ab needs the replicas as p2p (Mooncake) weight-sync receivers so the
+        # post-apply base push lands; b_only stays sampling-only (no NCCL handshake).
+        _sync_recv = args.perturbation_mode == "fresh_ab"
+        reg = ps.register_inference_endpoint(ps_url, host=p.hostname, port=int(p.port or 30000), sync_weights=_sync_recv)
         print(f"  registered {p.hostname}:{p.port} -> {reg.get('message', 'ok')}", flush=True)
 
     # 2. cold base+think gate: probe the FROZEN BASE on the seed-777 held-out set.
@@ -194,6 +201,9 @@ def main():
         print(f"  cold probe skipped ({e})", flush=True)
 
     def lr_for_step(step: int) -> float:
+        warmup = int(getattr(args, "lr_warmup_steps", 0) or 0)
+        if warmup > 0 and step < warmup:
+            return float(args.muon_lr) * (step + 1) / warmup
         if args.lr_schedule == "constant":
             return float(args.muon_lr)
         horizon = int(args.lr_decay_steps) if args.lr_decay_steps > 0 else int(args.steps)
@@ -328,6 +338,8 @@ def main():
         res = ps.apply_rewards(
             ps_url, model_id=model_id, generation_id=gen_id,
             candidate_rewards=rewards_for_update, learning_rate=lr_for_step(step),
+            sync_after_apply=(args.perturbation_mode == "fresh_ab"),
+            sync_quantization=(args.sync_quantization or None),
         )
         apply_s = time.time() - apply_t0
 

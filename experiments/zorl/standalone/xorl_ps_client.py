@@ -270,6 +270,8 @@ def apply_rewards(
     generation_id: str,
     candidate_rewards: List[Dict[str, Any]],
     learning_rate: Optional[float] = None,
+    sync_after_apply: bool = False,
+    sync_quantization: Optional[str] = None,
     future_timeout: float = 1800.0,
 ) -> dict:
     """Fold the reward-weighted ES update on the PS (G -> param.grad=-G -> Muon optim_step).
@@ -286,6 +288,12 @@ def apply_rewards(
     }
     if learning_rate is not None:
         payload["learning_rate"] = float(learning_rate)
+    if sync_after_apply:
+        # fresh_ab folds into the base -> replicas must receive the new served
+        # view each step (p2p/Mooncake path; "fp8" = trainer-side block quantize).
+        payload["sync_after_apply"] = True
+        if sync_quantization:
+            payload["sync_quantization"] = sync_quantization
     return _call_future(
         ps_url, "/api/v1/zorl/apply_rewards", payload,
         context="apply_zorl_rewards", future_timeout=future_timeout,
