@@ -36,6 +36,7 @@ Example:
 """
 
 import copy
+import re
 import importlib.util
 import math
 import os
@@ -304,15 +305,41 @@ def main():
             ]
 
             def _register_on(url: str) -> None:
-                zc.load_lora_adapter(url, parent_lora_name, parent_path)
-                ps.register_zorl_candidates(
-                    url,
-                    session_id=model_id,
-                    generation_id=gen_id,
-                    parent_lora_name=parent_lora_name,
-                    candidates=specs,
-                    timeout=args.candidate_load_timeout,
-                )
+                # Idempotent vs crash residue and partial-failure retries: generation
+                # names are deterministic (family/g indices), so a dead run's leftovers
+                # collide with ours. Parent: unload-then-reload on conflict (content may
+                # differ across runs). Candidates: abort the stale active generation
+                # named in the 400 and retry once.
+                try:
+                    zc.load_lora_adapter(url, parent_lora_name, parent_path)
+                except Exception as le:  # noqa: BLE001
+                    if "already loaded" not in str(le):
+                        raise
+                    try:
+                        zc.unload_lora_adapter(url, parent_lora_name)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    zc.load_lora_adapter(url, parent_lora_name, parent_path)
+                for attempt in range(2):
+                    try:
+                        ps.register_zorl_candidates(
+                            url,
+                            session_id=model_id,
+                            generation_id=gen_id,
+                            parent_lora_name=parent_lora_name,
+                            candidates=specs,
+                            timeout=args.candidate_load_timeout,
+                        )
+                        return
+                    except Exception as re_:  # noqa: BLE001
+                        m = re.search(r"already has active generation '([^']+)'", str(re_))
+                        if attempt == 0 and m:
+                            try:
+                                ps.abort_replica_generation(url, session_id=model_id, generation_id=m.group(1))
+                            except Exception:  # noqa: BLE001
+                                pass
+                            continue
+                        raise
 
             try:
                 with ThreadPoolExecutor(max_workers=min(32, len(infer_urls))) as pool:
