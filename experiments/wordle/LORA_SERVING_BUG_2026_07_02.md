@@ -80,11 +80,22 @@ weights; only the expected GDN skip on layers `[0,1,2,4,…,38]`.
    targets removed on purpose: leaf-name matching cannot include `self_attn.*` without also
    training the un-servable `linear_attn.*` (trainer-side matcher is leaf-name only).
 
-**Tier-2 follow-up (attention capacity, not required to unblock):** SGLang already supports
-GDN LoRA in the *fused* layout (`in_proj_qkvz`/`in_proj_ba`/`out_proj` are in the wrap
-pattern). An export-side repack — fold A_q/A_k/A_v row-stacked into a rank-3r
-`in_proj_qkvz` LoRA (B block-placed into q/k/v output slices, z rows zero, o→`out_proj`) —
-would restore attention adaptation exactly, without SGLang changes.
+**Tier-2 follow-up (attention capacity) — VALIDATED 2026-07-02 (background agent):** the
+export-side repack works with **zero SGLang changes**. `in_proj_qkvz` is a plain
+`[q|k|v|z]` row-concat (qwen3_5.py:380-398,1907-1910 — no head interleaving), each slice
+TP-sharded independently. Repack = A_fused rowstack(A_q,A_k,A_v) [3r×2048], B_fused
+[12288×3r] block-diagonal (z rows zero), `o_proj`→`out_proj`. Validated on a dedicated
+sampler: adapters attach (no skip warnings), zero-B reproduces base bitwise, ×64-amplified
+deltas agree with a merged-weights oracle to bf16-rounding level (the un-amplified trained
+GDN deltas are *below the base weights' bf16 half-ulp*, so naive folding destroys them —
+LoRA serving is more faithful than folding). Constraint: SGLang has no per-module ranks in
+one adapter — zero-pad all modules to uniform r=3r (α scaled to keep α/r), bitwise-validated;
+inflates per-expert MoE buffers at high rank, so per-module rank support is the long-term
+fix. Tools (client hub `27cab4a`): `repack_gdn_lora.py`, `fold_gdn_lora_into_ckpt.py`,
+`score_gdn_lora.py`; sampler yaml `gdnlora-sampler.yaml` (xorl-infra `aec14c5`). Recipe to
+re-enable attention: post-export repack + sampler `--max-lora-rank ≥3r` + `in_proj_qkvz
+out_proj` in `--lora-target-modules`; final validation = live k3 gate with a GDN-inclusive
+adapter.
 
 ## 5. The original k3lora baseline is confounded
 
