@@ -70,6 +70,7 @@ def create_zorl_model(
     base_model: str,
     lora_rank: int,
     lora_alpha: int,
+    lora_target_modules: Optional[List[str]] = None,
     muon_lr: float,
     b_sigma: float,
     num_perturbation_pairs: int,
@@ -100,6 +101,20 @@ def create_zorl_model(
             "lora_rank": int(lora_rank),
             "alpha": int(lora_alpha),
             "lora_alpha": int(lora_alpha),
+            # Explicit target set: with None the engine's arch-default matcher
+            # adapts linear_attn.* (never applied by the sglang scorers — GDN
+            # blocks only expose the fused in_proj_* modules) and the ES fold
+            # then writes Muon-rescaled reward-uncorrelated noise into those
+            # base weights. Restrict to the servable set; MoE-only matches the
+            # GRPO reference recipe (xorl-infra 1143917).
+            **(
+                {
+                    "target_modules": [str(m) for m in lora_target_modules],
+                    "lora_target_modules": [str(m) for m in lora_target_modules],
+                }
+                if lora_target_modules
+                else {}
+            ),
         },
         "optimizer_config": {
             "type": "muon",

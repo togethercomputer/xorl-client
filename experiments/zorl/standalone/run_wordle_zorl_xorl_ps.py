@@ -77,6 +77,11 @@ def build_parser():
     # carries rank in the init adapter, so build_arg_parser has no --lora-rank.
     g.add_argument("--lora-rank", type=int, default=4, help="LoRA rank of the ES parent created on the PS")
     g.add_argument("--lora-alpha", type=int, default=4, help="LoRA alpha of the ES parent created on the PS")
+    g.add_argument("--lora-target-modules", nargs="+", default=["gate_proj", "up_proj", "down_proj"],
+                   help="Explicit LoRA target set for the ES parent. MUST stay within what the "
+                        "sglang scorers actually apply (leaf-name matching never attaches GDN "
+                        "linear_attn.* — unserved noise gets Muon-folded into the base). Default "
+                        "is MoE-experts-only, matching the GRPO reference recipe (xorl-infra 1143917).")
     g.add_argument("--muon-lr", type=float, default=2.5e-5, help="Muon LR (match_rms_adamw scale; sglang recipe)")
     g.add_argument("--lr-warmup-steps", type=int, default=0,
                    help="linear LR warmup steps before the schedule (GRPO recipe: 8)")
@@ -159,6 +164,7 @@ def main():
         base_model=args.model,
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
+        lora_target_modules=args.lora_target_modules,
         muon_lr=args.muon_lr,
         b_sigma=args.b_sigma,
         num_perturbation_pairs=args.num_pairs,
