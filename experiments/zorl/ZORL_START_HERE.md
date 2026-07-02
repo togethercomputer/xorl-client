@@ -58,17 +58,53 @@ prompt/reward/eval), candidates as seeds, base sync via Mooncake p2p fp8.
 - Launch manifest: `xorl-infra` `k8s/zorl/qwen3_6-35b-a3b-zorl-wordle-ps-trainer-grpo-match.yaml`
   (self-contained: waits for scorers → starts PS → runs driver). Scorer pool
   `qwen3_6-35b-a3b-zorl-wordle-w35-sglang.yaml` (32×TP2 FP8) + `zorl-w35-smg-router.yaml`.
-- **Bug ladder cleared so far** (each found and fixed live): stale `max_sampling_loras`
-  config field → EP>1 unsupported for fresh_ab (PS runs EP=1) → fold host-OOM
-  (now chunk-streamed, bit-exact) → driver registration idempotency → server-side
-  `abort_zorl_generation` wedge (unload-missing-adapter left the session active).
-- **Proven components:** EP=1 PS load, 32-receiver p2p registration, seed
-  transport (no adapter export), fleet scoring, cold floor ≈ 0.008–0.023 (honest).
-- **Still unproven (the remaining firsts):** the fresh_ab fold at 35B scale and
-  the post-apply Mooncake fp8 base sync — watch the first `[step 1]` line's
-  `update_norm` and `sync` result.
-- **Gate:** held-out solve-rate (probe every 10 steps, seed-777 NG=128,
-  retries=0) climbing toward GRPO's 0.65–0.68 honest ceiling.
+- **Status (2026-07-02): PAUSED for handoff. GPUs freed** (scorer StatefulSet
+  scaled to 0, trainer + SMG deleted). Eight launch attempts; a bug ladder was
+  cleared, and everything up to and INCLUDING the fold works. One blocker remains.
+- **Bug ladder cleared** (each found + fixed live, all committed/pushed):
+  1. stale `max_sampling_loras` config field (dropped from PS config)
+  2. fresh_ab rejects EP>1 → PS runs `expert_parallel_size: 1` (FSDP-only; PS does no fwd/bwd)
+  3. fold host-OOM ~96 GB/rank → chunk-streamed GPU fold, bit-exact (`xorl-zorl-ps` `0d384d676`)
+  4. `lora_path: null` 400s the cold probe → omit key / no `str(None)` (client)
+  5. driver seed-registration not idempotent → retry + unload-reload (`1769898`)
+  6. server `abort_zorl_generation` wedge (unload-missing-adapter left session active) → best-effort (`sglang 91862e50f`)
+  7. MTP guard blocked fp8 sync → scoped MTP-excluded escape (`xorl-zorl-ps 399d8fe62`)
+  8. sync used `nccl_broadcast` (68-rank collective timeout) → `sync_inference_method: p2p`
+- **PROVEN end-to-end:** EP=1 PS load, 32-receiver registration, seed transport
+  (no adapter export), fleet scoring, honest cold floor ≈ 0.00–0.02, and — the
+  hardest — the **fresh_ab fold at 35B**: 320 modules / 280 base params / 40
+  chunks / `update_norm≈9.12e4` / ~28 s, reproduced across 3 attempts.
+
+### ⛔ THE ONE REMAINING BLOCKER — p2p fp8 weight-sync hangs at rendezvous
+After the fold, the post-apply sync (`_sync_inference_weights_after_zorl_apply`
+→ `sync_inference_weights`, `sync_method=p2p`) to the **32 block-FP8 TP2 scorers**
+**hangs at init**: `handler.py:751` logs `sync_method=p2p, endpoints=32,
+quantization=fp8` at T0 and then transfers **nothing** for ~21 min (no
+`prepare_weights_update`, no bucket transfer, no per-endpoint success) until the
+pod is killed. This transport is UNEXERCISED: GRPO's proven p2p goes trainer→
+**bf16** samplers at ~7 replicas; **trainer-side-fp8-quantize → 32 fp8 receivers
+over Mooncake** is new. Debug path (use the `debug-distributed-hang` skill):
+py-spy the hung PS sender (which rank/collective it blocks in), inspect each
+receiver's `/prepare_weights_update`, verify Mooncake/NIXL session init +
+`--enable-rdma-weight-updates` on the receivers, and the FSDP-4 → 32×TP2 (64-rank)
+reshard plan. **Recommended first move: isolate to 1–2 replicas** (`SGLANG_REPLICAS=2`)
+to make rendezvous fast and py-spy-able before debugging at full fan-out.
+Alternatives if p2p proves intractable: (a) the in-tree `delta_packed_v1`
+sparse-delta receiver the scorers already have (the deprecated sglang-PS path
+used it — proven receiver contract, slower); (b) bf16 dense p2p if the fp8-quantize
+step is the hang.
+
+### ⚠️ Cluster caveat
+The PS pod was killed by a clean external SIGTERM ("Normal Killing", NOT OOM) =
+preemption/node-reclaim; the manifest is `priorityClassName: normal` on a
+contended cluster. Even a working sync may be fragile — consider a higher
+priority class or fewer concurrent stacks.
+
+- **Gate (unchanged):** held-out solve-rate (probe every 10 steps, seed-777
+  NG=128, retries=0) climbing toward GRPO's 0.65–0.68 honest ceiling.
+- **To resume:** `kubectl scale sts -n apanda zorl-w35-sglang --replicas=32`
+  (or 2 to isolate), recreate SMG (`zorl-w35-smg-router.yaml`), then
+  `kubectl create -f k8s/zorl/qwen3_6-35b-a3b-zorl-wordle-ps-trainer-grpo-match.yaml`.
 
 ## Operating rules (learned the hard way)
 
