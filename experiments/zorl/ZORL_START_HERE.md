@@ -107,13 +107,30 @@ tensor-map (`_build_hf_tensor_map_locators`/`_emit_fused_moe_locators` in sglang
 `[0:I]`, up `[I:2I]`) + `experts.down_proj` `[E, H, I]` — no expert index. So
 the pushed tensors match no locator → p2p `receiver tensor_map is incomplete`,
 sparse_delta `did not match a local parameter or any local tensor-map locator`.
-**Fix (needs a test cycle — do NOT blind-push; FP8 block-scale fusion is the
-subtle part):** EITHER (A, sender) fuse gate+up per layer into
-`experts.gate_up_proj` `[E,2I,H]` + emit fused `weight_scale_inv`, matching the
-receiver's w13 locator; the fused name already exists at `model_runner.py:1071`;
-OR (B, receiver) add per-expert unfused `experts.{i}.{gate,up,down}_proj.weight`
-→ w13/w2 half-slice locators alongside the fused ones. `lora_export_format`
-does NOT help (it's for on-disk adapter export, not the sync path).
+**Refined root-cause (2026-07-03, static analysis exhausted):** the sender emits
+`model.layers.0.mlp.experts.{i}.gate_proj.weight`; the receiver returns "no
+receiver locator" for it. Ruled OUT: `language_model` prefix (sglang strips it,
+qwen3_5.py:1158); isinstance gate (served class is `DeepEPMoE(FusedMoE)` —
+subclass, passes); the FP8 skip-warnings (none fired). The receiver's
+`_emit_fused_moe_locators` is *designed* to emit exactly that per-expert name
+(model_runner.py ~4383) — so the mismatch is a subtle one that needs a **live
+locator-name dump** to pin: likely the block-scale early-return
+(`w13.element_size()<2 and not block_scale_locators` → the FP8 scale layout
+isn't the expected 3D block → whole expert emission skipped silently — CHECK
+THIS FIRST, it's the leading suspect), or a `module_name`/index-range subtlety.
+**Exact next diagnostic:** add a `logger.info` in `_emit_fused_moe_locators`
+right after the `w13/block_scale` checks dumping `module_name`, whether it
+returned early, and the first per-expert `hf_name`; restart ONE scorer; run a
+4-replica debug sync; read the log. THEN fix (options below) with a
+`validate_only` dry-run + a logprob-delta correctness check before trusting the
+scatter — FP8 expert slices have no ES-side k3 gate, so a wrong mapping is
+silent corruption.
+**Fix options** (one unblocks BOTH transports): (A, sender) fuse gate+up per
+layer into `experts.gate_up_proj` `[E,2I,H]` + fused `weight_scale_inv`
+(fused name exists at model_runner.py:1071); (B, receiver) fix whatever the
+dump reveals (un-skip the block-scale path for this FP8 scale layout, or add
+per-expert locators). `lora_export_format` does NOT help (on-disk adapter
+export only, not the sync path).
 
 ### ⚠️ Cluster caveat
 The PS pod was killed by a clean external SIGTERM ("Normal Killing", NOT OOM) =
