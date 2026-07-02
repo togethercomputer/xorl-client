@@ -1,6 +1,25 @@
 # Upstreaming scope: Wordle RL session work → apanda-dev branches
 
-> **✅ 2026-07-02: EXECUTED — all four areas landed.** Final state:
+> **🏁 2026-07-02 (later): MERGE QUEUE EXECUTED — consolidation CLOSED.** All engine/sglang/client
+> PRs are MERGED into their target branches (squash, head branches deleted):
+>
+> - **Engine `apanda-dev` (17 merges)**: #433 (marin sglang-parity) → k3 atomic stack #435–#444
+>   (rebased to deltas) → **#445** (wordle remainder: MoE EP/TP parity + token-diagnostics capture;
+>   supersedes the auto-closed #430) → #431/#432 (marin drgrpo + KV-cache preserve) → #434 (OPD
+>   Line A, 4-hunk diagnostics-capture reconciliation + width-clamp fix) → **#446** (zorl-ps
+>   PS-as-trainer + fresh_ab). Plus 2 direct test-mock fixes (high_precision_bf16 post-#439).
+>   Final-tip suite: 489 passing; only pre-existing base failures remain (module_utils_broadcast ×3,
+>   qwen_hidden_states ×1 — fail identically at the June fork point 2093a6c82).
+> - **SGLang `apanda-dev`**: #54 merged; #55 re-landed as **#57** (auto-closed on stacked-base
+>   deletion) and merged. #56 stays draft (W12); #51 disposition-commented.
+> - **Client**: #9 merged to `apanda-dev`; #7 disposition-commented (pre-consolidation, owner's call).
+> - **Infra — NEEDS HUMAN**: PRs **#1–#4** queued to `main` but blocked by a repo ruleset
+>   (1 approving review; author=apanda, self-approval impossible, admin bypass blocked).
+>   Merge order: #1 → #2 → #3 (wordle, stacked on #2) → #4 (zorl, independent).
+> - Deferred: k3pnr3-v2 science conclusion (run still live), zorl live-gate readout (running in the
+>   zorl stream's relaunched stack), k3diag rebuild smoke, k3-recon-r4 rebuild + donor trees (k3 agent).
+>
+> Earlier same-day status (per-area landing map, pre-merge):
 >
 > | Area | Where it landed | Notes |
 > |---|---|---|
