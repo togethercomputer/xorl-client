@@ -154,10 +154,11 @@ def _fill_pool_kernel(
 # ------------------------------------------------------------- GEMM kernels
 @triton.jit
 def _expand_kernel(
-    h_ptr, out_ptr, pool_ptr, seed_ptr, sorted_ids_ptr, block_le_ptr,
+    h_ptr, out_ptr, pool_ptr, seed_ptr, sorted_ids_ptr, block_le_ptr, sign_ptr,
     D, sigma,
     OUT: tl.constexpr, RANK: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr,
     GEN: tl.constexpr, GMODE: tl.constexpr, NROUNDS: tl.constexpr,
+    SIGNED: tl.constexpr,
 ):
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
@@ -167,6 +168,12 @@ def _expand_kernel(
     r = tl.arange(0, RANK)
     h = tl.load(h_ptr + tok[:, None] * RANK + r[None, :],
                 mask=mask_m[:, None], other=0.0)                    # [BM, R] bf16
+    if SIGNED:
+        # antithetic pair-sharing: the tile is the pair's +tile; the row's
+        # candidate sign rides on h (sign commutes through the dot)
+        sg = tl.load(sign_ptr + pid_m * BM + tl.arange(0, BM),
+                     mask=mask_m, other=1.0).to(tl.bfloat16)
+        h = h * sg[:, None]
     n = pid_n * BN + tl.arange(0, BN)
     if GEN:
         seed = tl.load(seed_ptr + le)
@@ -211,11 +218,11 @@ def _shrink_kernel(
 @triton.jit
 def _fused_expand_kernel(
     h_ptr, out_ptr, base_ptr, pool_ptr, seed_ptr, sorted_ids_ptr, block_le_ptr,
-    D, sigma,
+    sign_ptr, D, sigma,
     EXP: tl.constexpr, OUT: tl.constexpr, RANK: tl.constexpr,
     BM: tl.constexpr, BN: tl.constexpr, BASE_ELEMS: tl.constexpr,
     LORA: tl.constexpr, GEN: tl.constexpr, GMODE: tl.constexpr,
-    NROUNDS: tl.constexpr,
+    NROUNDS: tl.constexpr, SIGNED: tl.constexpr,
 ):
     """The strong overlap test: one kernel streams this block's base-expert
     chunk (models the fp8 expert weight tile a fused base+delta GEMM would
@@ -239,6 +246,10 @@ def _fused_expand_kernel(
         r = tl.arange(0, RANK)
         h = tl.load(h_ptr + tok[:, None] * RANK + r[None, :],
                     mask=mask_m[:, None], other=0.0)
+        if SIGNED:
+            sg = tl.load(sign_ptr + pid_m * BM + tl.arange(0, BM),
+                         mask=mask_m, other=1.0).to(tl.bfloat16)
+            h = h * sg[:, None]
         n = pid_n * BN + tl.arange(0, BN)
         if GEN:
             seed = tl.load(seed_ptr + le)
@@ -255,12 +266,14 @@ def _fused_expand_kernel(
 
 
 def run_fused(h, out, base, pool, seeds, sorted_ids, block_le, D, lora, mode,
-              bm, bn, base_elems):
+              bm, bn, base_elems, signs=None):
     grid = (block_le.numel(), GATEUP_OUT // bn)
     _fused_expand_kernel[grid](
-        h, out, base, pool, seeds, sorted_ids, block_le, D, SIGMA,
+        h, out, base, pool, seeds, sorted_ids, block_le,
+        signs if signs is not None else h, D, SIGMA,
         EXP=E, OUT=GATEUP_OUT, RANK=R, BM=bm, BN=bn, BASE_ELEMS=base_elems,
         LORA=lora, GEN=mode > 0, GMODE=max(mode - 1, 0), NROUNDS=10,
+        SIGNED=signs is not None,
     )
 
 
@@ -325,13 +338,15 @@ def build_dispatch(m_tokens: int, pop: int, bm: int, device, gen: torch.Generato
 
 
 def run_expand(h, out, pool, seeds, sorted_ids, block_le, D, mode, bm, bn,
-               nrounds=10):
+               nrounds=10, signs=None):
     n_blocks = block_le.numel()
     grid = (n_blocks, GATEUP_OUT // bn)
     _expand_kernel[grid](
-        h, out, pool, seeds, sorted_ids, block_le, D, SIGMA,
+        h, out, pool, seeds, sorted_ids, block_le,
+        signs if signs is not None else h, D, SIGMA,
         OUT=GATEUP_OUT, RANK=R, BM=bm, BN=bn,
         GEN=mode > 0, GMODE=max(mode - 1, 0), NROUNDS=nrounds,
+        SIGNED=signs is not None,
     )
 
 
