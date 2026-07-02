@@ -1,0 +1,1 @@
+{"n": 300, "seed": 12345, "rows": [{"task": "count_reassignments_oldgen", "condition": "B_harness_nofiller_norestate", "acc": 0.4091666666666667, "k": 982, "n": 2400, "ci95": [0.3897, 0.429], "errors": 0}, {"task": "count_reassignments_oldgen", "condition": "C_restate1_nofiller", "acc": 0.7158333333333333, "k": 1718, "n": 2400, "ci95": [0.6975, 0.7335], "errors": 0}]}

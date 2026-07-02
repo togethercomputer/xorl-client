@@ -1,0 +1,279 @@
+{
+  "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+  "endpoint": "http://10.42.16.103:30060/generate",
+  "system_prompt": "/no_think\nYou will be given a math problem. Answer immediately using the format `Answer: [ANSWER]' where [ANSWER] is just the numerical answer, nothing else. No explanation, no words, no reasoning, just the number.",
+  "nshots": 10,
+  "seed": 12345,
+  "cells": [
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "mult4",
+      "condition": "baseline",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.732,
+      "ci95": 0.03882343935305063,
+      "secs": 6.9
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "mult4",
+      "condition": "counting",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.716,
+      "ci95": 0.03952635349738197,
+      "secs": 11.9
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "mult4",
+      "condition": "restate1",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.734,
+      "ci95": 0.038731107662962595,
+      "secs": 6.5
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "mult4",
+      "condition": "restate2",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.734,
+      "ci95": 0.038731107662962595,
+      "secs": 9.2
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "mult4",
+      "condition": "restate4",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.73,
+      "ci95": 0.03891476223748515,
+      "secs": 7.9
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "mult4",
+      "condition": "restate8",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.736,
+      "ci95": 0.038637759935068704,
+      "secs": 9.1
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "mult4",
+      "condition": "counting+restate",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.744,
+      "ci95": 0.03825405867094366,
+      "secs": 12.5
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "mult4",
+      "condition": "wrongq-restate",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.63,
+      "ci95": 0.042319663514730356,
+      "secs": 6.8
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "mult4",
+      "condition": "structured-restate",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.728,
+      "ci95": 0.039005083402038766,
+      "secs": 7.0
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "arithmetic",
+      "condition": "baseline",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.08,
+      "ci95": 0.02377989739254566,
+      "secs": 7.5
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "arithmetic",
+      "condition": "counting",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.092,
+      "ci95": 0.025334241555649537,
+      "secs": 14.2
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "arithmetic",
+      "condition": "restate1",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.12,
+      "ci95": 0.028484134531349202,
+      "secs": 8.7
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "arithmetic",
+      "condition": "restate2",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.098,
+      "ci95": 0.026060777946945484,
+      "secs": 10.0
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "arithmetic",
+      "condition": "restate4",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.112,
+      "ci95": 0.027643088452631335,
+      "secs": 11.2
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "arithmetic",
+      "condition": "restate8",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.1,
+      "ci95": 0.02629615941539753,
+      "secs": 13.8
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "arithmetic",
+      "condition": "counting+restate",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.106,
+      "ci95": 0.026983157057690638,
+      "secs": 14.3
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "arithmetic",
+      "condition": "wrongq-restate",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.05,
+      "ci95": 0.019103716915825568,
+      "secs": 8.6
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "arithmetic",
+      "condition": "structured-restate",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.07,
+      "ci95": 0.02236462206253439,
+      "secs": 10.4
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "varcount",
+      "condition": "baseline",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.654,
+      "ci95": 0.04169634550892919,
+      "secs": 6.7
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "varcount",
+      "condition": "counting",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.654,
+      "ci95": 0.04169634550892919,
+      "secs": 11.6
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "varcount",
+      "condition": "restate1",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.646,
+      "ci95": 0.04191688095266631,
+      "secs": 8.3
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "varcount",
+      "condition": "restate2",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.68,
+      "ci95": 0.04088843748543101,
+      "secs": 10.0
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "varcount",
+      "condition": "restate4",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.682,
+      "ci95": 0.04082035868534229,
+      "secs": 13.8
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "varcount",
+      "condition": "restate8",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.724,
+      "ci95": 0.03918274820376947,
+      "secs": 20.6
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "varcount",
+      "condition": "counting+restate",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.718,
+      "ci95": 0.03944190161744233,
+      "secs": 13.8
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "varcount",
+      "condition": "wrongq-restate",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.324,
+      "ci95": 0.041022008688020146,
+      "secs": 8.5
+    },
+    {
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "task": "varcount",
+      "condition": "structured-restate",
+      "n": 500,
+      "n_err": 0,
+      "acc": 0.666,
+      "ci95": 0.04134104184463667,
+      "secs": 9.0
+    }
+  ]
+}

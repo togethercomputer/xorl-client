@@ -104,6 +104,19 @@ Human merge queue (per wordle agent, confirmed): #433 → #430 → #431/#432 →
 (rebase = the 4 hunks above; map posted as a comment on #434). Client #9 and
 infra #2 are independent.
 
+## FINAL (2026-07-02, post-merge): all landed, verified
+
+Squash-merged in order: #433 -> k3 stack #435-#444 -> #445 (wordle remainder,
+replaces auto-closed #430) -> #431/#432 -> #434 (`3048b77c6`) -> #446 (zorl-ps),
+plus 2 direct test-mock fixes. Client #9 merged. Post-merge verification from this
+line: all Line A symbols present at tip, `load_checkpoint_optimizer` fully renamed,
+231 theme tests green. The one hand-edit to #434 (width-clamp -> width-aware
+`_build_diagnostic_sample_indices` rebuild in the diagnostics sampler) reviewed and
+CORRECT — the old filter silently shrank sample sets for narrow components.
+Known-remaining: 4 pre-existing failures (module_utils_broadcast x3,
+qwen_hidden_states x1, identical at the June fork), the Mooncake-only teacher-cache
+recipe migration for OPD clients, k3pnr3-v2 still pinning its worktree, zorl live gate.
+
 ## Coordination (three parallel consolidations, 2026-07-02)
 - **wordle agent** (bubbly-shell plan): owns sglang apanda-dev push, engine PR #430
   (wordle-validated src ⊂ Line B snapshot), infra `wordle-consolidation`, client

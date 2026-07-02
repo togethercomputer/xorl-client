@@ -1,0 +1,31 @@
+[count_reassignments_oldgen] 3900 requests over 13 conditions -> http://127.0.0.1:30061/generate
+  ...300/3900 (errs=0)
+  ...600/3900 (errs=0)
+  ...900/3900 (errs=0)
+  ...1200/3900 (errs=0)
+  ...1500/3900 (errs=0)
+  ...1800/3900 (errs=0)
+  ...2100/3900 (errs=0)
+  ...2400/3900 (errs=0)
+  ...2700/3900 (errs=0)
+  ...3000/3900 (errs=0)
+  ...3300/3900 (errs=0)
+  ...3600/3900 (errs=0)
+  ...3900/3900 (errs=0)
+
+=== count_reassignments_oldgen (n=300, greedy, seed=12345, errs=0) ===
+condition                           acc    k/n             95% CI
+B_harness_nofiller_norestate      0.483  145/300  [0.427, 0.540]
+C_restate1_nofiller               0.823  247/300  [0.776, 0.862]
+B_clean_norestate                 0.673  202/300  [0.618, 0.724]
+restate2                          0.760  228/300  [0.709, 0.805]
+restate4                          0.403  121/300  [0.349, 0.460]
+restate8                          0.347  104/300  [0.295, 0.402]
+wrongq_restate1                   0.027    8/300  [0.014, 0.052]
+structured_restate1               0.660  198/300  [0.605, 0.711]
+mega512_restate                   0.750  225/300  [0.698, 0.796]
+mega512_norestate                 0.317   95/300  [0.267, 0.371]
+D_mega8192_norestate              0.287   86/300  [0.238, 0.340]
+A_mega8192_restate                0.713  214/300  [0.660, 0.762]
+A_sys100_mega8192_restate         0.833  250/300  [0.787, 0.871]
+DONE
