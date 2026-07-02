@@ -71,6 +71,7 @@ class LossFnOutput:
     loss: Optional[float] = None
     logprobs: Optional[TensorData] = None
     elementwise_loss: Optional[TensorData] = None
+    k3: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary, excluding None values."""
@@ -89,6 +90,8 @@ class LossFnOutput:
                 if isinstance(self.elementwise_loss, TensorData)
                 else self.elementwise_loss
             )
+        if self.k3 is not None:
+            result["k3"] = self.k3
         return result
 
     @classmethod
@@ -98,6 +101,7 @@ class LossFnOutput:
             loss=_to_scalar_loss(data.get("loss")),
             logprobs=_to_tensor_data(data.get("logprobs")),
             elementwise_loss=_to_tensor_data(data.get("elementwise_loss")),
+            k3=float(data["k3"]) if data.get("k3") is not None else None,
         )
 
     # Dict-like access methods for tinker compatibility
@@ -109,6 +113,8 @@ class LossFnOutput:
             return self.logprobs
         elif key == "elementwise_loss":
             return self.elementwise_loss
+        elif key == "k3":
+            return self.k3
         else:
             raise KeyError(key)
 
@@ -120,6 +126,8 @@ class LossFnOutput:
             return self.logprobs is not None
         elif key == "elementwise_loss":
             return self.elementwise_loss is not None
+        elif key == "k3":
+            return self.k3 is not None
         return False
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -139,6 +147,8 @@ class LossFnOutput:
             result.append("logprobs")
         if self.elementwise_loss is not None:
             result.append("elementwise_loss")
+        if self.k3 is not None:
+            result.append("k3")
         return result
 
     def values(self) -> List[Any]:
@@ -150,6 +160,8 @@ class LossFnOutput:
             result.append(self.logprobs)
         if self.elementwise_loss is not None:
             result.append(self.elementwise_loss)
+        if self.k3 is not None:
+            result.append(self.k3)
         return result
 
     def items(self) -> List[tuple]:
@@ -161,6 +173,8 @@ class LossFnOutput:
             result.append(("logprobs", self.logprobs))
         if self.elementwise_loss is not None:
             result.append(("elementwise_loss", self.elementwise_loss))
+        if self.k3 is not None:
+            result.append(("k3", self.k3))
         return result
 
 
