@@ -87,12 +87,25 @@ def _gen_tile(seed, row_starts, col_start, NC: tl.constexpr,
     GMODE 3: gaussian via fast-math Box-Muller (MUFU intrinsics), 4x-packed.
              ~2^-21 rel err vs libm — irrelevant for ES noise; bit-reproducible
              because both ends run this same function.
+    GMODE 4: row-word Rademacher — ONE Philox word per NC-wide tile row
+             (ctr = row index), value (i, c) = sign of bit c. Requires
+             col_start == 0 and NC <= 32 (true for B tiles, NC = RANK = 16).
+             In theory ~4x fewer Philox calls than GMODE 2; MEASURED 4x SLOWER
+             in triton 3.5 (the compiler rematerializes the philox result
+             across the bit-unpack broadcast, recomputing it per element;
+             1D-then-broadcast doesn't fix it). Kept as a documented negative
+             — a hand-CUDA kernel could realize the win, but GMODE 2 already
+             hides completely under fused base streaming, so it's not needed.
     Each GMODE is a *different* seed-spec mapping; the PS-side fill must use
     the same one.
     """
     if GMODE == 0:
         c = col_start + tl.arange(0, NC)
         vals = tl.randn(seed, row_starts[:, None] + c[None, :], NROUNDS)
+    elif GMODE == 4:
+        w = tl.randint(seed, row_starts // NC, NROUNDS)
+        c = tl.arange(0, NC)
+        vals = tl.where(((w[:, None] >> c[None, :]) & 1) == 1, 1.0, -1.0)
     else:
         q = col_start // 4 + tl.arange(0, NC // 4)
         ctr = row_starts[:, None] // 4 + q[None, :]
@@ -372,19 +385,22 @@ def main():
     sorted_ids, block_le, D, n_pairs, _ = build_dispatch(256, 8, args.bm, device, rng)
     h_in = torch.randn(D + 1, R, device=device, generator=rng).bfloat16()
     x_in = torch.randn(D + 1, DOWN_IN, device=device, generator=rng).bfloat16()
-    for gen_mode, mname in ((1, "gen"), (2, "gen4x"), (3, "rad4x"), (4, "gfast4x")):
+    for gen_mode, mname in ((1, "gen"), (2, "gen4x"), (3, "rad4x"), (4, "gfast4x"),
+                            (5, "radbits")):
+        b_only = gen_mode == 5   # row-word mapping only fits B tiles (NC=16)
         gmode = gen_mode - 1
         seeds_b = make_seed_table(8, 0, device)
         seeds_a = make_seed_table(8, 1, device)
         pool_b = torch.empty(8 * E, GATEUP_OUT, R, device=device, dtype=torch.bfloat16)
         pool_a = torch.empty(8 * E, R, DOWN_IN, device=device, dtype=torch.bfloat16)
         fill_pool(pool_b.view(8 * E, -1), seeds_b, GATEUP_OUT, R, gmode)
-        fill_pool(pool_a.view(8 * E, -1), seeds_a, R, DOWN_IN, gmode)
+        fill_pool(pool_a.view(8 * E, -1), seeds_a, R, DOWN_IN, gmode if not b_only else 2)
         # gate 1: refill with different chunking, must be bit-identical
         alt_b = torch.empty_like(pool_b)
         alt_a = torch.empty_like(pool_a)
         fill_pool(alt_b.view(8 * E, -1), seeds_b, GATEUP_OUT, R, gmode, br=128, bc=16)
-        fill_pool(alt_a.view(8 * E, -1), seeds_a, R, DOWN_IN, gmode, br=16, bc=64)
+        fill_pool(alt_a.view(8 * E, -1), seeds_a, R, DOWN_IN,
+                  gmode if not b_only else 2, br=16, bc=64)
         ok_vals = torch.equal(pool_b, alt_b) and torch.equal(pool_a, alt_a)
         assert ok_vals, "VALUE PARITY FAIL: generator mapping is chunking-dependent"
         del alt_b, alt_a
@@ -393,7 +409,8 @@ def main():
             out = torch.zeros(D + 1, GATEUP_OUT, device=device, dtype=torch.bfloat16)
             hh = torch.zeros(D + 1, R, device=device, dtype=torch.bfloat16)
             run_expand(h_in, out, pool_b, seeds_b, sorted_ids, block_le, D, mode, args.bm, args.bn)
-            run_shrink(x_in, hh, pool_a, seeds_a, sorted_ids, block_le, D, mode, args.bm, args.bk)
+            run_shrink(x_in, hh, pool_a, seeds_a, sorted_ids, block_le, D,
+                       mode if not b_only else 3, args.bm, args.bk)
             outs.append(out); hs.append(hh)
         stats = []
         for load_t, gen_t in ((outs[0], outs[1]), (hs[0], hs[1])):
@@ -563,16 +580,25 @@ def main():
                                      sorted_ids, block_le, D, 0, 0,
                                      args.bm, args.bn, base_elems))
         res["base_only"] = t0
-        for name, gm in (("load", 0), ("rad4x", 3), ("gfast4x", 4)):
+        for name, gm in (("load", 0), ("rad4x", 3), ("gfast4x", 4), ("radbits", 5)):
             t = bench(lambda gm=gm: run_fused(h_in, out_flat, base_buf, pool_b,
                                               seeds_b, sorted_ids, block_le, D,
                                               1, gm, args.bm, args.bn, base_elems))
             res[name] = t - t0
+        res["expand_standalone_load"] = bench(lambda: run_expand(
+            h_in, out_flat, pool_b, seeds_b, sorted_ids, block_le, D, 0,
+            args.bm, args.bn))
+        res["expand_standalone_radbits"] = bench(lambda: run_expand(
+            h_in, out_flat, pool_b, seeds_b, sorted_ids, block_le, D, 5,
+            args.bm, args.bn))
         fused[f"M{m_tokens}_L{pop}"] = res
         gb = n_blocks * 512 * 1024 / 1e9
         print(f"  M={m_tokens} L={pop} blocks={n_blocks} (base {gb:.2f} GB/call): "
               f"base_only {t0*1e3:.0f}u; lora marginal: load {res['load']*1e3:+.0f}u  "
-              f"rad4x {res['rad4x']*1e3:+.0f}u  gfast4x {res['gfast4x']*1e3:+.0f}u")
+              f"rad4x {res['rad4x']*1e3:+.0f}u  gfast4x {res['gfast4x']*1e3:+.0f}u  "
+              f"radbits {res['radbits']*1e3:+.0f}u | standalone expand: "
+              f"load {res['expand_standalone_load']*1e3:.0f}u vs "
+              f"radbits {res['expand_standalone_radbits']*1e3:.0f}u")
         del pool_b, h_in, out_flat
         torch.cuda.empty_cache()
     del base_buf
