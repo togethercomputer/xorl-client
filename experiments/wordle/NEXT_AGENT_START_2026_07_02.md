@@ -1,5 +1,14 @@
 # Wordle Science/Infra — Next Agent Start (2026-07-02)
 
+> **✅ CONSOLIDATION EXECUTED (2026-07-02, later the same day):** the code-audit/upstreaming work
+> described below is DONE. See the status table at the top of `UPSTREAMING_SCOPE.md` (versioned copy
+> in this directory). Summary: SGLang wordle patches pushed on `apanda-dev` (`e9593887f`); client
+> core change was already upstream (`bcd037d`); science branch pushed to `internal` with docs + river
+> port + eval orchestration tooling; engine parity work is **PR #430** on togethercomputer/xorl-internal
+> (R3 transport kept as upstream's `2093a6c82` side_payloads version — it supersedes the k3-recon-line
+> externalize implementation); infra k3* builders/manifests/configs on `xorl-infra` branch
+> `wordle-consolidation`; SMG source found+pushed (`together-smg` branch `xorl` @ `a83f1a6f`).
+
 Supersedes `NEXT_AGENT_START_2026_07_01.md`. This handoff is oriented for **auditing the code/script
 updates** (engine training+inference, client, orchestration) plus the science + one in-flight run.
 

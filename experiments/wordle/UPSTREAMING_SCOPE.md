@@ -1,5 +1,16 @@
 # Upstreaming scope: Wordle RL session work → apanda-dev branches
 
+> **✅ 2026-07-02: EXECUTED — all four areas landed.** Final state:
+>
+> | Area | Where it landed | Notes |
+> |---|---|---|
+> | **SGLang** | `xorl-sglang-internal` `apanda-dev` @ `e9593887f` "Return expert routing weights from SGLang" — **pushed** | The "11 uncommitted files" claim below is stale: they were committed then relabeled/split by the concurrent zorl-consolidation agent (lora + HiCache commits stacked on top, all pushed). |
+> | **Client (core)** | Already upstream: `internal/apanda-dev` @ `bcd037d` "Add Wordle behavior-logprob replay controls" contains the identical `chunked_helpers.py` blob — **no cherry-pick needed** | |
+> | **Client (science)** | Branch `science/wordle-retrieval-sft-20260614` **pushed to internal** — docs/handoffs, river port, and eval orchestration tooling (`experiments/wordle/orchestration/`, incl. the `engine_connect_host` fix) committed | |
+> | **Engine** | **PR #430** (`apanda-dev-wordle-k3recon` → `apanda-dev`, togethercomputer/xorl-internal), 5 themed commits, CPU test suites green | **Scope correction:** upstream `2093a6c82` already superseded the R3 externalize work (side_payloads Mooncake transport) — the PR keeps upstream's R3 and lands only the parity work (BI ops, MoE/attention/norm/rope alignment, k3 debug metrics, token diagnostics). Dense-K3 (`49720d816`/`be40a275c`) excluded (separate stream). |
+> | **Infra** | `xorl-infra` branch `wordle-consolidation` **pushed** — `k8s/wordle/{builders,launch}/` + `configs/wordle/` + README | |
+> | **SMG (gap CLOSED)** | Source found: `togethercomputer/together-smg` branch `xorl` @ `a83f1a6f` "smg: per-row sampling_params + routed-experts passthrough for RL on-policy" — committed AND pushed (local checkout `~/together-smg-xorl`, clean) | `smg-isr3k3-bin` = build of that branch; still don't overwrite the shared binary. |
+
 > Companion to `HANDOFF.md`. Scoping map for moving validated session work out of
 > session-local clones and onto the `apanda-dev` branches of the three repos.
 > Authored 2026-06-30. **Breadth = core code only** (engine `src/` + client library +
