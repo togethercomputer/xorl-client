@@ -1,0 +1,33 @@
+### F1-budget-base-mult4 : --tasks mult:4 --regimes raw_nothink,chat_hardoff --filler-kind pause --filler-counts 0,25,50,100,200,400 --nprob 200 --ksamp 8 --workers 96
+[F1-budget-base-mult4] 19200 requests, 12 cells -> 127.0.0.1:30060 (Qwen/Qwen3-235B-A22B)
+  ...2000/19200 (errs=0)
+  ...4000/19200 (errs=0)
+  ...6000/19200 (errs=0)
+  ...8000/19200 (errs=0)
+  ...10000/19200 (errs=0)
+  ...12000/19200 (errs=0)
+  ...14000/19200 (errs=0)
+  ...16000/19200 (errs=0)
+  ...18000/19200 (errs=0)
+
+=== F1-budget-base-mult4 (Qwen/Qwen3-235B-A22B)  kinds=['pause'] errs=0 ===
+-- regime=raw_nothink --
+   task       kind               K     p@1     se    Δp@1     p@8    Δp@8     n
+   mult:4     base               0   0.558  0.030           0.780           200
+   mult:4     pause             25   0.594  0.029  +0.036   0.815  +0.035   200
+   mult:4     pause             50   0.576  0.029  +0.018   0.790  +0.010   200
+   mult:4     pause            100   0.610  0.029  +0.052   0.810  +0.030   200
+   mult:4     pause            200   0.595  0.030  +0.037   0.805  +0.025   200
+   mult:4     pause            400   0.599  0.029  +0.041   0.825  +0.045   200
+
+-- regime=chat_hardoff --
+   task       kind               K     p@1     se    Δp@1     p@8    Δp@8     n
+   mult:4     base               0   0.469  0.028           0.720           200
+   mult:4     pause             25   0.402  0.026  -0.068   0.725  +0.005   200
+   mult:4     pause             50   0.427  0.027  -0.042   0.705  -0.015   200
+   mult:4     pause            100   0.486  0.028  +0.016   0.740  +0.020   200
+   mult:4     pause            200   0.546  0.029  +0.077   0.755  +0.035   200
+   mult:4     pause            400   0.576  0.029  +0.107   0.810  +0.090   200
+
+samples + summary -> experiments/opd_profile/results/filler_sweep/F1-budget-base-mult4
+DONE

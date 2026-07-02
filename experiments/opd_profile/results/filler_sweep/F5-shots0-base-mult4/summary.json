@@ -1,0 +1,52 @@
+{
+  "run_id": "F5-shots0-base-mult4",
+  "model": "Qwen/Qwen3-235B-A22B",
+  "nprob": 150,
+  "ksamp": 8,
+  "kinds": [
+    "nato"
+  ],
+  "errs": 0,
+  "cells": [
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "base",
+      "fcount": 0,
+      "pass1": 0.29,
+      "se": 0.025424802489999423,
+      "passk": 0.6333333333333333,
+      "nprob": 150
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:4",
+      "kind": "nato",
+      "fcount": 400,
+      "pass1": 0.3933333333333333,
+      "se": 0.030729994917363362,
+      "passk": 0.6866666666666666,
+      "nprob": 150
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "base",
+      "fcount": 0,
+      "pass1": 0.15416666666666667,
+      "se": 0.020081512676578116,
+      "passk": 0.41333333333333333,
+      "nprob": 150
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:4",
+      "kind": "nato",
+      "fcount": 400,
+      "pass1": 0.3625,
+      "se": 0.031657024906816225,
+      "passk": 0.5933333333333334,
+      "nprob": 150
+    }
+  ]
+}

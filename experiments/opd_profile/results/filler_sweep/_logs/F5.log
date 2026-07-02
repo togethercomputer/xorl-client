@@ -1,0 +1,72 @@
+### F5-shots0-base-mult4 : --tasks mult:4 --regimes raw_nothink,chat_hardoff --filler-kinds nato --filler-counts 0,400 --nfewshot 0 --nprob 150 --ksamp 8 --workers 96
+[F5-shots0-base-mult4] 4800 requests, 4 cells -> 127.0.0.1:30060 (Qwen/Qwen3-235B-A22B)
+  ...2000/4800 (errs=0)
+  ...4000/4800 (errs=0)
+
+=== F5-shots0-base-mult4 (Qwen/Qwen3-235B-A22B)  kinds=['nato'] errs=0 ===
+-- regime=raw_nothink --
+   task       kind               K     p@1     se    Δp@1     p@8    Δp@8     n
+   mult:4     base               0   0.290  0.025           0.633           150
+   mult:4     nato             400   0.393  0.031  +0.103   0.687  +0.053   150
+
+-- regime=chat_hardoff --
+   task       kind               K     p@1     se    Δp@1     p@8    Δp@8     n
+   mult:4     base               0   0.154  0.020           0.413           150
+   mult:4     nato             400   0.362  0.032  +0.208   0.593  +0.180   150
+
+samples + summary -> experiments/opd_profile/results/filler_sweep/F5-shots0-base-mult4
+DONE
+### F5-shots5-base-mult4 : --tasks mult:4 --regimes raw_nothink,chat_hardoff --filler-kinds nato --filler-counts 0,400 --nfewshot 5 --nprob 150 --ksamp 8 --workers 96
+[F5-shots5-base-mult4] 4800 requests, 4 cells -> 127.0.0.1:30060 (Qwen/Qwen3-235B-A22B)
+  ...2000/4800 (errs=0)
+  ...4000/4800 (errs=0)
+
+=== F5-shots5-base-mult4 (Qwen/Qwen3-235B-A22B)  kinds=['nato'] errs=0 ===
+-- regime=raw_nothink --
+   task       kind               K     p@1     se    Δp@1     p@8    Δp@8     n
+   mult:4     base               0   0.530  0.032           0.813           150
+   mult:4     nato             400   0.533  0.034  +0.003   0.773  -0.040   150
+
+-- regime=chat_hardoff --
+   task       kind               K     p@1     se    Δp@1     p@8    Δp@8     n
+   mult:4     base               0   0.357  0.029           0.687           150
+   mult:4     nato             400   0.522  0.035  +0.166   0.727  +0.040   150
+
+samples + summary -> experiments/opd_profile/results/filler_sweep/F5-shots5-base-mult4
+DONE
+### F5-shots10-base-mult4 : --tasks mult:4 --regimes raw_nothink,chat_hardoff --filler-kinds nato --filler-counts 0,400 --nfewshot 10 --nprob 150 --ksamp 8 --workers 96
+[F5-shots10-base-mult4] 4800 requests, 4 cells -> 127.0.0.1:30060 (Qwen/Qwen3-235B-A22B)
+  ...2000/4800 (errs=0)
+  ...4000/4800 (errs=0)
+
+=== F5-shots10-base-mult4 (Qwen/Qwen3-235B-A22B)  kinds=['nato'] errs=0 ===
+-- regime=raw_nothink --
+   task       kind               K     p@1     se    Δp@1     p@8    Δp@8     n
+   mult:4     base               0   0.613  0.034           0.787           150
+   mult:4     nato             400   0.593  0.033  -0.020   0.820  +0.033   150
+
+-- regime=chat_hardoff --
+   task       kind               K     p@1     se    Δp@1     p@8    Δp@8     n
+   mult:4     base               0   0.524  0.032           0.807           150
+   mult:4     nato             400   0.547  0.034  +0.023   0.780  -0.027   150
+
+samples + summary -> experiments/opd_profile/results/filler_sweep/F5-shots10-base-mult4
+DONE
+### F5-shots20-base-mult4 : --tasks mult:4 --regimes raw_nothink,chat_hardoff --filler-kinds nato --filler-counts 0,400 --nfewshot 20 --nprob 150 --ksamp 8 --workers 96
+[F5-shots20-base-mult4] 4800 requests, 4 cells -> 127.0.0.1:30060 (Qwen/Qwen3-235B-A22B)
+  ...2000/4800 (errs=0)
+  ...4000/4800 (errs=0)
+
+=== F5-shots20-base-mult4 (Qwen/Qwen3-235B-A22B)  kinds=['nato'] errs=0 ===
+-- regime=raw_nothink --
+   task       kind               K     p@1     se    Δp@1     p@8    Δp@8     n
+   mult:4     base               0   0.647  0.035           0.800           150
+   mult:4     nato             400   0.623  0.034  -0.023   0.787  -0.013   150
+
+-- regime=chat_hardoff --
+   task       kind               K     p@1     se    Δp@1     p@8    Δp@8     n
+   mult:4     base               0   0.582  0.034           0.827           150
+   mult:4     nato             400   0.579  0.035  -0.002   0.753  -0.073   150
+
+samples + summary -> experiments/opd_profile/results/filler_sweep/F5-shots20-base-mult4
+DONE

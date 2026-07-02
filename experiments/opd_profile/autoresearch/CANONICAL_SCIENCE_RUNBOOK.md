@@ -1,5 +1,24 @@
 # CANONICAL SCIENCE RUNBOOK — OPD / OPRD prefill-time-compute
 
+> ## ▶ 2026-07-02 UPDATE — filler-helps-REASONING test (35B): restatement, NOT filler, is the lever
+> Full record: `experiments/opd_profile/FILLER_HELPS_REASONING_35B_HANDOFF_20260702.md`.
+> Ran the filler question cheaply on **Qwen3.6-35B-A3B GRPO** on a *scan/count* task
+> (`count_reassignments` — "how many times is var X reassigned in this snippet?") where extra
+> forward-pass compute over filler *could* plausibly help (arithmetic can't — random tokens don't
+> compute: 4-digit near-ceiling ~0.8, 6-digit floor 0.0, 5-digit washes out). **Step-0 2×2 (base model,
+> same seed = same problems):** mega-filler+restate **A=0.73**, restate-only-no-filler **C=0.75**,
+> no-filler-no-restate **B=0.42** → **C≈A≫B: the +31 is entirely the question-RESTATEMENT** (question
+> placed right before the answer), **the 8192 random filler tokens add nothing on top.** Prescribed
+> random filler = a prompt-structure artifact, not useful compute (consistent with the arithmetic
+> nulls). (D = mega+no-restate, expected ≈B, was blocked on cluster capacity.)
+>
+> **ZA lesson (important):** binary exact-match reward + a task the model can near-solve → GRPO climbs
+> to ceiling → all-correct groups → **zero advantage** → gradient stalls. `max_za_replacements`
+> resampling does **NOT** fix structural ZA (redraws the same distribution). **Proper fix = graded
+> reward** (`reward_proximity` — partial credit by distance, so differing rollouts keep reward variance)
+> **+ harder difficulty** (contested band, no saturation). Validated: za/rate 0.25–0.69 → **0.000**,
+> train_problems full, no refill needed.
+
 > ## ▶ NEXT-AGENT START HERE (post-consolidation, 2026-06-14)
 >
 > **You are in the next-agent home: `/home/apanda/xorl-opd-prefill`** (a dedicated `xorl-client` worktree on

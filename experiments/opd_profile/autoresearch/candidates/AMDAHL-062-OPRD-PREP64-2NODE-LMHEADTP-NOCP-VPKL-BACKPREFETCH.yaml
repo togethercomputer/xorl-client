@@ -1,0 +1,107 @@
+id: AMDAHL-062-OPRD-PREP64-2NODE-LMHEADTP-NOCP-VPKL-BACKPREFETCH
+base_config: AM
+slug: amdahl-062-oprd-prep64-2node-lmheadtp-nocp-vpkl-backprefetch
+buffer_label: amdahl-062-oprd-prep64-2node-lmheadtp-nocp-vpkl-backprefetch
+# Throughput-only two-node diagnostic for the current real all-layer SGLang-cache
+# path. Same workload as the AMDAHL-048 2-node DeepEP/SMS36 baseline and
+# AMDAHL-061 full-prefetch screen, but sets `enable_forward_prefetch:false` and
+# `enable_backward_prefetch:true`.
+#
+# Hypothesis: AMDAHL-061's speed win came from FSDP prefetch overlap, but its
+# same-capture KL/loss drift may be caused by forward module prefetch interacting
+# with recompute/lm-head materialization. Backward-only prefetch should not change
+# the forward logits; if it preserves loss while reducing backward wall, it is a
+# better candidate for wider gates than AMDAHL-061.
+#
+# Not a science/default candidate and not promotable without matching
+# same-capture loss, static/K3, and the same-workload 4-node real-cache gate.
+#
+# 2026-06-15 04:13Z status: prepared and preflighted, not launched. Candidate /
+# config YAML parse, render-control repo-root and --nnodes=2 check, and
+# server-side dry-run for trainer-head service/pod plus trainer-worker-1 pod with
+# explicit nccl/compute nodeSelector passed. Launch deferred because Kubernetes
+# auth works but node-level accounting reports full_schedulable_8gpu_nodes=NONE.
+#
+# 2026-06-15 04:19Z local hardening: manual prefetch scheduling was factored into
+# _configure_manual_fsdp_prefetch() and CPU-only policy tests now cover
+# backward-only, forward-only, both-directions, and no-op scheduling. Validation:
+# test_torch_parallelize_policies.py 18 passed; server-argument threading test
+# still passed.
+#
+# 2026-06-15 04:22Z local hardening follow-up: prefetch flags now use
+# _coerce_optional_bool_config() so string values such as "false"/"off" cannot be
+# treated as truthy and accidentally enable a disabled direction. Validation:
+# test_torch_parallelize_policies.py 28 passed; server-argument threading test
+# still passed; py_compile for the touched scheduler/test files passed.
+#
+# 2026-06-15 04:33Z measured result: launched after kube auth/capacity recovered,
+# using server-only replay on the same AMDAHL-048/061 capture. Artifact:
+# /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/fb_replay/replay-vpkl-lmheadtp-nocp-realalllayer-sglangcache-full64-2node-backprefetch-chunk4-warmed-serveronly-4x-20260615T043109Z.jsonl
+# Server log:
+# /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/20260615T042714Z-serveronly-configAMDAHL-062-OPRD-PREP64-2NODE-LMHEADTP-NOCP-VPKL-BACKPREFETCH-er-opd-q36-35b-slots-trainer-head/server.log
+# Mean over 3 measured rows after 1 warmup: server_forward_backward_s=4.280844,
+# api_wall_s=4.477853, model_forward_s=1.097722,
+# backward_compute_s=1.684526, clear_gradients_s=0.533312, loss=2.355041921,
+# opd_kl=2.333743553, opd_hidden_match_loss=0.021298385. This matches
+# AMDAHL-048 loss/KL/hidden parity and is 3.67% faster on server wall, but it is
+# still 16.41% slower than rejected AMDAHL-061. Verdict: correctness-clean small
+# lever only; not a standalone science/default or 4-node/static/K3 promotion.
+trainer_config: configs/opd_profile/qwen3_6_35b_a3b_opd_opdb_2node_warm009_deepep36_backprefetch_lmheadtp_nocp.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 100
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/arith_ops6_nonempty_cot.json
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 1
+default_prompts_per_step: 64
+profile_warmup_steps: 0
+supervise_student_cot: false
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 1.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 128
+eval_accuracy_every: 0
+eval_control_start_step: 0
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: false
+eval_answer_logprob_every: 0
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: false
+opd_pipeline_rl: false
+sampler_quiesce_before_sync: false
+sync_method: p2p
+sync_weights: false
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 10.0
+opd_prepare_batch_size: 64
+opd_microbatch_size: 64
+save_every: 0
+client_args:
+  opd_oprd_layers: every1
+  opd_oprd_num_layers: 40
+  opd_oprd_student_capture: selected_hooks
+  opd_hidden_match_mode: mse
+  opd_oprd_cache_backend: sglang
+  opd_strict_prepare_overlap_chunks: 0
+  opd_streaming_lowmem: true
+  opd_vocab_chunk_size: 8192
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: false
+  opd_mask_prompt_kl: true
+  eval_heldout_num_problems: 0

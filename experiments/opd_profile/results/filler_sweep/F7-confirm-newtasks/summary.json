@@ -1,0 +1,132 @@
+{
+  "run_id": "F7-confirm-newtasks",
+  "model": "Qwen/Qwen3-235B-A22B",
+  "nprob": 400,
+  "ksamp": 8,
+  "kinds": [
+    "nato"
+  ],
+  "errs": 0,
+  "cells": [
+    {
+      "regime": "raw_nothink",
+      "task": "mult:5",
+      "kind": "base",
+      "fcount": 0,
+      "pass1": 0.1178125,
+      "se": 0.012769945070442955,
+      "passk": 0.2575,
+      "nprob": 400
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:5",
+      "kind": "nato",
+      "fcount": 100,
+      "pass1": 0.1078125,
+      "se": 0.01321364140414247,
+      "passk": 0.215,
+      "nprob": 400
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "mult:5",
+      "kind": "nato",
+      "fcount": 400,
+      "pass1": 0.1040625,
+      "se": 0.01287720914144662,
+      "passk": 0.1925,
+      "nprob": 400
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "add:16:3",
+      "kind": "base",
+      "fcount": 0,
+      "pass1": 0.0686502659574468,
+      "se": 0.007318578205510001,
+      "passk": 0.27925531914893614,
+      "nprob": 376
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "add:16:3",
+      "kind": "nato",
+      "fcount": 100,
+      "pass1": 0.03740026595744681,
+      "se": 0.005368612820536852,
+      "passk": 0.18085106382978725,
+      "nprob": 376
+    },
+    {
+      "regime": "raw_nothink",
+      "task": "add:16:3",
+      "kind": "nato",
+      "fcount": 400,
+      "pass1": 0.02576462765957447,
+      "se": 0.0040671983313205875,
+      "passk": 0.1276595744680851,
+      "nprob": 376
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:5",
+      "kind": "base",
+      "fcount": 0,
+      "pass1": 0.0659375,
+      "se": 0.009713235885264083,
+      "passk": 0.165,
+      "nprob": 400
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:5",
+      "kind": "nato",
+      "fcount": 100,
+      "pass1": 0.0746875,
+      "se": 0.01055607295826082,
+      "passk": 0.1625,
+      "nprob": 400
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "mult:5",
+      "kind": "nato",
+      "fcount": 400,
+      "pass1": 0.0971875,
+      "se": 0.012935692819915098,
+      "passk": 0.185,
+      "nprob": 400
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "add:16:3",
+      "kind": "base",
+      "fcount": 0,
+      "pass1": 0.08200354609929078,
+      "se": 0.008399278833045472,
+      "passk": 0.31117021276595747,
+      "nprob": 376
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "add:16:3",
+      "kind": "nato",
+      "fcount": 100,
+      "pass1": 0.045101950354609927,
+      "se": 0.006416175556234579,
+      "passk": 0.2047872340425532,
+      "nprob": 376
+    },
+    {
+      "regime": "chat_hardoff",
+      "task": "add:16:3",
+      "kind": "nato",
+      "fcount": 400,
+      "pass1": 0.0442154255319149,
+      "se": 0.006214034704500529,
+      "passk": 0.17819148936170212,
+      "nprob": 376
+    }
+  ]
+}

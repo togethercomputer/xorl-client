@@ -1,0 +1,83 @@
+id: AMDAHL-078-OPRD-PREP64-4NODE-DPREP2-LMHEADTP-NOCP-VPKL-FWDPREFETCH-ROWBATCH2
+base_config: AM
+slug: amdahl-078-oprd-prep64-4node-dprep2-lmheadtp-nocp-vpkl-fwdprefetch-rowbatch2
+buffer_label: amdahl-078-oprd-prep64-4node-dprep2-lmheadtp-nocp-vpkl-fwdprefetch-rowbatch2
+# 4-node follow-up to AMDAHL-077. Engine branch
+# codex/opd-repeat2-diagnostics-20260615 through commit a9753836 supports no-CP
+# lm-head TP with data_parallel_replicate_size > 1 by carving lm-head TP groups
+# inside each dp_shard row, and logs the body/lm-head/EP mesh shapes at startup.
+# This candidate tests a 32-GPU mesh composed as dp_replicate=2 x dp_shard=16,
+# preserving the 2-node shard shape while using the full 4-node allocation. It
+# keeps AMDAHL-077's rank-local rowbatch2.
+#
+# Diagnostic only:
+# - no science/default promotion until static/K3 and same-workload 4-node replay
+#   pass;
+# - if it only starts but does not beat the current 4-node MFU audit, treat this
+#   as topology-enablement evidence, not a throughput win.
+trainer_config: configs/opd_profile/qwen3_6_35b_a3b_opd_opdb_4node_warm009_deepep36_forwardprefetch_lmheadtp_nocp_dprep2.yaml
+gdn_backend: fla
+skip_optim_empty_cache: true
+score_mode: pause_vs_nopause
+score_min_control_n: 100
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/arith_ops6_nonempty_cot.json
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 1
+default_prompts_per_step: 64
+profile_warmup_steps: 0
+supervise_student_cot: false
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 1.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 128
+eval_accuracy_every: 0
+eval_control_start_step: 0
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: false
+eval_answer_logprob_every: 0
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: false
+opd_pipeline_rl: false
+sampler_quiesce_before_sync: false
+sync_method: p2p
+sync_weights: false
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 10.0
+opd_prepare_batch_size: 64
+opd_microbatch_size: 64
+save_every: 0
+client_args:
+  opd_oprd_layers: every1
+  opd_oprd_num_layers: 40
+  opd_oprd_student_capture: selected_hooks
+  opd_hidden_match_mode: mse
+  opd_oprd_cache_backend: sglang
+  opd_strict_prepare_overlap_chunks: 0
+  opd_kl_backend: vocab_parallel
+  opd_emit_full_vocab_diagnostics: false
+  opd_streaming_lowmem: true
+  opd_vocab_chunk_size: 8192
+  opd_teacher_layer_cache_device_cache: true
+  opd_sharded_head_device_cache: true
+  opd_packed_row_batch_size: 2
+  opd_packed_row_batch_scope: rank_local
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: false
+  opd_mask_prompt_kl: true
+  eval_heldout_num_problems: 0

@@ -1,0 +1,100 @@
+id: AMDAHL-074-OPRD-PREP64-2NODE-LMHEADTP-NOCP-VPKL-FWDPREFETCH-NODEFRAG
+base_config: AM
+slug: amdahl-074-oprd-prep64-2node-lmheadtp-nocp-vpkl-fwdprefetch-nodefrag
+buffer_label: amdahl-074-oprd-prep64-2node-lmheadtp-nocp-vpkl-fwdprefetch-nodefrag
+# Throughput-only cleanup candidate based on AMDAHL-063. It keeps the same
+# real all-layer SGLang-cache workload and forward-prefetch trainer topology,
+# but opts out of the post-optimizer torch.cuda.empty_cache() via
+# XORL_SKIP_EMPTY_CACHE_AFTER_OPTIM_STEP.
+#
+# Replay evidence on the current same-server AMDAHL-063 FLA stack:
+# - Baseline artifact:
+#   /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/fb_replay/replay-vpkl-lmheadtp-nocp-realalllayer-sglangcache-full64-2node-forwardprefetch-currentbaseline74-realcache-cmp-chunk4-warmed-serveronly-4x-20260615T081347Z.jsonl
+#   rows=3, server_forward_backward_s=4.219886, api_wall_s=4.495177,
+#   clear_gradients_s=0.649127.
+# - Initial replay-only no-GC/no-empty-cache probe:
+#   /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/fb_replay/replay-vpkl-lmheadtp-nocp-realalllayer-sglangcache-full64-2node-forwardprefetch-nodefrag74-realcache-cmp-chunk4-warmed-serveronly-4x-20260615T081415Z.jsonl
+#   rows=3, server_forward_backward_s=3.648783, api_wall_s=3.917750,
+#   clear_gradients_s=0.003312, no loss/KL/hidden drift.
+# - Longer stability replay:
+#   /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/fb_replay/replay-vpkl-lmheadtp-nocp-realalllayer-sglangcache-full64-2node-forwardprefetch-nodefrag74-realcache-stability12-chunk4-warmed-serveronly-12x-20260615T081714Z.jsonl
+#   warmup=1, measured rows=11, server_forward_backward_s=3.991819,
+#   api_wall_s=4.269315, clear_gradients_s=0.003191. Loss/KL/hidden stayed
+#   2.367357433 / 2.346086165 / 0.021271308 with valid_tokens=515.
+# - Patched-engine optimizer-step proof on PR #376 commit db8ec2c7:
+#   /shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_self_distill/er-opd-q36-35b-slots/fb_replay/replay-vpkl-lmheadtp-nocp-realalllayer-sglangcache-full64-2node-forwardprefetch-nodefrag74-optimstep-proof-db8-chunk4-2x-20260615T083011Z.jsonl
+#   warmup=1, measured rows=1, server_forward_backward_s=4.163849,
+#   api_wall_s=4.354535, optim_wall_s=0.044204, and
+#   optim_empty_cache_skipped_values=[true]. This proves the normal async
+#   optimizer-step path carries the skip flag through the API and JSONL output.
+#
+# Interpretation: skipping cache cleanup is stable in this replay and gives a
+# modest same-server 2-node win (about 5.4% server-side, 5.0% API-wall on the
+# longer run). The larger 13% 3-row probe was optimistic because later rows
+# exposed normal forward/backward variance.
+#
+# Optimizer-step smoke passed, but this is not a science/default candidate
+# until both remaining gates pass:
+# 1. Same-capture static/K3 gate passes.
+# 2. Same-workload 4-node real-cache MFU gate beats the current 1.04% logical
+#    MFU baseline without OOM/fragmentation drift.
+trainer_config: configs/opd_profile/qwen3_6_35b_a3b_opd_opdb_2node_warm009_deepep36_forwardprefetch_lmheadtp_nocp.yaml
+gdn_backend: fla
+skip_optim_empty_cache: true
+score_mode: pause_vs_nopause
+score_min_control_n: 100
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/arith_ops6_nonempty_cot.json
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 1
+default_prompts_per_step: 64
+profile_warmup_steps: 0
+supervise_student_cot: false
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 1.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 128
+eval_accuracy_every: 0
+eval_control_start_step: 0
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: false
+eval_answer_logprob_every: 0
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: false
+opd_pipeline_rl: false
+sampler_quiesce_before_sync: false
+sync_method: p2p
+sync_weights: false
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 10.0
+opd_prepare_batch_size: 64
+opd_microbatch_size: 64
+save_every: 0
+client_args:
+  opd_oprd_layers: every1
+  opd_oprd_num_layers: 40
+  opd_oprd_student_capture: selected_hooks
+  opd_hidden_match_mode: mse
+  opd_oprd_cache_backend: sglang
+  opd_strict_prepare_overlap_chunks: 0
+  opd_streaming_lowmem: true
+  opd_vocab_chunk_size: 8192
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: false
+  opd_mask_prompt_kl: true
+  eval_heldout_num_problems: 0

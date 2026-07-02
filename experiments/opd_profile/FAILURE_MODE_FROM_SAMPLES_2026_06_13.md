@@ -167,6 +167,21 @@ exact-integer match, `--samples_out` for per-|gold|-bucket analysis.
 
 **Decision gate (NOT aggregate accuracy — it's dominated by the gold=0 attractor):** does the RiM arm
 lift the `|gold|≥1k`/`≥10k` magnitude buckets that single-pass OPD/SFT NEVER solve (§1b)? Compare
-RiM-blocks vs no-blocks (mechanism fires?) vs SFT-baseline (beats the single-pass ceiling?). If yes →
-first prefill-compute signal on a depth-limited task → port to Q3.6-35B. If no → prefill compute on deep
-arithmetic is genuinely hard at this depth; learn the limit.
+RiM-blocks vs no-blocks (mechanism fires?) vs SFT-baseline (beats the single-pass ceiling?).
+
+### VERDICT (2026-06-14) — NEGATIVE. All three arms complete (Qwen3-30B-A3B, eval n=1024 disjoint):
+
+| `|gold|` | RiM blocks (prefill) | RiM no-blocks | SFT-no-CoT |
+|---|---|---|---|
+| `<10k` | 12/231 | 13/231 | 13/231 |
+| **`≥10k`** | **0/139** | **0/139** | **0/139** |
+| aggregate | 0.282 | 0.306 | 0.289 |
+
+**All three within noise (~0.28–0.31), identical per-bucket profiles, `≥10k`=0/139 for ALL.** The
+value-grounded forcing-mask blocks add nothing (blocks ≈ no-blocks ≈ plain SFT → RiM reduces to "good
+SFT"); the depth/exactness wall holds — the OPPOSITE of RiM's +22pp on (soft-reasoning) GSM8K. Grounded
+prefill memory does not internalize exact multi-digit arithmetic into a fixed-depth pass. **Next move
+(do NOT keep cycling OPD/RiM/CPF/temp/coef knobs): curriculum (easy sub-bands first) or process/step
+supervision, OR retarget to a soft-reasoning task where RiM works — exactness is precisely what defeats
+single-pass internalization. The one cheap remaining RiM knob is M≥8 (capacity), only if explicitly chosen.**
+Full per-bucket numbers + the 3-way table: AGENT_COORDINATION.md "RiM VERDICT" + runbook §7 item 6.

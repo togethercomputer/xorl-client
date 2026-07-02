@@ -1,0 +1,86 @@
+id: AMDAHL-065-OPRD-PREP128-2NODE-LMHEADTP-NOCP-VPKL-FWDPREFETCH-REPEAT2-SEPARATOR
+base_config: AM
+slug: amdahl-065-oprd-prep128-2node-lmheadtp-nocp-vpkl-fwdprefetch-repeat2-separator
+buffer_label: amdahl-065-oprd-prep128-2node-lmheadtp-nocp-vpkl-fwdprefetch-repeat2-separator
+# Diagnostic follow-up to AMDAHL-064. Reuses the same 2-node forward-only
+# prefetch trainer config, but the replay payload repeats the AMDAHL-047 full64
+# capture as two 64-sample copies separated by a no-loss 4096-token dummy row.
+# That dummy row forces the sequential packer to close the first copy's final
+# packed microbatch before starting the second copy.
+#
+# Hypothesis: AMDAHL-064's improved valid-token throughput is real, but the
+# same-capture loss/KL/hidden drift may be caused by changing packed neighbors
+# at the copy boundary. If preserving the 64-sample pack boundary restores the
+# AMDAHL-048/063 loss tuple while keeping a larger call, the next engine target
+# is packed-neighbor invariance/attention/cache-indexing. If it still drifts,
+# focus on larger-call metric/loss aggregation or rank-slice reduction.
+#
+# Result 2026-06-15 05:13Z: rejected as diagnostic/non-promotable. Mean over 2
+# measured rows after 1 warmup was server_forward_backward_s=5.892664,
+# api_wall_s=6.389314, valid_tokens=1030, loss=2.356476724,
+# opd_kl=2.335177020, hidden=0.021299774. Preserving the first 64-sample pack
+# boundary did not restore the AMDAHL-048/063 tuple and moved loss/KL further
+# than AMDAHL-064, so the next audit should compare token-weighted
+# numerators/denominators and packed-layout invariance directly.
+#
+# Not a science/default candidate and not promotable. The separator is an
+# artificial no-loss diagnostic row, not a training recipe.
+trainer_config: configs/opd_profile/qwen3_6_35b_a3b_opd_opdb_2node_warm009_deepep36_forwardprefetch_lmheadtp_nocp.yaml
+gdn_backend: fla
+score_mode: pause_vs_nopause
+score_min_control_n: 100
+student_prefill_text: ' pause'
+student_prefill_count: 1024
+student_prefill_suffix: 'Answer: '
+student_stop_sequences: '["\n"]'
+teacher_cot_json_path: /shared/opd-coord/arith_ops6_nonempty_cot.json
+prompts_json_path: /shared/opd-coord/arith_ops6_nonempty_prompts.json
+num_prompts: 7892
+default_num_steps: 1
+default_prompts_per_step: 128
+profile_warmup_steps: 0
+supervise_student_cot: false
+opd_supervise_buffer_only: false
+opd_hidden_match_coef: 1.0
+learning_rate: 3e-6
+max_new_tokens: 64
+eval_max_new_tokens: 64
+eval_num_problems: 128
+eval_accuracy_every: 0
+eval_control_start_step: 0
+eval_control_max_concurrency: 128
+eval_answer_logprob_control: false
+eval_answer_logprob_every: 0
+eval_answer_logprob_batch_size: 64
+eval_answer_logprob_max_concurrency: 16
+eval_answer_logprob_distractor_control: false
+opd_pipeline_rl: false
+sampler_quiesce_before_sync: false
+sync_method: p2p
+sync_weights: false
+serial_endpoint_sync: true
+request_timeout: 1200
+weight_sync_timeout: 900
+opd_contrastive_corrupt_buffer_weight: 0.0
+opd_contrastive_corrupt_answer_weight: 0.0
+opd_contrastive_corrupt_buffer_mode: rotate
+opd_contrastive_corrupt_buffer_span: memory_only
+opd_positive_answer_weight: 0.0
+opd_loss_max_clamp: 10.0
+opd_prepare_batch_size: 128
+opd_microbatch_size: 128
+save_every: 0
+client_args:
+  opd_oprd_layers: every1
+  opd_oprd_num_layers: 40
+  opd_oprd_student_capture: selected_hooks
+  opd_hidden_match_mode: mse
+  opd_oprd_cache_backend: sglang
+  opd_strict_prepare_overlap_chunks: 0
+  opd_streaming_lowmem: true
+  opd_vocab_chunk_size: 8192
+  eval_task: arithmetic
+  eval_prompts_json_path: /shared/opd-coord/arith_ops6_eval_1024.json
+  eval_corrupt_pause_control: false
+  opd_mask_prompt_kl: true
+  eval_heldout_num_problems: 0

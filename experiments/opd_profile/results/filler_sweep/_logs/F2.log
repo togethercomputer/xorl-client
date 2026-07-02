@@ -1,0 +1,10 @@
+### F2-content-base-mult4 : --tasks mult:4 --regimes raw_nothink,chat_hardoff --filler-kinds pause,ellipsis,counting,fibonacci,random_numbers,nato,lorem,states --filler-counts 0,100,400 --nprob 200 --ksamp 8 --workers 96
+[F2-content-base-mult4] 54400 requests, 34 cells -> 127.0.0.1:30060 (Qwen/Qwen3-235B-A22B)
+  ...2000/54400 (errs=0)
+  ...4000/54400 (errs=0)
+  ...6000/54400 (errs=0)
+  ...8000/54400 (errs=0)
+  ...10000/54400 (errs=0)
+  ...12000/54400 (errs=0)
+  ...14000/54400 (errs=1200)
+command terminated with exit code 143

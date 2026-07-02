@@ -31,6 +31,14 @@ def _metric(metrics: dict[str, Any], key: str) -> float | None:
     return None
 
 
+def _metric_first(metrics: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = _metric(metrics, key)
+        if value is not None:
+            return value
+    return None
+
+
 def _mean(values: list[float]) -> float:
     return statistics.fmean(values) if values else float("nan")
 
@@ -171,19 +179,26 @@ def main() -> int:
         api_wall_s = time.perf_counter() - t0
         metrics = output.metrics or {}
         optim_wall_s = 0.0
+        optim_metrics: dict[str, Any] = {}
         if args.optim_step:
             opt_t0 = time.perf_counter()
-            training_client.optim_step(
+            optim_output = training_client.optim_step(
                 tomi.AdamParams(learning_rate=args.learning_rate, grad_clip_norm=args.grad_clip_norm)
             ).result(timeout=args.timeout)
             optim_wall_s = time.perf_counter() - opt_t0
+            optim_metrics = optim_output.metrics or {}
         row = {
             "iteration": iteration,
             "warmup": iteration < args.warmup,
             "api_wall_s": api_wall_s,
             "optim_wall_s": optim_wall_s,
+            "optim_metrics": optim_metrics,
+            "optim_empty_cache_skipped": optim_metrics.get("optim_empty_cache_skipped"),
             "server_forward_backward_s": _metric(metrics, "execution_time"),
             "valid_tokens": _metric(metrics, "valid_tokens"),
+            "executor_batches": _metric(metrics, "executor_batches"),
+            "executor_original_batches": _metric(metrics, "executor_original_batches"),
+            "executor_packed_row_batch_size": _metric(metrics, "executor_packed_row_batch_size"),
             "loss": _metric(metrics, "loss"),
             "opd_profile_forward_compute_s": _metric(metrics, "opd_profile_forward_compute_s"),
             "opd_profile_backward_compute_s": _metric(metrics, "opd_profile_backward_compute_s"),
@@ -195,6 +210,17 @@ def main() -> int:
             "opd_profile_oprd_teacher_forward_s": _metric(metrics, "opd_profile_oprd_teacher_forward_ms"),
             "opd_profile_oprd_layer_fetch_s": _metric(metrics, "opd_profile_oprd_layer_fetch_ms"),
             "opd_profile_clear_gradients_s": _metric(metrics, "opd_profile_clear_gradients_ms"),
+            "opd_kl": _metric(metrics, "opd_kl"),
+            "opd_weighted_kl": _metric(metrics, "opd_weighted_kl"),
+            "opd_hidden_match_loss": _metric(metrics, "opd_hidden_match_loss"),
+            "opd_hidden_match_raw_loss": _metric(metrics, "opd_hidden_match_raw_loss"),
+            "opd_teacher_weight_mean": _metric(metrics, "opd_teacher_weight_mean"),
+            "opd_loss_min": _metric_first(metrics, ("opd_loss_min", "opd_loss_min:min")),
+            "opd_loss_max": _metric_first(metrics, ("opd_loss_max", "opd_loss_max:max")),
+            "opd_loss_abs_mean": _metric(metrics, "opd_loss_abs_mean"),
+            "opd_loss_clamp_frac": _metric(metrics, "opd_loss_clamp_frac"),
+            "opd_num_teachers": _metric(metrics, "opd_num_teachers"),
+            "loss_param_overrides": dict(args.loss_param),
         }
         for key in (
             "opd_profile_loss_total_s",
@@ -226,9 +252,12 @@ def main() -> int:
         "repeat_data": args.repeat_data,
         "limit_data": args.limit_data,
         "loss_param_overrides": dict(args.loss_param),
+        "effective_loss_fn_params": loss_fn_params,
         "original_num_datums": original_num_datums,
         "num_datums": len(data),
         "mean_api_wall_s": _mean([row["api_wall_s"] for row in measured]),
+        "mean_optim_wall_s": _mean([row["optim_wall_s"] for row in measured]),
+        "optim_empty_cache_skipped_values": [row["optim_empty_cache_skipped"] for row in measured],
         "p50_api_wall_s": _p50([row["api_wall_s"] for row in measured]),
         "mean_server_forward_backward_s": _mean(
             [
@@ -237,6 +266,19 @@ def main() -> int:
                 if isinstance(row["server_forward_backward_s"], (int, float))
             ]
         ),
+        "mean_executor_batches": _mean(
+            [row["executor_batches"] for row in measured if isinstance(row["executor_batches"], (int, float))]
+        ),
+        "mean_executor_original_batches": _mean(
+            [
+                row["executor_original_batches"]
+                for row in measured
+                if isinstance(row["executor_original_batches"], (int, float))
+            ]
+        ),
+        "executor_packed_row_batch_size_values": [
+            row["executor_packed_row_batch_size"] for row in measured if row["executor_packed_row_batch_size"] is not None
+        ],
         "mean_opd_profile_forward_compute_s": _mean(
             [
                 row["opd_profile_forward_compute_s"]
