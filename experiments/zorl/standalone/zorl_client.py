@@ -669,7 +669,11 @@ def generate_with_lora(
         sampling["repetition_penalty"] = float(_rp)
     if stop:
         sampling["stop"] = list(stop)
-    payload = {"input_ids": input_ids, "sampling_params": sampling, "return_logprob": False, "lora_path": lora_path}
+    payload = {"input_ids": input_ids, "sampling_params": sampling, "return_logprob": False}
+    if lora_path is not None:
+        # Omit the key for base-model generation: newer sglang rejects an
+        # explicit null as "adapter named None".
+        payload["lora_path"] = lora_path
     data = _post(url, "/generate", payload, timeout=900.0, headers=headers)
     return data if isinstance(data, list) else [data]
 
@@ -703,8 +707,9 @@ def generate_with_lora_logprobs(
         "sampling_params": sampling,
         "return_logprob": True,
         "return_text_in_logprobs": False,
-        "lora_path": lora_path,
     }
+    if lora_path is not None:
+        payload["lora_path"] = lora_path
     data = _post(url, "/generate", payload, timeout=900.0, headers=headers)
     return data[0] if isinstance(data, list) else data
 
@@ -816,8 +821,9 @@ def generate_batch_with_lora_logprobs(
         "sampling_params": sampling,
         "return_logprob": True,
         "return_text_in_logprobs": False,
-        "lora_path": lora_path,
     }
+    if lora_path is not None:
+        payload["lora_path"] = lora_path
     data = _post(url, "/generate", payload, timeout=900.0, headers=headers)
     if isinstance(data, list):
         return data
