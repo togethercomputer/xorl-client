@@ -267,6 +267,25 @@ def estimate_datum_bytes(datum) -> int:
     # Each token ID is roughly 4 bytes when serialized
     total_bytes = 0
 
+    def _estimate_r3_payload(value) -> int:
+        if value is None:
+            return 0
+        if isinstance(value, dict):
+            data = value.get("data")
+            shape = value.get("shape")
+            size = len(data) if isinstance(data, str) else 0
+            if hasattr(shape, "__len__"):
+                size += len(shape) * 8
+            return size
+        if isinstance(value, str):
+            return len(value)
+        if hasattr(value, "__len__"):
+            try:
+                return len(value) * 128
+            except Exception:
+                return 0
+        return 0
+
     if isinstance(datum, dict):
         # Handle dict datums (e.g., {"model_input": {"input_ids": [...]}, ...})
         model_input = datum.get("model_input", {})
@@ -279,6 +298,8 @@ def estimate_datum_bytes(datum) -> int:
             for key, value in loss_fn_inputs.items():
                 if hasattr(value, "__len__"):
                     total_bytes += len(value) * 4
+        total_bytes += _estimate_r3_payload(datum.get("routed_experts"))
+        total_bytes += _estimate_r3_payload(datum.get("routed_expert_logits"))
     else:
         # Handle Datum objects
         if hasattr(datum, "model_input"):
@@ -300,6 +321,8 @@ def estimate_datum_bytes(datum) -> int:
                         total_bytes += len(value.data) * 4
                     elif hasattr(value, "__len__"):
                         total_bytes += len(value) * 4
+        total_bytes += _estimate_r3_payload(getattr(datum, "routed_experts", None))
+        total_bytes += _estimate_r3_payload(getattr(datum, "routed_expert_logits", None))
 
     # Minimum estimate
     return max(total_bytes, 100)
