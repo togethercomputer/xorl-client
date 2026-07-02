@@ -107,13 +107,41 @@ its training curves and any conclusions drawn from them (incl. the river-port co
 anchor `GRPO-WQ36-LORA16-IS-river` vs "control") should be re-anchored on the fixed MoE-only
 run. k3 numbers from those runs measure the serving bug, not sampler-trainer kernel parity.
 
-## 6. Validation run
+## 6. Validation run — GATE PASSED (25 steps, k3 at floor)
 
-`GRPO-WQ36-LORA16-IS-moeonly` (wandb, project xorl-wordle), 40 steps, launched 2026-07-02
-~10:45Z: builder `k8s/wordle/builders/build_k3lora_moe.py`, engine = fresh
-`origin/apanda-dev` worktree (`~/xorl-lora-fix`), client = `~/xorl-client` hub, samplers =
-`wordle-k3lora-smp` ×4 (restarted on sglang apanda-dev `c45f64fff`) + `k3lora-smg`.
-Gate: k3 stays ≤ ~1e-3 while `update_norm`/LoRA magnitude grows over ≥25 steps; then honest
-held-out eval (retries=0, NG≥128).
+`GRPO-WQ36-LORA16-IS-moeonly` (wandb, project xorl-wordle; run dir
+`20260702T103508Z-…-k3loramoe-…`): builder `build_k3lora_moe.py`, engine = fresh
+`origin/apanda-dev` worktree, client = `~/xorl-client` hub, samplers = `wordle-k3lora-smp`
+×4 on sglang `c45f64fff` + `k3lora-smg`. Step-0 export verified: exactly the servable set
+(61,440 per-expert + 80 shared_expert.down_proj tensors, zero attention), clean sampler
+load (no unwrapped/mixed warnings).
 
-**Result: (in progress — see below / metrics.jsonl of the run dir)**
+**k3 (`loss/is_kl_sample_train_k3:mean`), fixed vs old bugged run:**
+
+| step | fixed | old (bugged) |
+|---|---|---|
+| 1 | 3.0e-4 | 2.8e-4 (zero-B illusion) |
+| 5 | 3.3e-4 | 3.5e-4 |
+| 9 | 3.5e-4 | 6.4e-4 |
+| 12 | 3.1e-4 | 1.18e-3 |
+| 15 | 3.4e-4 | 2.02e-3 |
+| 20 | 3.5e-4 | — |
+| **25** | **3.6e-4** | — |
+
+Whole run inside 2.7–3.9e-4 (the known live floor band) — never above 4e-4 vs the ≤1e-3
+gate. **Magnitude-matched**: the fixed run's MoE B²-norm at s10 (7.6) is 2.3× the old run's
+at s12 (3.4, where its k3 was already 1.18e-3); by s15 the fixed adapter held the floor at
+9.1. The magnitude-proportional divergence is gone. Reward moved off the floor
+(5/512 → 41/512 peak at s23, reward −0.222 → −0.105 best) but climbs far slower than
+full-weight (54/512 at s9, 215/512 at s18 on the k3pnr3 recipe) — muon 5e-5 was inherited
+from the k3-diagnostic control config and is the full-weight lr; muon's orthogonalized
+update is also a poor fit for rank-16 LoRA factor shapes.
+
+**Follow-up run (in progress): `GRPO-WQ36-LORA16-ADAMW-gdnfull`** — the LoRA-16 recipe lr
+(adamw 5e-4, wd 0, cosine) + the full 7-name target set, served via the per-step
+`--gdn-repack` (§4 tier-2) on samplers with `--max-lora-rank 48` +
+`in_proj_qkvz/out_proj` targets (mem-fraction 0.85, 1 LoRA slot — the rank-48 pool is ~3×
+larger and OOM'd KV sizing at 0.70/2-slot). Builder `build_k3lora_gdn.py`, config
+`grpo-ep8x1node-lora16-gdnfull.yaml`. Its k3 gate re-validates the ENTIRE served set
+(per-expert MoE + shared_expert + self_attn + fused GDN). Honest held-out eval (retries=0,
+NG≥128) runs on this run's best policy.
