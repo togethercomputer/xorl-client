@@ -30,6 +30,9 @@ experiments/zorl/
 NOTE (2026-07-02 get-right): k8s manifests and training-recipe YAML now live in
 the xorl-infra repo (`k8s/zorl/`, `configs/zorl/`), not here. The ZORL server
 module lives in the xorl repo (`src/xorl/server/zorl.py`, branch `zorl-ps`).
+The autoresearch controller resolves `base_manifest: k8s/...` via a repo-root
+`k8s` symlink (gitignored): create it once per checkout with
+`ln -s ../xorl-infra/k8s/zorl k8s` (assumes a sibling xorl-infra checkout).
 ```
 
 ## Autoresearch
