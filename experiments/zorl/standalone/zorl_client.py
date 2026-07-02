@@ -47,13 +47,13 @@ from pathlib import Path
 import requests
 from requests.adapters import HTTPAdapter
 
-# Keep-alive connection pool (opt-in via ZORL_HTTP_KEEPALIVE=1). The default
-# per-request `Connection: close` opens a fresh TCP connection for EVERY rollout
-# turn (up to 6 per game x hundreds of games), paying a handshake each time and
-# blocking HTTP keep-alive. A shared, thread-safe Session with a large pool
-# reuses connections across turns. pool_maxsize must cover per-host concurrency
-# (~SCORE_MAX_WORKERS_PER_OWNER) or connections serialize. Default off so it's a
-# clean A/B and reversible for the scale-up.
+# Keep-alive connection pool (DEFAULT ON; set ZORL_HTTP_KEEPALIVE=0 for the legacy
+# per-request `Connection: close`, which opens a fresh TCP connection for EVERY
+# rollout turn — up to 6 per game x hundreds of games — paying a handshake each
+# time and blocking HTTP keep-alive). A shared, thread-safe Session with a large
+# pool reuses connections (the faster path, so it is the default).
+# pool_maxsize must cover per-host concurrency (~SCORE_MAX_WORKERS_PER_OWNER)
+# or connections serialize. Default off so it's a clean A/B and reversible.
 _KEEPALIVE_SESSION = None
 _KEEPALIVE_LOCK = threading.Lock()
 
@@ -93,8 +93,8 @@ def _post(url: str, path: str, payload: dict, *, timeout: float = 300.0, headers
     an empty 200. Raises RuntimeError with the server's error body on HTTP >=400."""
     last_err = None
     # Default ON: reuse a pooled keep-alive session (faster — avoids a fresh TCP
-    # handshake per request). Set ZORL_HTTP_KEEPALIVE=0 to force per-request
-    # Connection: close (legacy).
+    # handshake per request across the 40-replica fan-out). Set
+    # ZORL_HTTP_KEEPALIVE=0 to force per-request Connection: close (legacy).
     keepalive = os.environ.get("ZORL_HTTP_KEEPALIVE", "1") != "0"
     request_headers = {} if keepalive else {"Connection": "close"}
     if headers:
@@ -391,7 +391,7 @@ def apply_zorl_rewards(url: str, *, session_id: str, generation_id: str, candida
     return _post(url, "/apply_zorl_rewards", payload, timeout=300.0)
 
 
-def _validate_apply_results_agree(urls: list[str], results: list[dict], *, rel_tol: float = 1e-5, abs_tol: float = 1e-5) -> None:
+def _validate_apply_results_agree(urls: list[str], results: list[dict], *, rel_tol: float = float(os.environ.get("XORL_APPLY_AGREE_RTOL", "1e-5")), abs_tol: float = float(os.environ.get("XORL_APPLY_AGREE_ATOL", "1e-5"))) -> None:
     if not results:
         raise RuntimeError("/apply_zorl_rewards returned no results")
     first = results[0]
@@ -449,6 +449,152 @@ def apply_zorl_rewards_all(urls: list[str], *, session_id: str, generation_id: s
     for url in urls:
         flush_inference_cache(url)
     return results[0]
+
+
+def ps_apply_and_broadcast(
+    ps_url: str,
+    replica_urls: list[str],
+    *,
+    session_id: str,
+    generation_id: str,
+    candidate_rewards: list[dict],
+    lr: float,
+    max_update_norm: float | None = None,
+    momentum: float = 0.0,
+    momentum_window: int = 8,
+) -> dict:
+    """fp32-master PARAMETER-SERVER apply + sparse-diff broadcast (PS mode).
+
+    Replaces the per-replica ``apply_zorl_rewards_all`` fold. The PS is the seed
+    authority: it ran ``/start_zorl_generation`` for this generation (so it holds
+    the same b_seed/a_seed/perturbation_index specs the replicas built their
+    population from) and holds the SINGLE fp32 master. This ONE call hands the
+    PS the scores; the PS:
+
+      1. folds the reward-weighted Muon update into its fp32 master IN FP32
+         (exact sub-ULP accumulation; XORL_ZORL_FP32_MASTER=1 on the PS), and
+         refreshes the served bf16 parent from the master;
+      2. computes, per folded tensor, the sparse ``(index, value)`` set whose
+         bf16 value CHANGED since the last sync, packs it in the in-tree
+         ``delta_packed_v1`` format, writes it to the shared FS, and POSTs
+         ``/update_weights_from_sparse_delta {delta_path}`` to every replica;
+      3. each replica scatters the sparse diff into its served bf16 base
+         (TP-shard-aware), landing on the EXACT bytes the PS master holds.
+
+    Because one fold + one identical sparse diff reaches every replica, the
+    cross-replica base is bit-identical BY CONSTRUCTION — there is nothing to
+    validate (the old ``_validate_apply_results_agree`` is gone), and the
+    replicas' KV/prefix caches are flushed by the sync, so no explicit
+    per-replica flush loop is needed here.
+
+    The PS endpoint ``/ps_apply_and_broadcast`` is the single server-side seam
+    that wraps the existing fold (``apply_zorl_rewards`` with the fp32 master)
+    and the existing sparse-delta sync; ``replica_urls`` is forwarded so the PS
+    knows whom to push to (the PS may also be pre-registered, in which case the
+    list is advisory). Returns the PS apply metrics (used_pairs, update_norm,
+    sync stats), shaped like the legacy ``apply_zorl_rewards_all`` result.
+    """
+    payload = {
+        "session_id": session_id,
+        "generation_id": generation_id,
+        "candidate_rewards": _sanitize_payload_floats(candidate_rewards),
+        "learning_rate": float(lr),
+        "momentum": float(momentum),
+        "momentum_window": int(momentum_window),
+        "replica_urls": list(replica_urls),
+        # The PS restricts the sync to the folded module names; it knows them
+        # (it owns the master), so no name list is needed from the client.
+    }
+    if max_update_norm is not None:
+        payload["max_update_norm"] = float(max_update_norm)
+    # The PS fold + N-way sparse broadcast can take longer than a single apply.
+    # Live (pre fold-opt, 2026-06-30): the band-staged master fold alone is ~226s
+    # + the build + sync, which blew past 600s and made the client RETRY mid-build
+    # (idempotent fold, but wasteful re-build). 1800s lets the full fold+build+sync
+    # finish in one call; bring it back down once the fold is optimized.
+    return _post(ps_url, "/ps_apply_and_broadcast", payload, timeout=1800.0)
+
+
+def ps_rebroadcast(ps_url: str, replica_urls: list[str], *, session_id: str) -> dict:
+    """Re-broadcast the PS's CURRENT fp32-master parent to the replicas WITHOUT
+    folding (used after an elitist-rollback restore on the PS). The PS computes
+    the sparse bf16 diff of the restored master vs the replicas' last-synced
+    state and pushes it, so the replicas serve the rolled-back parent."""
+    return _post(
+        ps_url,
+        "/ps_rebroadcast",
+        {"session_id": session_id, "replica_urls": list(replica_urls)},
+        timeout=1800.0,
+    )
+
+
+def _is_no_active_generation_error(err: Exception) -> bool:
+    """True if a /abort_zorl_generation failure is the benign 'nothing to abort'
+    case (the generation was already cleared, e.g. by a server-side complete or a
+    prior abort on retry). The SGLang endpoint raises a ValueError surfaced as an
+    HTTP 400 whose body contains 'no active ZORL generation' or an 'active ...
+    generation mismatch' (the gen we want gone is already gone). Either way the
+    post-condition we need (this generation is not active) already holds, so we
+    treat it as success and swallow it — abort is idempotent by design."""
+    msg = str(err).lower()
+    return (
+        "no active zorl generation" in msg
+        or "no active generation" in msg
+        or ("active" in msg and "generation mismatch" in msg)
+    )
+
+
+def abort_zorl_generation_all(urls: list[str], *, session_id: str, generation_id: str) -> None:
+    """End (abort) the named ZORL generation on every URL, in lockstep.
+
+    This is the PS-mode replacement for the per-replica generation teardown that
+    the legacy ``apply_zorl_rewards`` does implicitly (its server-side handler
+    calls ``complete_generation``, clearing the replica's ``active_generation``).
+    In PS mode the replicas only receive a sparse weight diff
+    (``/update_weights_from_sparse_delta``) from the PS, which does NOT clear
+    their active generation — so without this call the NEXT step's
+    ``/start_zorl_generation`` fails with HTTP 400 "already has active
+    generation". ``/abort_zorl_generation`` clears the active generation WITHOUT
+    applying an update (the update already happened on the PS), so the next
+    ``begin_generation`` can advance to a fresh generation id.
+
+    Robust to retries / re-entry: if a URL has already cleared this generation
+    (server-side complete, or a prior abort that partially succeeded), the
+    'no active generation' error is benign and swallowed — the post-condition
+    (this generation is not active anywhere) is what matters, and it holds.
+    A genuine failure (connection, unexpected server error) is raised so the
+    step fails loud rather than silently leaving a replica wedged.
+    """
+    if not urls:
+        return
+    payload = {"session_id": session_id, "generation_id": generation_id}
+
+    def abort_one(url: str) -> tuple[str, Exception | None]:
+        try:
+            _post(url, "/abort_zorl_generation", payload, timeout=120.0)
+            return url, None
+        except RuntimeError as e:
+            if _is_no_active_generation_error(e):
+                return url, None
+            return url, e
+
+    errors: list[str] = []
+    if len(urls) == 1:
+        _url, err = abort_one(urls[0])
+        if err is not None:
+            errors.append(f"{_url}: {err}")
+    else:
+        with ThreadPoolExecutor(max_workers=len(urls)) as pool:
+            futures = [pool.submit(abort_one, url) for url in urls]
+            for future in as_completed(futures, timeout=130.0):
+                _url, err = future.result()
+                if err is not None:
+                    errors.append(f"{_url}: {err}")
+    if errors:
+        raise RuntimeError(
+            f"/abort_zorl_generation failed to clear generation {generation_id!r} on "
+            f"{len(errors)} URL(s): {errors}"
+        )
 
 
 def snapshot_zorl_parent(url: str, *, session_id: str, snapshot_id: str) -> dict:
@@ -515,9 +661,19 @@ def generate_with_lora(
     """Single-prompt /generate call. Returns list of dicts (one per sample if
     n>1). For n==1 SGLang returns a single dict; we normalize to list."""
     sampling = {"temperature": float(temperature), "max_new_tokens": int(max_new_tokens), "n": int(n)}
+    # Mild repetition penalty breaks the base model's turn-2 <think> repetition loop
+    # at temp 0.7 (measured: valid-rate 1/4 -> 3/4 at rep_pen 1.1), recovering both
+    # throughput (fewer budget-burning loops) and solve (more valid turns). Env-gated.
+    _rp = os.environ.get("ZORL_ROLLOUT_REPETITION_PENALTY")
+    if _rp:
+        sampling["repetition_penalty"] = float(_rp)
     if stop:
         sampling["stop"] = list(stop)
-    payload = {"input_ids": input_ids, "sampling_params": sampling, "return_logprob": False, "lora_path": lora_path}
+    payload = {"input_ids": input_ids, "sampling_params": sampling, "return_logprob": False}
+    if lora_path is not None:
+        # Omit the key for base-model generation: newer sglang rejects an
+        # explicit null as "adapter named None".
+        payload["lora_path"] = lora_path
     data = _post(url, "/generate", payload, timeout=900.0, headers=headers)
     return data if isinstance(data, list) else [data]
 
@@ -551,8 +707,9 @@ def generate_with_lora_logprobs(
         "sampling_params": sampling,
         "return_logprob": True,
         "return_text_in_logprobs": False,
-        "lora_path": lora_path,
     }
+    if lora_path is not None:
+        payload["lora_path"] = lora_path
     data = _post(url, "/generate", payload, timeout=900.0, headers=headers)
     return data[0] if isinstance(data, list) else data
 
@@ -664,8 +821,9 @@ def generate_batch_with_lora_logprobs(
         "sampling_params": sampling,
         "return_logprob": True,
         "return_text_in_logprobs": False,
-        "lora_path": lora_path,
     }
+    if lora_path is not None:
+        payload["lora_path"] = lora_path
     data = _post(url, "/generate", payload, timeout=900.0, headers=headers)
     if isinstance(data, list):
         return data
@@ -831,7 +989,9 @@ def _make_generate_turn(infer_url, *, headers: dict | None = None):
         results = generate_with_lora(
             infer_url,
             input_ids=list(input_ids),
-            lora_path=str(lora_path),
+            # None must stay None (base-model turn): str(None) -> "None" reaches
+            # the server as an adapter name and 400s.
+            lora_path=(str(lora_path) if lora_path is not None else None),
             temperature=float(temperature),
             max_new_tokens=int(max_new_tokens),
             n=1,
@@ -1465,9 +1625,25 @@ def score_candidates(infer_url, *, candidates, examples: list[Example], task, ar
         reward_mean = sum(rewards) / max(len(rewards), 1)
         return cand["candidate_id"], ex.project, reward_mean, texts, score_blob, None
 
+    _total_jobs = len(jobs)
+    _done = 0
+    _t0 = time.time()
+    _next_log = _t0 + 20.0
     with ThreadPoolExecutor(max_workers=args.score_max_workers) as pool:
         for cid, proj, reward_mean, texts, score_blob, err in pool.map(lambda j: one_call(*j), jobs):
             record_score(cid, proj, reward_mean, texts, score_blob, err)
+            _done += 1
+            _now = time.time()
+            if _now >= _next_log or _done == _total_jobs:
+                _elapsed = _now - _t0
+                _rate = _done / max(_elapsed, 1e-6)
+                _eta = (_total_jobs - _done) / max(_rate, 1e-6)
+                print(
+                    f"      [scoring] {_done}/{_total_jobs} units "
+                    f"({100 * _done / max(_total_jobs, 1):.0f}%) {_rate:.1f} units/s ETA {_eta:.0f}s",
+                    flush=True,
+                )
+                _next_log = _now + 20.0
     return build_out_rewards()
 
 
@@ -1798,7 +1974,14 @@ def probe_parent(infer_url, *, parent_lora_name, examples: list[Example], task, 
 # ============================================================================
 
 
-def main():
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the standalone ZORL harness arg parser.
+
+    Extracted from main() so alternate drivers (e.g. run_wordle_zorl_xorl_ps.py,
+    the xorl-trainer PS backend) can reuse the full arg surface that
+    score_candidates / probe_parent / the task rollout expect, then add their own
+    args. Behavior of main() is unchanged.
+    """
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--task", required=True, choices=["countdown", "gsm8k", "alphabet_sort", "wordle", "opd_multiplication", "mult"], help="Which task to train on")
     parser.add_argument(
@@ -1816,6 +1999,20 @@ def main():
         help=(
             "Optional routed generation URL for candidate scoring/probes, e.g. SMG. "
             "Defaults to the direct control URL list."
+        ),
+    )
+    parser.add_argument(
+        "--ps-url",
+        default=None,
+        help=(
+            "fp32-master PARAMETER-SERVER control URL (single). When set, ZORL "
+            "runs in PS mode: the PS is the seed authority + holds the single "
+            "fp32 master, folds in fp32 ONCE per step, and broadcasts a sparse "
+            "bf16-diff to the --infer-url replicas (no per-replica fold, no "
+            "agreement check). The PS must run with XORL_ZORL_FP32_MASTER=1 and "
+            "share the session seed with the replicas (it joins the session + "
+            "generation lockstep so it derives the identical perturbation "
+            "seeds). Unset = legacy per-replica fold."
         ),
     )
     parser.add_argument(
@@ -1884,6 +2081,24 @@ def main():
         help="cosine: hold lr at --lr for this many steps BEFORE decaying (delayed "
         "decay). 0 = decay from step 0 (legacy). Use to keep full lr through the ES "
         "climb and only shrink the step in the post-peak tail to beat the drift.")
+    parser.add_argument(
+        "--lr-pop-scale",
+        type=float,
+        default=float(os.environ.get("LR_POP_SCALE", "0") or "0"),
+        help="Opt-in population-size LR scaling (default 0 = OFF, legacy behavior). "
+        "When > 0, the effective lr is multiplied by sqrt(num_pairs / --lr-pop-scale-ref), "
+        "so doubling --num-pairs raises lr by sqrt(2). Matches HyperscaleES's "
+        "lr_scale*sigma^2*sqrt(total_parallel_generations) (LR proportional to sqrt(population)). "
+        "Set this flag to 1 to enable with the default reference pop, or env LR_POP_SCALE=1. "
+        "Combines multiplicatively with --lr-schedule cosine/hold decay.",
+    )
+    parser.add_argument(
+        "--lr-pop-scale-ref",
+        type=float,
+        default=float(os.environ.get("LR_POP_SCALE_REF", "8") or "8"),
+        help="Baseline population (num_pairs) at which the sqrt-pop LR multiplier is 1.0 "
+        "(default 8). Only used when --lr-pop-scale > 0.",
+    )
     parser.add_argument(
         "--momentum",
         type=float,
@@ -1990,6 +2205,10 @@ def main():
             "enumerate",
             "public_reasoning_constraints",
             "constraints_enumerate",
+            # *_think variants open the model's private <think> block (the GRPO
+            # floor-protocol that scores 0.469); same board layout, thinking on.
+            "public_reasoning_think",
+            "public_reasoning_constraints_think",
         ],
         default="default",
         help=(
@@ -2102,6 +2321,11 @@ def main():
         "LoRA-A every N steps (0=never). Makes the accumulated ES update full-rank. "
         "Disable --elitist-rollback when using this (the LoRA snapshot won't capture the merge).",
     )
+    return parser
+
+
+def main():
+    parser = build_arg_parser()
     args = parser.parse_args()
     control_infer_urls = _url_list(args.infer_url)
     reward_infer_urls = _url_list(args.reward_infer_url) or control_infer_urls
@@ -2144,6 +2368,17 @@ def main():
         raise RuntimeError(
             f"--train-pool-size ({args.train_pool_size}) must be >= --train-size ({args.train_size})"
         )
+    if getattr(args, "ps_url", None):
+        if args.population_sharding != "replicated":
+            raise RuntimeError(
+                "--ps-url (fp32-master PS mode) requires --population-sharding "
+                "replicated: the PS folds the single master from the full "
+                "replicated population, not a pair-shard."
+            )
+        # Elitist rollback IS supported in PS mode: snapshot/restore now also
+        # save/restore the fp32 MASTER on the PS (the base, where the update
+        # lives), and a restore re-broadcasts the restored parent to the
+        # replicas (handled in the rollback block below).
     args.infer_url = control_infer_urls[0]
     args.control_infer_urls = control_infer_urls
     args.reward_infer_urls = reward_infer_urls
@@ -2171,6 +2406,21 @@ def main():
 
     def maybe_export(label: str, *, snapshot_id: str | None = None) -> dict | None:
         if not args.export_dir:
+            return None
+        if getattr(args, "ps_url", None):
+            # PS mode: the trained weights live in the served BASE (folded via the
+            # PS fp32 master), NOT the LoRA adapter (fresh_ab keeps B≈0). The
+            # /export_zorl_parent adapter export would emit a near-zero LoRA, and a
+            # snapshot export would fail (the rollback snapshot lives on the PS, not
+            # on control_infer_urls[0]). Base-weight export from the PS master is a
+            # separate TODO; skip the adapter export here with a loud note rather
+            # than write a misleading artifact.
+            print(
+                f"  export {label}: SKIPPED in PS mode (trained weights are in the "
+                f"served base via the fp32 master, not the LoRA adapter; base export "
+                f"is a TODO). snapshot_id={snapshot_id}",
+                flush=True,
+            )
             return None
         output_dir = str(Path(args.export_dir).absolute() / label)
         result = export_zorl_parent(
@@ -2204,17 +2454,32 @@ def main():
         f"eval_size={len(eval_examples)} multi_turn={getattr(task, 'is_multi_turn', False)}"
     )
 
-    # Register the init adapter as the parent on SGLang.
-    print(f"[step 1] /load_lora_adapter parent={args.parent_lora_name}")
-    load_lora_adapter_all(control_infer_urls, args.parent_lora_name, str(Path(args.adapter_dir).absolute()))
+    # In PS mode the PS is itself an sglang LoRA-manager instance that joins the
+    # SAME session (same seed -> identical perturbation seeds, generation
+    # lockstep) and runs the fold. Its /start_zorl_session resolves the parent
+    # via the LoRA registry, AND its fold (_apply_zorl_rewards_fresh_ab) reads
+    # the parent adapter's rank/A-subspace and reconstructs per-pair A/B from
+    # seeds against the parent's shapes — so the PS needs the IDENTICAL parent
+    # init adapter loaded, exactly like the replicas. Load it on PS + replicas.
+    session_urls = list(control_infer_urls)
+    if getattr(args, "ps_url", None) and args.ps_url not in session_urls:
+        session_urls = session_urls + [args.ps_url]
 
-    # Open the ZORL session pointing at that parent.
+    # Register the init adapter as the parent on SGLang (PS + every replica).
+    print(
+        f"[step 1] /load_lora_adapter parent={args.parent_lora_name} "
+        f"on {len(session_urls)} url(s)"
+        + (" (incl. PS)" if getattr(args, "ps_url", None) else "")
+    )
+    load_lora_adapter_all(session_urls, args.parent_lora_name, str(Path(args.adapter_dir).absolute()))
+
+    # Open the ZORL session pointing at that parent (PS + every replica).
     print(
         f"[step 2] /start_zorl_session num_pairs={args.num_pairs} "
         f"b_sigma={args.b_sigma} perturbation_mode={args.perturbation_mode}"
     )
     start_zorl_session_all(
-        control_infer_urls,
+        session_urls,
         session_id=args.session_id,
         parent_lora_name=args.parent_lora_name,
         num_pairs=args.num_pairs,
@@ -2238,16 +2503,29 @@ def main():
 
     # Main loop.
     t0 = time.time()
+    def _pop_lr_multiplier() -> float:
+        # Opt-in sqrt(population) LR scaling (HyperscaleES: LR proportional to
+        # sqrt(total_parallel_generations)). OFF by default (--lr-pop-scale<=0),
+        # in which case this returns 1.0 and behavior is identical to legacy.
+        pop_scale = float(getattr(args, "lr_pop_scale", 0.0) or 0.0)
+        if pop_scale <= 0.0:
+            return 1.0
+        ref = float(getattr(args, "lr_pop_scale_ref", 8.0) or 8.0)
+        if ref <= 0.0:
+            raise RuntimeError(f"--lr-pop-scale-ref must be positive, got {ref}")
+        return math.sqrt(float(args.num_pairs) / ref)
+
     def _lr_for_step(step: int) -> float:
+        mult = _pop_lr_multiplier()
         if args.lr_schedule == "constant":
-            return float(args.lr)
+            return float(args.lr) * mult
         hold = int(getattr(args, "lr_hold_steps", 0) or 0)
         if step < hold:
-            return float(args.lr)
+            return float(args.lr) * mult
         horizon = int(args.lr_decay_steps) if args.lr_decay_steps > 0 else int(args.steps)
         frac = min(1.0, (step - hold) / max(1, horizon))
         floor = float(args.lr) * float(args.lr_min_frac)
-        return floor + 0.5 * (float(args.lr) - floor) * (1.0 + math.cos(math.pi * frac))
+        return (floor + 0.5 * (float(args.lr) - floor) * (1.0 + math.cos(math.pi * frac))) * mult
 
     for step in range(args.steps):
         if args.max_runtime_seconds and (time.time() - t0) >= args.max_runtime_seconds:
@@ -2266,6 +2544,24 @@ def main():
         )
         gen_id = gen["generation_id"]
         candidates = gen["candidates"]
+        if getattr(args, "ps_url", None):
+            # Advance the PS's generation in lockstep (replicated, no scoring on
+            # the PS): it derives the same generation_id + identical seeds so its
+            # fold reconstructs the exact population the replicas scored. Assert
+            # the PS agrees on generation_id (cheap structural check).
+            ps_gen = start_zorl_generation_all(
+                [args.ps_url],
+                session_id=args.session_id,
+                num_pairs=args.num_pairs,
+                population_sharding="replicated",
+                num_shards=1,
+                preload_candidates=False,
+            )
+            if str(ps_gen.get("generation_id")) != str(gen_id):
+                raise RuntimeError(
+                    f"PS generation_id {ps_gen.get('generation_id')!r} != replica "
+                    f"{gen_id!r} (PS out of session lockstep)"
+                )
         train_examples = _select_train_examples_for_step(
             train_pool,
             train_size=args.train_size,
@@ -2307,29 +2603,128 @@ def main():
 
         # Apply the ES update server-side.
         apply_t0 = time.time()
-        apply_result = apply_zorl_rewards_all(
-            control_infer_urls,
-            session_id=args.session_id,
-            generation_id=gen_id,
-            candidate_rewards=rewards_for_update,
-            lr=_lr_for_step(step),
-            # <=0 disables norm clipping (required for fresh_ab: the paired
-            # outer-product update folds chunk-by-chunk, no global pre-norm).
-            max_update_norm=(args.max_update_norm if args.max_update_norm > 0 else None),
-            momentum=args.momentum,
-            momentum_window=args.momentum_window,
-        )
+        if getattr(args, "ps_url", None):
+            # fp32-master PS mode: ONE fold on the PS (exact fp32 accumulation),
+            # then a sparse bf16-diff broadcast to all replicas. Cross-replica
+            # base identity is structural (one diff -> identical bytes), so no
+            # agreement check and no per-replica fold/flush.
+            apply_result = ps_apply_and_broadcast(
+                args.ps_url,
+                control_infer_urls,
+                session_id=args.session_id,
+                generation_id=gen_id,
+                candidate_rewards=rewards_for_update,
+                lr=_lr_for_step(step),
+                max_update_norm=(args.max_update_norm if args.max_update_norm > 0 else None),
+                momentum=args.momentum,
+                momentum_window=args.momentum_window,
+            )
+            # Surface the sync result so an empty/failed sync is impossible to
+            # miss: a successful PS step MUST have a nonzero nnz + written files.
+            _ss = (apply_result or {}).get("sync_stats", {}) or {}
+            print(
+                f"  PS sync: success={apply_result.get('success')} "
+                f"stage={apply_result.get('stage')} "
+                f"nnz={_ss.get('total_nnz')} density={_ss.get('density')} "
+                f"packed_bytes={_ss.get('packed_bytes')} "
+                f"masters_present={_ss.get('masters_present')} "
+                f"name_resolved={_ss.get('name_resolved')} "
+                f"tp_size={_ss.get('tp_size')} "
+                f"delta_path={apply_result.get('delta_path')}",
+                flush=True,
+            )
+            if not apply_result.get("success"):
+                # FAIL LOUD: the PS now returns success=False with a stage
+                # (fold/empty_diff/push/exception) instead of a silent empty sync.
+                print(
+                    f"  ERROR: PS sync FAILED at stage={apply_result.get('stage')!r}: "
+                    f"{apply_result.get('error_message')!r}. "
+                    f"failures={apply_result.get('failures')} "
+                    f"(see the PS pod log [ZORL-PS-ENDPOINT]/[ZORL-PS] stage trace).",
+                    flush=True,
+                )
+                if apply_result.get("traceback"):
+                    print(apply_result["traceback"], flush=True)
+            # End this step's generation on every replica AND the PS, in lockstep.
+            # The PS fold+broadcast only pushes a sparse weight diff to the replicas
+            # (/update_weights_from_sparse_delta), which does NOT clear their
+            # active_generation the way the legacy per-replica /apply_zorl_rewards
+            # does (its handler calls complete_generation). Without this teardown the
+            # replicas stay locked on this generation and the NEXT step's
+            # /start_zorl_generation fails with HTTP 400 "already has active
+            # generation". /abort_zorl_generation clears the generation WITHOUT
+            # applying an update (the update already landed on the PS via the fold),
+            # so the next begin_generation advances to a fresh generation id.
+            #
+            # Only tear down after a SUCCESSFUL apply: on failure we leave state
+            # intact (the run fails loud below / on the next start) so the wedged
+            # generation is inspectable rather than silently cleared. The abort is
+            # idempotent (benign "no active generation" is swallowed in
+            # abort_zorl_generation_all), so an apply-timeout retry that re-enters
+            # this block is safe.
+            if apply_result.get("success"):
+                # Replicas first (they are the ones that would otherwise reject the
+                # next start), then the PS — defensive in case the PS server-side
+                # fold did not complete its own generation. Both must be clear for
+                # the next step's lockstep start to advance everywhere.
+                abort_zorl_generation_all(
+                    control_infer_urls,
+                    session_id=args.session_id,
+                    generation_id=gen_id,
+                )
+                if getattr(args, "ps_url", None):
+                    abort_zorl_generation_all(
+                        [args.ps_url],
+                        session_id=args.session_id,
+                        generation_id=gen_id,
+                    )
+        else:
+            apply_result = apply_zorl_rewards_all(
+                control_infer_urls,
+                session_id=args.session_id,
+                generation_id=gen_id,
+                candidate_rewards=rewards_for_update,
+                lr=_lr_for_step(step),
+                # <=0 disables norm clipping (required for fresh_ab: the paired
+                # outer-product update folds chunk-by-chunk, no global pre-norm).
+                max_update_norm=(args.max_update_norm if args.max_update_norm > 0 else None),
+                momentum=args.momentum,
+                momentum_window=args.momentum_window,
+            )
         apply_s = time.time() - apply_t0
         # EggRoll merge-every-step: fold the just-applied parent LoRA delta into the resident
         # base weights + re-init LoRA-A, so the accumulated update is full-rank (not rank-capped).
-        if getattr(args, "merge_every_steps", 0) > 0 and (step + 1) % args.merge_every_steps == 0:
+        # PS mode folds the fp32 master DIRECTLY into the base every step (already full-rank,
+        # no LoRA accumulation to merge), so the merge is a no-op there — skip it.
+        if (
+            not getattr(args, "ps_url", None)
+            and getattr(args, "merge_every_steps", 0) > 0
+            and (step + 1) % args.merge_every_steps == 0
+        ):
             merge_t0 = time.time()
             merge_res = merge_zorl_parent_into_base_all(control_infer_urls, session_id=args.session_id)
-            print(
-                f"  EggRoll merge parent->base @ step {step+1}: success={merge_res.get('success')} "
-                f"({time.time()-merge_t0:.1f}s)",
-                flush=True,
-            )
+            # In FP8-native accumulate-in-adapter mode (server env
+            # XORL_ZORL_ACCUMULATE_IN_ADAPTER=1) this merge is the ONE re-quant
+            # per K steps: it drains each weight's persistent bf16 ES accumulator
+            # into the pristine FP8 base (no parent A re-init). The server
+            # metadata flags which path ran; the KV cache flush in
+            # merge_zorl_parent_into_base_all covers both.
+            merge_md = merge_res.get("metadata", merge_res) or {}
+            if merge_md.get("accumulate_in_adapter"):
+                print(
+                    f"  FP8 accum->base flush @ step {step+1}: "
+                    f"success={merge_res.get('success')} "
+                    f"folded_weights={merge_md.get('folded_weights')} "
+                    f"accum_norm={merge_md.get('accum_norm')} "
+                    f"({time.time()-merge_t0:.1f}s)",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"  EggRoll merge parent->base @ step {step+1}: success={merge_res.get('success')} "
+                    f"({time.time()-merge_t0:.1f}s)",
+                    flush=True,
+                )
         metrics = apply_result.get("metrics", {})
         update_extras = []
         for key, fmt in (
@@ -2371,14 +2766,25 @@ def main():
             if extras:
                 probe_summary += f" [{extras}]"
             if args.elitist_rollback:
+                # PS mode: snapshot/restore target the PS (it holds the fp32
+                # master = the base, where the accumulated update lives). On a
+                # restore the PS rolls back its master and re-broadcasts the
+                # restored parent to the replicas (a full sparse diff vs their
+                # current state). Legacy mode snapshots the per-replica adapter.
+                rollback_urls = [args.ps_url] if getattr(args, "ps_url", None) else control_infer_urls
                 if probe_reward > best_reward:
                     best_reward = probe_reward
                     best_blob = probe
-                    snapshot_zorl_parent_all(control_infer_urls, session_id=args.session_id, snapshot_id=args.snapshot_id)
+                    snapshot_zorl_parent_all(rollback_urls, session_id=args.session_id, snapshot_id=args.snapshot_id)
                     maybe_export("best", snapshot_id=args.snapshot_id)
                     probe_summary += "  [best updated → snapshot]"
                 else:
-                    restore_zorl_parent_all(control_infer_urls, session_id=args.session_id, snapshot_id=args.snapshot_id)
+                    restore_zorl_parent_all(rollback_urls, session_id=args.session_id, snapshot_id=args.snapshot_id)
+                    if getattr(args, "ps_url", None):
+                        # Re-broadcast the restored master to the replicas so they
+                        # serve the rolled-back parent (the restore moved the PS
+                        # master + served bf16; the replicas need the diff).
+                        ps_rebroadcast(args.ps_url, control_infer_urls, session_id=args.session_id)
                     probe_summary += f"  [worse than best={best_reward:.4f} → restored]"
             elif probe_reward > best_reward:
                 best_reward = probe_reward

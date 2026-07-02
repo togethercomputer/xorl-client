@@ -19,23 +19,20 @@ the password harness changes are in `examples/server/password_memorization/run_p
 ```
 experiments/zorl/
 ├── README.md                          # this file
-├── configs/                           # YAML configs consumed by the harness
-│   ├── qwen3_8b_zorl_password_r1.yaml         # 8B password recipe (3/3 exact)
-│   └── qwen3_coder_30b_a3b_zorl_password.yaml # 30B-A3B Countdown / password recipe
-├── k8s/                               # k8s manifests (see "Operator notes" below)
-│   ├── qwen3-coder-30b-a3b-grad-countdown-trainer-only.yaml
-│   ├── qwen3-coder-30b-a3b-grpo-countdown-trainer-only.yaml
-│   ├── qwen3-coder-30b-a3b-zorl-countdown-trainer-only.yaml
-│   ├── qwen3-coder-30b-a3b-zorl-password-{trainer-only,combined-job}.yaml
-│   ├── qwen3-coder-30b-a3b-zorl-password-sglang-tp8.yaml  # SGLang inference service
-│   ├── qwen3-coder-30b-a3b-zorl-standalone-client-job.yaml # SGLang-native ZORL client
-│   └── qwen3-coder-30b-a3b-zorl-smoke-job.yaml
 ├── eval_countdown.py                  # standalone greedy-temp=0 evaluator
 ├── run_countdown_test.py              # Countdown harness (gradient | zorl | grpo modes)
 ├── run_coderforge_zorl_smoke.py       # CI smoke for the ZORL plumbing
+├── standalone/                        # SGLang-native ZORL client, tasks/, PS drivers
 ├── autoresearch/                      # queue/controller/candidates for ZORL autoresearch
 ├── results/                           # gitignored — local run outputs
 └── scripts/, sweep/                   # (existing)
+
+NOTE (2026-07-02 get-right): k8s manifests and training-recipe YAML now live in
+the xorl-infra repo (`k8s/zorl/`, `configs/zorl/`), not here. The ZORL server
+module lives in the xorl repo (`src/xorl/server/zorl.py`, branch `zorl-ps`).
+The autoresearch controller resolves `base_manifest: k8s/...` via a repo-root
+`k8s` symlink (gitignored): create it once per checkout with
+`ln -s ../xorl-infra/k8s/zorl k8s` (assumes a sibling xorl-infra checkout).
 ```
 
 ## Autoresearch
