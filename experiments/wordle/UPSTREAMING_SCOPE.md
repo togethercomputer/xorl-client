@@ -13,9 +13,11 @@
 > - **SGLang `apanda-dev`**: #54 merged; #55 re-landed as **#57** (auto-closed on stacked-base
 >   deletion) and merged. #56 stays draft (W12); #51 disposition-commented.
 > - **Client**: #9 merged to `apanda-dev`; #7 disposition-commented (pre-consolidation, owner's call).
-> - **Infra — NEEDS HUMAN**: PRs **#1–#4** queued to `main` but blocked by a repo ruleset
->   (1 approving review; author=apanda, self-approval impossible, admin bypass blocked).
->   Merge order: #1 → #2 → #3 (wordle, stacked on #2) → #4 (zorl, independent).
+> - **Infra — RESOLVED via `apanda-dev` branch**: `main`'s review ruleset blocked PRs #1–#4, so
+>   (per user) a new **`apanda-dev`** branch now carries everything (merge of local main +1,
+>   populate-opd-mtp, opd-battery-consolidation, wordle-consolidation, zorl-consolidation; all 5
+>   lines verified contained). `~/xorl-infra` is checked out on it; PRs #1–#4 closed as superseded.
+>   Promotion `apanda-dev` → `main` = one reviewed PR later, at the user's leisure.
 > - Deferred: k3pnr3-v2 science conclusion (run still live), zorl live-gate readout (running in the
 >   zorl stream's relaunched stack), k3diag rebuild smoke, k3-recon-r4 rebuild + donor trees (k3 agent).
 >
