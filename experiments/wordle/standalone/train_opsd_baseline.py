@@ -2072,7 +2072,9 @@ def create_model(train_url: str, args) -> dict[str, Any]:
                 else {}
             ),
         },
-        "zorl_config": {"enabled": False},
+        # Full-weight server mode rejects ANY non-None per-session override, incl. zorl_config
+        # (endpoints.py: `req.zorl_config is not None`). Gate it like lora_config/optimizer_config.
+        "zorl_config": None if getattr(args, "full_weight", False) else {"enabled": False},
     }
     return call_future(
         train_url,

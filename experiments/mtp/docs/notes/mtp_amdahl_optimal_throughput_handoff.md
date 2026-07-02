@@ -1,277 +1,183 @@
-# Handoff: OPD-MTP throughput improvement runbook
+# MTP Throughput Handoff - What Worked And What Did Not
 
-Date: 2026-06-13
-Stack: `er-opd-q36-mtp-ss-0605c`
-Model: Qwen3.6-35B-A3B, native SingleShot-MTP, ConfAdapt, k=2
-Live trainer code: `/home/apanda/xorl-mtp-commitlen-fix-20260612`
-Analysis checkout: `/home/apanda/xorl-mtp-singleshot-port-20260602`
-SGLang code: `/home/apanda/xorl-sglang-internal`
+Last updated: 2026-06-15 16:54Z
 
-Post-consolidation canonical locations:
+This is a summary handoff for the MTP MFU/throughput work on
+`er-opd-q36-mtp-ss-0605c`. It replaces the prior chronological runbook. The
+removed long-form version is preserved at
+`archive/mtp_amdahl_optimal_throughput_handoff_20260615T1654Z_chronological.md`.
 
-- engine landing base: `/home/apanda/xorl-stage-mtp` branch `pr/mtp` / `mtp-merge-apanda-dev` at `3a6a6a02`
-- client docs and non-k8s harness: `/home/apanda/xorl-client/experiments/mtp`
-- k8s/manifests: `/home/apanda/xorl-infra/k8s/opd_profile`
-- run outputs: `/shared`
+Authoritative config summary:
+`/shared/opd-control/er-opd-q36-mtp-ss-0605c/MTP_CONFIG_OF_RECORD.md`
 
-This replaces the old incremental override log. The pre-consolidation version is
-archived at:
+## Plain-English Summary
 
-`docs/notes/mtp_amdahl_optimal_throughput_handoff_archive_20260613_pre_consolidation.md`
+I improved the measurement setup more than the live config. The biggest concrete
+accomplishment was building a replay harness that let us compare trainer changes
+on identical captured workloads without disturbing the science run.
 
-## Current conclusion
+The strongest safe performance signal is topology: EP8 is faster than EP32 in
+trainer-only replay because expert all-to-all stays within a node. That has not
+been promoted because it changes the shared live trainer topology.
 
-The current promotable throughput control is:
+The biggest raw trainer f/b speedups came from shorter static shapes, but those
+changed packing or microbatch geometry and produced measurable loss deltas. They
+are useful evidence, not a live config.
 
-- student samplers: k=2 with canonical q-banding enabled
-- trainer: clean-region replay context enabled
-- trainer checkpointing: `recompute_before_dispatch`
-- trainer topology: EP32, `alltoall` dispatch, triton MoE
-- pipeline: 64 prompts per step, two 32-prompt prepare chunks, no trainer coalescing
-- checkpoints disabled for short validation
+Most execution knobs were noise or negative once tested on the same workload.
+The current live stack remains v2: EP32/alltoall/triton, clean-region ON, skip
+outer trainer f/b defrag ON, static4352, defer OFF.
 
-Do not chase OPD KL/top-k. CUDA-synced profiling put the model-side time in
-trainer forward/loss, backward/recompute, and communication. OPD loss/KL is
-small relative to f/b.
+Current measured full-stack MFU is from `q36mtp-20260615T115717Z-2s1t` step 3504:
+actual MFU `2.246%`, useful MFU `0.228%`. The last-20-step mean is actual
+`2.103%`, useful `0.211%`. A newer run directory
+`q36mtp-20260615T161813Z-2s1t` failed distributed rendezvous and produced no MFU
+rows.
 
-Do not compare full-stack throughput runs across different sampler states as if
-they are same-workload A/Bs. The student changes the workload over time. In the
-late runs, commit length and sampler tok/s changed enough to dominate wall time.
-Use either same-checkpoint/same-sampler-state full-stack runs or trainer-only
-replays of captured payloads.
+## Current Promoted Live Config
 
-## Latest validation
-
-The stack was reprogrammed to the current q-band + clean-region control and the
-capped validation completed cleanly:
-
-| item | value |
+| Area | Value |
 |---|---|
-| run | `q36mtp-20260613T223322Z-2s1t` |
-| W&B | `btqzrlm6` |
-| profile | `/shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_singleshot/er-opd-q36-mtp-ss-0605c/q36mtp-20260613T223322Z-2s1t/artifacts/opd_profile.jsonl` |
-| trainer log | `/shared/opd-control/er-opd-q36-mtp-ss-0605c/trainer-head/logs/20260613T223321Z-run.log` |
-| control root | `/shared/opd-control/er-opd-q36-mtp-ss-0605c` |
-| supervisor | paused |
-| terminal log | `OPD pipeline validation succeeded`; W&B synced |
+| Engine | `/home/apanda/xorl-mtp` on `apanda-dev-mtp` |
+| Active rung | k=8, files64 Coderforge stream, confidence threshold 0.3 |
+| Trainer topology | 4 nodes / 32 GPUs, EP32 |
+| Dispatch and MoE | `alltoall`, `triton` |
+| Checkpointing | `recompute_before_dispatch` |
+| Clean-region replay | ON |
+| Skip outer f/b defrag | ON |
+| Stateful GDN prefix cache | ON |
+| Static padded seq len | 4352 in the latest promoted live profile |
+| Pipeline | 64 prompts/step, 2x32 chunks, coalesce chunks 1 |
+| Defer grad sync | OFF |
+| Dynamic static flags | OFF |
 
-The first row was a cold/low-accept row:
+## Measurement Method That Worked
 
-| step | wall | trainer f/b | sample | teacher | sync | consumed tok/s | commit_len |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 500 | 112.00s | 64.05s | 35.91s | 16.57s | 12.05s | 413 | 1.156 |
+The reliable method was isolated trainer-only replay of captured
+`/forward_backward` payloads:
 
-The warm windows show the sampler-state effect directly:
+- k=8 capture: `/shared/opd-control/er-opd-q36-mtp-perf-replay/k8_files64_capture_step3100_20260615T1132Z`
+- k=4 capture: `/shared/opd-control/er-opd-q36-mtp-perf-replay/k4_files64_capture_clean_20260614T234233Z`
 
-| window | wall | trainer f/b | sample | teacher | prefetch wait | sync | consumed tok/s | sample tok/s | commit_len |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 501-509 | 37.83s | 28.30s | 19.65s | 25.43s | 3.06s | 2.99s | 1333 | 772 | 1.686 |
-| 502-509 | 35.02s | 25.10s | 19.18s | 25.93s | 3.44s | 2.99s | 1406 | 802 | 1.761 |
+This avoided a key failure mode in earlier comparisons: the student sampler
+changes the workload over time, so ordinary full-stack A/Bs can confuse sampler
+state with trainer speed.
 
-Step 501 was still a transition row (`commit_len=1.089`). By step 502, commit
-length had climbed to the 1.73-1.80 range, which is why the steadier 502-509
-window is the better comparison to earlier q-band + clean runs. This validates
-the control and confirms the user's hypothesis: as the student changes,
-confidence and sampler output change too.
+## What Worked
 
-The live control summary currently says:
+### EP8 Topology
 
-- `trainer_ep_dispatch=alltoall`
-- `trainer_moe_implementation=triton`
-- `trainer_gradient_checkpointing_method=recompute_before_dispatch`
-- `trainer_expert_parallel_size=32`
-- `gdn_replay_plan_use_stateful_prefix_cache=True`
-- `trainer_clean_replay_context=True`
-- `prompts_per_step=64`
-- `pipeline_chunk_size=32`
-- `trainer_coalesce_chunks=1`
-- `k_toks=2`
-- `max_opd_steps=510`
-- `checkpoint_interval_steps=0`
-- `checkpoint_save_best=False`
+EP8 is the real same-workload throughput lever found in this pass. It is a pure
+layout change: training math is unchanged, but the MoE all-to-all is intra-node
+instead of cross-node.
 
-## How to inspect the live run
+| Test | Result | Status |
+|---|---|---|
+| k=4, 4-node EP8 vs EP32 | EP8 f/b 10.8664s vs EP32 13.6694s; MFU 2.063% vs 1.640% | validated replay win |
+| k=8, 2-node EP8 no-defer | f/b 10.8665s, roundtrip 12.0561s, pseudo actual MFU 3.048% | validated replay win |
 
-```bash
-cd /home/apanda/xorl-mtp-commitlen-fix-20260612
+Not promoted because it changes live topology and needs a deliberate shared-stack
+relaunch.
 
-python experiments/opd_profile/k8s/q36_singleshot_reprogrammable_slots.py status \
-  $(tr '\n' ' ' < experiments/opd_profile/k8s/launch_args_er-opd-q36-mtp-ss-0605c.txt)
+### Shorter Static Shapes
 
-tail -n 120 /shared/opd-control/er-opd-q36-mtp-ss-0605c/trainer-head/logs/20260613T223321Z-run.log
+Shorter static shape was the largest raw trainer-only f/b speedup. It is not
+live-safe yet because the faster forms change pack/microbatch geometry and move
+loss.
 
-python - <<'PY'
-import json, statistics
-from pathlib import Path
-p = Path("/shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_singleshot/er-opd-q36-mtp-ss-0605c/q36mtp-20260613T223322Z-2s1t/artifacts/opd_profile.jsonl")
-rows = [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
-print("rows", len(rows))
-for row in rows:
-    print({
-        "step": row.get("iter", row.get("step")),
-        "wall": round(row.get("iter_time", 0.0), 2),
-        "trainer_fb": round(row.get("trainer_forward_backward_s", 0.0), 2),
-        "prefetch_wait": round(row.get("opd_async_prefetch_wait_s", 0.0), 2),
-        "sample_s": round(row.get("student_sampling_s", 0.0), 2),
-        "sample_tok_s": round(row.get("student_sampling_output_tok_per_s", 0.0), 1),
-        "commit_len": round(row.get("mtp/commit_len_mean", 0.0), 3),
-        "consumed_tok_s": round(row.get("consumed_toks_per_sec_world", 0.0), 1),
-    })
-PY
-```
+| Candidate | Result versus static4352 repeat | Loss delta | Status |
+|---|---:|---:|---|
+| static2304, two-sample pack | f/b -45.6%, useful MFU 1.093% vs 0.595% | 0.004722 | not promoted |
+| static1920, two-sample pack | f/b -48.6%, useful MFU 1.159% vs 0.595% | 0.007348 | not promoted |
+| static2048, two-sample pack | f/b 7.8042s, slower than static1920 | near static1920 | not promoted |
+| static1920, one-sample pack | f/b -16.5%, useful MFU +19.7% | 0.002707 | not promoted |
+| static1664 | failed on `raw_seq_len=1795` > static limit | n/a | rejected |
 
-## How to relaunch the current canonical validation
+The one-sample static1920 bracket kept the same microbatch count as static4352,
+which showed that most of the loss drift came from pack/microbatch geometry.
 
-Use this only if the current run has exited or must be re-rendered. Keep the
-supervisor paused while doing diagnostic throughput runs.
+### Default-Off Dynamic Static Support
+
+Engine and generator support was added for dynamic static padding and dynamic
+static packing, but all flags default to off.
+
+Touched engine areas:
+
+- `src/xorl/server/orchestrator/packing.py`
+- `src/xorl/server/orchestrator/request_processor.py`
+- `src/xorl/server/runner/model_runner.py`
+- generator copies in the engine and infra checkouts
+
+Focused validation:
 
 ```bash
-cd /home/apanda/xorl-mtp-commitlen-fix-20260612
-
-export OPD_XORL_REPO=/home/apanda/xorl-mtp-commitlen-fix-20260612
-export OPD_START_STEP=500
-export OPD_LOAD_CHECKPOINT_PATH=/shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_singleshot/er-opd-q36-mtp-ss-0605c/q36mtp-20260613T110939Z-2s1t/server_output/weights/default/q36mtp-coderforge-v1-step000500
-
-python experiments/opd_profile/k8s/q36_singleshot_reprogrammable_slots.py \
-  write-student-inference-control \
-  $(tr '\n' ' ' < experiments/opd_profile/k8s/launch_args_er-opd-q36-mtp-ss-0605c.txt)
-
-python experiments/opd_profile/k8s/q36_singleshot_reprogrammable_slots.py \
-  write-trainer-control \
-  $(tr '\n' ' ' < experiments/opd_profile/k8s/launch_args_er-opd-q36-mtp-ss-0605c.txt) \
-  --max-opd-steps 510 \
-  --checkpoint-interval-steps 0 \
-  --no-checkpoint-save-best
+PYTHONPATH=/home/apanda/xorl-mtp/src uv run pytest \
+  tests/server/orchestrator/test_packing.py \
+  tests/server/orchestrator/test_request_processor.py \
+  tests/server/runner/test_opd_runner.py \
+  tests/experiments/test_q36_singleshot_reprogrammable_slots.py -q
 ```
 
-The canonical args file now includes `--k-toks 2`,
-`--student-mtp-canonical-q-banding`, `--trainer-clean-replay-context`,
-`--trainer-ep-dispatch alltoall`, `--trainer-moe-implementation triton`,
-`--prompts-per-step 64`, and `--trainer-coalesce-chunks 1`.
+Observed result: `102 passed, 16 warnings`.
 
-## Evidence table
+Measured dynamic candidates:
 
-Warm windows exclude cold step 500 and terminal cleanup rows unless noted.
+| Candidate | Result | Status |
+|---|---|---|
+| conservative dynamic static, static4352 cap | f/b 11.8890s vs 14.8162s, geometry preserved, max loss delta 0.003138 | not promoted |
+| dynamic static packing, static4352 cap | f/b 9.0066s vs 14.8162s, max loss delta 0.005774 | not promoted |
 
-| experiment | run / artifact | result | decision |
-|---|---|---|---|
-| k=2 science baseline, no q-band/clean | `q36mtp-20260613T110939Z-2s1t`, steps 508-521 | 62.53s/step, sampling 85.15s, teacher 18.34s, trainer f/b 23.63s, consumed 730 tok/s | Baseline was sampling-bound. |
-| q-banding only | `q36mtp-20260613T194614Z-2s1t` | 43.33s/step, prefetch wait 0.19s, sampling 19.01s, trainer f/b 36.00s, consumed 1147 tok/s | Fixed sampling; exposed/inflated trainer f/b. Needs clean-region. |
-| q-banding + clean-region | `q36mtp-20260613T200325Z-2s1t`, W&B `tu5ffak6` | 34.62s/step, sampling 18.55s, teacher 25.00s, trainer f/b 24.98s, sync 3.37s, consumed 1460 tok/s | Best completed full-stack result. |
-| q-band + clean CUDA-synced profile | `q36mtp-20260613T201834Z-2s1t`, W&B `krofvfsq` | 35.34s/step, trainer f/b 26.96s, forward/loss 9.20s, backward 15.10s, OPD total 0.379s, KL 0.140s | Bottleneck is model f/b and comm/recompute, not KL/top-k. |
-| no recompute | `q36mtp-20260613T203140Z-2s1t`, W&B `h57g4v8g` | OOM on first step-500 f/b in stateful GDN suffix path; zero profile rows | Do not retry as-is. |
-| q-band + clean capture | `q36mtp-20260613T204443Z-2s1t` | Warm steps 501-506: 32.16s/step, trainer f/b 22.18s, sampler 830 tok/s, commit_len 1.80 | Strong q-band + clean reference window. |
-| trainer-only two-payload replay | `fb_capture_qband_clean_step500_20260613T204431Z`, payloads 11 + 8 | Sequential warmed two calls: 18.21s trainer f/b, 1356 valid tok/s, actual MFU proxy 1.59% | Model-side replay harness works; useful for same-payload A/B. |
-| combined 64-sample trainer replay | `q36mtp-20260613T211419Z-2s1t` | One combined call warmed ~10.11s, 2440 valid tok/s, actual MFU proxy 2.44% | Positive trainer-call amortization signal, trainer-only only. |
-| full pipeline chunk size 64 | `q36mtp-20260613T211900Z-2s1t`, W&B `i3ji92nq` | 40.90s/step, trainer f/b 25.74s, prefetch wait 8.71s, consumed 1172 tok/s | Do not promote; loses prepare parallelism. |
-| trainer coalesce-2 with DeepEP | `q36mtp-20260613T215028Z-2s1t`, W&B `75424yvk` | Failed first coalesced f/b with `DeepEP error: timeout (dispatch CPU)` | DeepEP cannot handle this merged k=2 payload as-is. |
-| EP8/G-shrink replay | `q36mtp-20260613T220513Z-2s1t` plus replay JSONL | EP8 base-weight replay: 26.41s vs EP32 replay 18.21s; per-GPU MFU proxy improves, wall throughput worsens | Cost-efficiency future branch, not wall-clock fix. |
-| EP32 checkpoint into EP8 | `q36mtp-20260613T220042Z-2s1t` | Optimizer state shape mismatch on expert momentum buffer | Needs model-only load or optimizer conversion before EP shrink science run. |
-| trainer coalesce-2 with alltoall/triton | `q36mtp-20260613T221209Z-2s1t`, W&B `qm62obaw` | Clean, but warm 59.37s/step, trainer f/b 27.31s, sampler 139 tok/s, commit_len 1.07 | Not promotable; sampler state changed and trainer did not improve. |
-| current q-band + clean validation | `q36mtp-20260613T223322Z-2s1t`, W&B `btqzrlm6` | Completed cleanly. Warm 501-509: 37.83s/step, trainer f/b 28.30s, sample 19.65s, teacher 25.43s, sync 2.99s, consumed 1333 tok/s, commit_len 1.686. Steadier 502-509: 35.02s/step, trainer f/b 25.10s, consumed 1406 tok/s, commit_len 1.761. | Confirms current control and sampler confidence drift; do not over-rank against older sampler states. |
+## What Did Not Work
 
-## Why OPSD microbench still helps, but only as a checklist
+| Area | Result | Status |
+|---|---|---|
+| clean-region as a speed lever | Clean-region is semantically required, but the earlier huge speed win was actually stateful GDN cache | keep ON for semantics, not speed |
+| defer grad sync / reshard | Fresh k=8 EP8x2 and current EP32 same-workload gates were slower than no-defer | OFF |
+| `XORL_GDN_STATEFUL_INPLACE_TABLE_UPDATES=1` | Same-lane retry made the signal neutral/noise | OFF |
+| `GDN_CAP=32768` | Slower or no useful gain | default cap |
+| compact replay plan | Small/noisy; did not survive as a promotion candidate | not promoted |
+| align/capture boundary variants | k=4 positives did not become a clean k=8 live-safe result; loss drift appeared | not promoted |
+| 64-prompt trainer coalesce | Lost prepare parallelism in full-pipeline context | not promoted |
+| no recompute | OOM in stateful GDN suffix path | rejected |
+| DeepEP at small-k geometry | Timeout in dispatch CPU path at k=2 | alltoall remains promoted |
 
-The OPSD low-MFU microbench decomposes visible MFU into:
+## MFU Ceiling Evidence
 
-- denominator choice: executed tokens vs valid target tokens
-- dummy-fill / rank occupancy
-- above-model server overhead
-- in-model small-GEMM and communication shape
+10% MFU was not reached. At the OPD natural 64-prompt batch, the evidence points
+to too little useful work per GPU for a 32-GPU trainer. The best current
+full-stack measurement is about 2.1-2.25% actual MFU and 0.21-0.23% useful MFU.
+The best k=8 one-node replay pseudo actual MFU observed during static-shape
+experiments was about 3.24%, but that was not promotable.
 
-Do not copy the OPSD numeric answer to MTP. MTP q-band + clean-region payloads
-already execute large GDN replay work per call, and trainer-only replay showed
-that some slow live calls warm away. For MTP, the latest profile points to
-backward/recompute/FSDP/EP communication rather than OPD KL/top-k or a fixed bad
-payload.
+Historical large-batch 4-node EP8 evidence reached around 3.44% MFU, not 10%.
 
-## Clean-region replay status
+## Artifact Index
 
-Clean-region replay is enabled by:
+Key k=8 replay files:
 
-```bash
-XORL_SINGLESHOT_MTP_CLEAN_REPLAY_CONTEXT=1
-```
+- Default static4352 repeat:
+  `/shared/opd-control/er-opd-q36-mtp-perf-replay/k8_files64_capture_step3100_20260615T1132Z/replay_results_k8files64_v2_ep8_1node_defaultalign_static4352_sync_nccl_repeat_20260615T1459Z.jsonl`
+- Static2304:
+  `/shared/opd-control/er-opd-q36-mtp-perf-replay/k8_files64_capture_step3100_20260615T1132Z/replay_results_k8files64_v2_ep8_1node_defaultalign_static2304_sync_nccl_20260615T1450Z.jsonl`
+- Static1920:
+  `/shared/opd-control/er-opd-q36-mtp-perf-replay/k8_files64_capture_step3100_20260615T1132Z/replay_results_k8files64_v2_ep8_1node_defaultalign_static1920_sync_nccl_20260615T1603Z.jsonl`
+- Static1920 one-sample pack:
+  `/shared/opd-control/er-opd-q36-mtp-perf-replay/k8_files64_capture_step3100_20260615T1132Z/replay_results_k8files64_v2_ep8_1node_defaultalign_static1920_pack1920_sync_nccl_20260615T1632Z.jsonl`
+- Conservative dynamic static:
+  `/shared/opd-control/er-opd-q36-mtp-perf-replay/k8_files64_capture_step3100_20260615T1132Z/replay_results_k8files64_v2_ep8_1node_dynstatic_static4352cap_sync_nccl_20260615T1528Z.jsonl`
+- Dynamic static packing:
+  `/shared/opd-control/er-opd-q36-mtp-perf-replay/k8_files64_capture_step3100_20260615T1132Z/replay_results_k8files64_v2_ep8_1node_dynstaticpack_static4352cap_sync_nccl_20260615T1544Z.jsonl`
+- EP8x2 defer gate:
+  `/shared/opd-control/er-opd-q36-mtp-perf-replay/k8_files64_capture_step3100_20260615T1132Z/compare_k8_ep8x2_defer_vs_nodefer.json`
 
-The proof run showed clean-region and current ordering are top-1
-prediction-equivalent for the sampled proof batch:
+Live full-stack MFU profile:
 
-- current top-1 agreement: 0.500
-- clean top-1 agreement: 0.476
-- current == clean in 8/8 examples
+- `/shared/opd-coord/encoded_reasoning/results/qwen3_6_35b_singleshot/er-opd-q36-mtp-ss-0605c/q36mtp-20260615T115717Z-2s1t/artifacts/opd_profile.jsonl`
 
-Caveat: this is an argmax-level proof. It does not prove the full KL/logit
-distribution is identical. Treat it as safe enough for throughput validation,
-not as a mathematical equivalence proof for all science claims.
+## Handoff Boundaries
 
-The live launcher now has `--trainer-clean-replay-context` and validates that it
-is only used with stateful GDN replay prefix cache.
-
-## SGLang dependency
-
-Canonical q-banding previously crashed the sampler with:
-
-```text
-ValueError: Invalid verified MTP commit length. verified=2 planned=1 phase=steady
-```
-
-The SGLang fix is now committed and pushed on `apanda-dev`:
-
-```text
-18c2357de Fix per-request MTP draft verification
-```
-
-It adds per-request `mtp_hf_exact_accept_len` verification and unit tests in
-`test/srt/zorl/test_mtp_decode_verify.py`. The MTP engine landing should be
-paired with this SGLang commit.
-
-## Rules for the next throughput agent
-
-1. Do not promote from cross-state full-stack A/Bs.
-   If commit_len or sampler tok/s changed, the workload changed.
-
-2. Do not retry no-recompute without a memory plan.
-   It OOMed in stateful GDN suffix replay on the first f/b.
-
-3. Do not promote global `pipeline_chunk_size=64`.
-   It reduced prepare parallelism and regressed wall-clock.
-
-4. Do not retry `trainer_coalesce_chunks=2` on DeepEP.
-   The merged k=2 payload hit DeepEP dispatch CPU timeout.
-
-5. If revisiting coalescing, start from alltoall/triton and compare same
-   captured payloads first.
-   The alltoall full-stack coalesce run completed but was not faster.
-
-6. Use trainer-only replay for model-side changes.
-   It removes sampler drift and isolates f/b, FSDP, EP dispatch, GDN suffix, and
-   compile effects.
-
-7. Preserve q-banding + clean-region + recompute_before_dispatch as the baseline
-   until a same-workload run beats it.
-
-8. Keep outputs under `/shared`.
-   The OPD generator now sets future `WANDB_DIR=${RUN_DIR}/artifacts/wandb`, and
-   local-benchmark k8s rendering defaults to `/shared/xorl-local-benchmark`.
-
-## Next useful work
-
-1. If optimizing throughput next, capture current-step f/b payloads and replay
-   them trainer-only before touching full-stack controls.
-
-2. Candidate model-side code targets:
-   reduce stateful GDN suffix work, reduce FSDP all-gather/reduce-scatter
-   frequency, or find a safe coalescing implementation that does not hit DeepEP
-   timeout and does not lose sampler/teacher prepare overlap.
-
-3. Candidate science path:
-   if science wants EXP-1 continuation, use q-band + clean only if they accept
-   that sampler behavior is now part of the training state. Otherwise render a
-   science-control run that preserves their intended sampler setting and do not
-   compare its wall-clock to q-band runs as a throughput A/B.
-
-## Consolidation notes
-
-The throughput harness edits are not engine code. Engine landing is covered by
-`CONSOLIDATION_HANDOFF.md`; the paired SGLang q-banding fix is already pushed.
-Post-B2 cleanup remains gated on the MTP engine PR landing into `apanda-dev`.
+- Treat v2 as the only promoted live configuration.
+- Treat EP8 and static-shape results as evidence, not live configuration.
+- Treat dynamic static flags as default-off experimental code.
+- Treat full-stack comparisons across different sampler states as non-decisive
+  unless the workload is explicitly controlled.

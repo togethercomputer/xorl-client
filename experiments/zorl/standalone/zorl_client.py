@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import random
 import re
 import sys
@@ -44,6 +45,33 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import requests
+from requests.adapters import HTTPAdapter
+
+# Keep-alive connection pool (opt-in via ZORL_HTTP_KEEPALIVE=1). The default
+# per-request `Connection: close` opens a fresh TCP connection for EVERY rollout
+# turn (up to 6 per game x hundreds of games), paying a handshake each time and
+# blocking HTTP keep-alive. A shared, thread-safe Session with a large pool
+# reuses connections across turns. pool_maxsize must cover per-host concurrency
+# (~SCORE_MAX_WORKERS_PER_OWNER) or connections serialize. Default off so it's a
+# clean A/B and reversible for the scale-up.
+_KEEPALIVE_SESSION = None
+_KEEPALIVE_LOCK = threading.Lock()
+
+
+def _keepalive_session() -> requests.Session:
+    global _KEEPALIVE_SESSION
+    if _KEEPALIVE_SESSION is None:
+        with _KEEPALIVE_LOCK:
+            if _KEEPALIVE_SESSION is None:
+                pool = int(os.environ.get("ZORL_HTTP_POOL_MAXSIZE", "512"))
+                s = requests.Session()
+                adapter = HTTPAdapter(
+                    pool_connections=pool, pool_maxsize=pool, max_retries=0
+                )
+                s.mount("http://", adapter)
+                s.mount("https://", adapter)
+                _KEEPALIVE_SESSION = s
+    return _KEEPALIVE_SESSION
 
 
 # Make the tasks/ package importable regardless of cwd. Adding the script's
@@ -64,14 +92,19 @@ def _post(url: str, path: str, payload: dict, *, timeout: float = 300.0, headers
     JSON, or an empty dict for endpoints (like /flush_cache) that respond with
     an empty 200. Raises RuntimeError with the server's error body on HTTP >=400."""
     last_err = None
-    request_headers = {"Connection": "close"}
+    # Default ON: reuse a pooled keep-alive session (faster — avoids a fresh TCP
+    # handshake per request). Set ZORL_HTTP_KEEPALIVE=0 to force per-request
+    # Connection: close (legacy).
+    keepalive = os.environ.get("ZORL_HTTP_KEEPALIVE", "1") != "0"
+    request_headers = {} if keepalive else {"Connection": "close"}
     if headers:
         request_headers.update(headers)
+    poster = _keepalive_session().post if keepalive else requests.post
     max_attempts = 10
     retryable_statuses = {429, 503}
     for attempt in range(max_attempts):
         try:
-            with requests.post(f"{url}{path}", json=payload, headers=request_headers, timeout=timeout) as r:
+            with poster(f"{url}{path}", json=payload, headers=request_headers, timeout=timeout) as r:
                 if r.status_code >= 400:
                     last_err = RuntimeError(f"{path} on {url} → HTTP {r.status_code}: {r.text[:500]}")
                     if r.status_code in retryable_statuses and attempt + 1 < max_attempts:
@@ -1847,6 +1880,10 @@ def main():
         help="cosine: lr floor as a fraction of --lr (default 0.1).")
     parser.add_argument("--lr-decay-steps", type=int, default=0,
         help="cosine: steps over which to anneal to the floor (0 = use --steps).")
+    parser.add_argument("--lr-hold-steps", type=int, default=0,
+        help="cosine: hold lr at --lr for this many steps BEFORE decaying (delayed "
+        "decay). 0 = decay from step 0 (legacy). Use to keep full lr through the ES "
+        "climb and only shrink the step in the post-peak tail to beat the drift.")
     parser.add_argument(
         "--momentum",
         type=float,
@@ -2204,8 +2241,11 @@ def main():
     def _lr_for_step(step: int) -> float:
         if args.lr_schedule == "constant":
             return float(args.lr)
+        hold = int(getattr(args, "lr_hold_steps", 0) or 0)
+        if step < hold:
+            return float(args.lr)
         horizon = int(args.lr_decay_steps) if args.lr_decay_steps > 0 else int(args.steps)
-        frac = min(1.0, step / max(1, horizon))
+        frac = min(1.0, (step - hold) / max(1, horizon))
         floor = float(args.lr) * float(args.lr_min_frac)
         return floor + 0.5 * (float(args.lr) - floor) * (1.0 + math.cos(math.pi * frac))
 

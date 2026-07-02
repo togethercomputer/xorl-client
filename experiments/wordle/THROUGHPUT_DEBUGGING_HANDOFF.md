@@ -11,28 +11,78 @@ active, hidden 2048, vocab 248320), full-weight server-mode OPSD, EP=8 on 8×H10
 think-contract rollouts (~3k think tokens/turn), full-vocab reverse-KL teacher.
 
 ---
-## Consolidation Status — read before running more jobs
+## Post-Consolidation Status - read before running more jobs
 
-`CONSOLIDATION_HANDOFF.md` is currently the operational owner for this worktree.
-Part 1 has been executed:
+**Scope boundary:** this handoff is for the OPSD-Wordle fwd/bwd throughput and
+replay track. It is not the Wordle science/retrieval-SFT runbook and it is not
+the SingleShot-MTP throughput runbook.
 
-- This checkout is now on branch `exp/opsd-wordle`.
-- Commit `746c71fd` (`Add OPSD microbatch diagnostics`) contains only the two engine
-  files requested by the consolidation handoff:
-  `src/xorl/server/orchestrator/request_processor.py` and
-  `src/xorl/server/runner/runner_dispatcher.py`.
-- Those committed engine edits are the Wordle-side diagnostic half that must be
-  unioned with the sibling `xorl-apanda-dev-opd-port` `runner_dispatcher.py`
-  minimal-dummy-batch edits when B1 is assembled.
-- The remaining throughput harness/docs/config changes in this checkout are **not**
-  part of that engine commit. Treat them as local experiment handoff material until
-  the post-B1 relocation decides what moves to `xorl-client` or `xorl-infra`.
+If the next agent is meant to run the **Wordle retrieval-targeted SFT science
+experiment**, instantiate it from `/home/apanda/xorl-client-wordle-science-20260614`
+on branch `science/wordle-retrieval-sft-20260614` and read
+`experiments/wordle/OPSD_WORDLE_CANONICAL_RUNBOOK_2026_06_08.md` instead.
 
-Do not launch more jobs that write under `experiments/zorl/results` from this
-checkout. The checkout already contains about 1.9T of run artifacts that Part 2 says
-must be moved to `/shared`. If a post-consolidation agent needs to resume a replay
-before relocation is complete, set `RESULT_ROOT=/shared/apanda/opsd-wordle-mfu-replays`
-or another `/shared/apanda/...` path explicitly.
+If the next throughput agent is meant to continue the MTP regime around
+`opsd_low_mfu_microbench_20260613.md`, instantiate it from
+`/home/apanda/xorl-mtp-singleshot-port-20260602` instead and use the MTP handoff
+at `experiments/mtp/docs/notes/mtp_amdahl_optimal_throughput_handoff.md` in the
+consolidated client mirror. If the next step is an engine implementation fix,
+create a clean core-engine branch from the canonical `xorl-internal` `apanda-dev`
+tip; do not make engine changes in `xorl-client`.
+
+**Closeout update (2026-06-14):** consolidation is effectively complete. There is
+no heavy Wordle training run to preserve; only the live Wordle Codex agent and its
+shells remain active. The old result tree has been quiescent for hours, but the
+about-1.9T relocation is intentionally deferred until that agent exits so evidence
+ownership stays clear.
+
+This is now the canonical throughput handoff for the Wordle OPSD replay/profiling
+track. A dedicated next-agent worktree has already been prepared:
+
+```bash
+cd /home/apanda/xorl-client-wordle-throughput-20260614
+git rev-parse --short HEAD  # expected base: 0c29943 or newer
+```
+
+Start the next Codex agent with cwd `/home/apanda/xorl-client-wordle-throughput-20260614`
+and give it exactly:
+
+```text
+/goal Implement @experiments/wordle/THROUGHPUT_DEBUGGING_HANDOFF.md
+
+Focus on the OPSD-Wordle fwd/bwd replay/profiling track. Use /home/apanda/xorl-infra-opd-wordle-pr1-20260614 for k8s manifests and configs, write new outputs only under /shared/apanda/opsd-wordle-mfu-replays, and treat /home/apanda/xorl-opsd-wordle-apanda-dev-run-20260607 as read-only evidence until the 1.9T relocation is complete.
+```
+
+Use this client repo for the Wordle harness, replay scripts, and runbook edits:
+
+- canonical branch/base: `internal/apanda-dev` / `apanda-dev @ 0c29943`
+- prepared client worktree: `/home/apanda/xorl-client-wordle-throughput-20260614`
+- prepared client branch: `throughput/wordle-fwdbwd-profile-20260614`
+- handoff: `experiments/wordle/THROUGHPUT_DEBUGGING_HANDOFF.md`
+- harness: `experiments/wordle/standalone/`
+- prepared infra worktree: `/home/apanda/xorl-infra-opd-wordle-pr1-20260614`
+- prepared infra branch: `infra/populate-opd-mtp @ 2bdf39e`
+- config home: `/home/apanda/xorl-infra-opd-wordle-pr1-20260614/configs/zorl/`
+- k8s manifest home: `/home/apanda/xorl-infra-opd-wordle-pr1-20260614/k8s/zorl/`
+
+Do **not** instantiate new science or throughput agents from the old run checkout
+`/home/apanda/xorl-opsd-wordle-apanda-dev-run-20260607`. That checkout is only a
+temporary evidence/artifact source until its about-1.9T of run data is relocated to
+`/shared`.
+
+Current consolidation end state:
+
+- Engine substrate is on `xorl-internal` `apanda-dev`: OPD B1 #370 plus #372.
+- `xorl-client` `internal/apanda-dev @ 0c29943` contains the migrated `mtp`,
+  `opd_profile`, `wordle`, and `zorl` experiment harnesses.
+- `xorl-infra` PR #1 (`infra/populate-opd-mtp @ 2bdf39e`) contains the OPD/Wordle/MTP
+  k8s manifests and configs and is ready for owner review/merge.
+- The old Wordle run checkout is still live only for this agent's closeout and the
+  pending 1.9T relocation. New outputs must go to `/shared`, never into a checkout.
+
+If a post-consolidation agent needs to resume a replay before relocation is complete,
+set `RESULT_ROOT=/shared/apanda/opsd-wordle-mfu-replays` or another
+`/shared/apanda/...` path explicitly.
 
 Non-result to avoid misreading: a no-checkpoint direct tensor replay attempt
 `opsd-wordle-q36-fullft-8g-hbrhw` wrote only an `init` row under
@@ -126,7 +176,7 @@ static replay path:
 - For a lower-level split, capture tensor payloads with
   `FB_REPLAY_MICROBATCH_DIAGNOSTIC_TENSORS=1`, then run
   `FB_TENSOR_REPLAY_DIR=<microbatch_diagnostics_dir>` in the canonical k8s job.
-  That launches `experiments/zorl/standalone/replay_microbatch_tensors.py` under
+  That launches `experiments/wordle/standalone/replay_microbatch_tensors.py` under
   `torchrun`, loads each rank's post-slice `.pt` tensors, and calls
   `ModelRunner.forward_backward()` directly without starting the HTTP training
   server, sampler, SMG, teacher-cache materializer, or weight-sync path.
@@ -190,7 +240,7 @@ captured request with `FB_REPLAY_MICROBATCH_DIAGNOSTIC_TENSORS=1`, writing 8 JSO
 summaries and 8 rank-local `.pt` files to
 `experiments/zorl/results/opsd_wordle_native_baseline/20260613T212614Z-opsd-wordle-q36-fullft-8g-mzh9t-mw6vs-wordle-r16-asymmetric_opsd/microbatch_diagnostics/`.
 Bare tensor replay job `opsd-wordle-q36-fullft-8g-ngzrz` then loaded those tensors
-directly through `experiments/zorl/standalone/replay_microbatch_tensors.py` and
+directly through `experiments/wordle/standalone/replay_microbatch_tensors.py` and
 wrote
 `experiments/zorl/results/opsd_wordle_native_baseline/20260613T213048Z-opsd-wordle-q36-fullft-8g-ngzrz-mzshx-wordle-r16-asymmetric_opsd/bare_tensor_replay_metrics.jsonl`.
 
@@ -364,7 +414,7 @@ Per-step at the canonical RB8+chunk16, 8×H100, warm:
 1. **Profile the warmed bare tensor replay first.** Set
    `FB_TENSOR_REPLAY_DIR=<mzh9t_microbatch_diagnostics>`,
    `FB_TENSOR_REPLAY_WARMUP_REPEATS=1`, and `FB_TENSOR_REPLAY_REPEAT=1`, then wrap
-   `experiments/zorl/standalone/replay_microbatch_tensors.py` with `nsys` or torch
+   `experiments/wordle/standalone/replay_microbatch_tensors.py` with `nsys` or torch
    profiler. This is the cleanest path because it times direct
    `ModelRunner.forward_backward()` on the exact tensors and excludes HTTP,
    request processing, sampler, teacher-cache materialization, and weight sync.
@@ -412,17 +462,20 @@ Per-step at the canonical RB8+chunk16, 8×H100, warm:
    setup (packing off → variable-length → small batch → server-mode → full-vocab-KL)
    and watch which collapses MFU. That isolates the culprit definitively.
 
-## Reference (inherited via the OPD-port merge — branch `apanda-dev-prefill-time-compute`)
+## Reference
 
-- Sibling Amdahl doc: `~/xorl-apanda-dev-opd-port/docs/notes/amdahl_allocation_20260613.md`
-  (their stack was teacher-bound; capture-fix gave 8-9×; the `ada302bc` FSDP/chunk-cap
-  finding is theirs — does NOT transfer to our long-think regime, see above).
+- Historical sibling Amdahl doc:
+  `~/xorl-apanda-dev-opd-port/docs/notes/amdahl_allocation_20260613.md`. Their stack
+  was teacher-bound; capture-fix gave 8-9x; the `ada302bc` FSDP/chunk-cap finding
+  was for short completions and does not transfer to this long-think Wordle regime.
 - Throughput-tuner skill: `skills/xorl-throughput-tuner/` (measured 35b pure-training
   recipe + `references/xorl-parallelism.md` + `collect_xorl_metrics.py`). Defaults
   `moe_implementation: quack`, `ep_dispatch: deepep` for pure training.
-- Canonical Wordle run manifest: `experiments/zorl/k8s/qwen3-6-35b-a3b-opsd-wordle-think-canonical.yaml`
-  (RB8+chunk16 - the measured-best tested request shape; keep packing disabled and
-  checkpointing enabled). It now accepts `OPD_PROFILE_TIMINGS=1` and
+- Canonical Wordle run manifest after infra PR #1:
+  `/home/apanda/xorl-infra/k8s/zorl/qwen3-6-35b-a3b-opsd-wordle-think-canonical.yaml`.
+  RB8+chunk16 is the measured-best tested request shape; keep packing disabled and
+  checkpointing enabled unless a replay win justifies a full run. It accepts
+  `OPD_PROFILE_TIMINGS=1` and
   `OPD_PROFILE_SYNC_CUDA=1` env overrides. It also accepts
   `DUMP_FORWARD_BACKWARD_REPLAY=...`, `SKIP_INITIAL_EVAL=1`, and
   `FB_REPLAY_ARTIFACT=...`. For direct tensor replay it accepts
@@ -432,11 +485,15 @@ Per-step at the canonical RB8+chunk16, 8×H100, warm:
   `FB_TENSOR_REPLAY_COALESCE_REPEAT=...` and
   `FB_TENSOR_REPLAY_TARGET_INPUT_TOKENS=...` for repeated exact-tensor
   coalescing.
-- Static API replay client: `experiments/zorl/standalone/replay_forward_backward_artifact.py`.
+- Canonical Wordle configs after infra PR #1:
+  `/home/apanda/xorl-infra/configs/zorl/qwen3_6_35b_a3b_opsd_wordle_*.yaml`.
+- Static API replay client:
+  `experiments/wordle/standalone/replay_forward_backward_artifact.py`.
   It replays captured `/forward_backward` payloads with fresh `seq_id`s and optional
   `lr=0` `optim_step`s, writing `replay_metrics.jsonl`. Existing artifact:
   `experiments/zorl/results/opsd_wordle_native_baseline/20260613T202921Z-opsd-wordle-q36-fullft-8g-r8shd-8tbkw-wordle-r16-asymmetric_opsd/forward_backward_replay.jsonl`.
-- Static bare tensor replay client: `experiments/zorl/standalone/replay_microbatch_tensors.py`.
+- Static bare tensor replay client:
+  `experiments/wordle/standalone/replay_microbatch_tensors.py`.
   It loads `microbatch_*_rankNNNNN.pt` payloads captured after
   `_shard_and_slice_batches`, instantiates `ModelRunner`, and calls
   `forward_backward()` directly under `torchrun`. Existing tensor dump:
@@ -459,28 +516,28 @@ Per-step at the canonical RB8+chunk16, 8×H100, warm:
 - GPU-power check: `kubectl exec -n apanda <trainer-pod> -c trainer -- nvidia-smi
   --query-gpu=index,utilization.gpu,power.draw --format=csv`.
 
-## Post-Consolidation Resume
+## Next-Agent Resume
 
-After B1 lands and the run data relocation is complete:
+Do this first:
 
-1. Merge the post-B1 `origin/apanda-dev` into `exp/opsd-wordle` and verify
-   `git diff origin/apanda-dev -- src/xorl` is empty or contains only intentionally
-   retained Wordle glue.
-2. Preserve the existing evidence artifacts when relocating the checkout results to
-   `/shared`; update the paths in this runbook if the old
-   `experiments/zorl/results/opsd_wordle_native_baseline/...` paths disappear.
-3. Move Wordle experiment scripts/docs/runbooks according to `MIGRATION-MANIFEST.md`:
-   Wordle harness/docs to `xorl-client/experiments/wordle/`, k8s/configs to
-   `xorl-infra`.
-4. If the throughput track resumes before a full migration, launch new replay jobs
-   with an explicit shared result root, e.g.:
+1. Instantiate in `/home/apanda/xorl-client-wordle-throughput-20260614`. It is on
+   `throughput/wordle-fwdbwd-profile-20260614`, rooted at
+   `internal/apanda-dev @ 0c29943`, with this handoff already applied. Do not use
+   the old Wordle run checkout as the working repo.
+2. Use `/home/apanda/xorl-infra-opd-wordle-pr1-20260614` for k8s/config paths. It
+   is pinned to `infra/populate-opd-mtp @ 2bdf39e`, the xorl-infra PR #1 branch.
+3. Confirm the 1.9T Wordle result relocation status. If the Wordle Codex agent is
+   still active, leave the old checkout in place and treat it as read-only evidence.
+   If the artifact paths below were moved, update this runbook with the final
+   `/shared/...` paths before launching replay jobs.
+4. Run new diagnostics with an explicit `/shared` result root, e.g.:
 
 ```bash
 kubectl set env --local \
-  -f experiments/zorl/k8s/qwen3-6-35b-a3b-opsd-wordle-think-canonical.yaml \
+  -f /home/apanda/xorl-infra-opd-wordle-pr1-20260614/k8s/zorl/qwen3-6-35b-a3b-opsd-wordle-think-canonical.yaml \
   -o yaml \
   RESULT_ROOT=/shared/apanda/opsd-wordle-mfu-replays \
-  CONFIG_PATH=/workspace/home/xorl-opsd-wordle-apanda-dev-run-20260607/experiments/zorl/configs/qwen3_6_35b_a3b_opsd_wordle_fullft_ep8_warmstart_sft48_nockpt.yaml \
+  CONFIG_PATH=/workspace/home/xorl-infra-opd-wordle-pr1-20260614/configs/zorl/qwen3_6_35b_a3b_opsd_wordle_fullft_ep8_warmstart_sft48_nockpt.yaml \
   FB_TENSOR_REPLAY_DIR=/workspace/home/xorl-opsd-wordle-apanda-dev-run-20260607/experiments/zorl/results/opsd_wordle_native_baseline/20260613T212614Z-opsd-wordle-q36-fullft-8g-mzh9t-mw6vs-wordle-r16-asymmetric_opsd/microbatch_diagnostics \
   FB_TENSOR_REPLAY_ARTIFACT=/workspace/home/xorl-opsd-wordle-apanda-dev-run-20260607/experiments/zorl/results/opsd_wordle_native_baseline/20260613T202921Z-opsd-wordle-q36-fullft-8g-r8shd-8tbkw-wordle-r16-asymmetric_opsd/forward_backward_replay.jsonl \
   FB_TENSOR_REPLAY_WARMUP_REPEATS=1 \
@@ -491,8 +548,9 @@ kubectl set env --local \
 | kubectl create --dry-run=server -f - -o name
 ```
 
-Only create the job after the dry-run succeeds and the consolidation owner agrees
-that running more perf diagnostics will not interfere with relocation.
+Only create the job after the dry-run succeeds and every GPU pod template has
+`team: turbo`. Replace the two legacy `xorl-opsd-wordle.../experiments/zorl/results`
+artifact paths with their final `/shared` paths once relocation is complete.
 
 ## Bottom line
 

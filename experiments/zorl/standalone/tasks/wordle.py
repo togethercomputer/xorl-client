@@ -290,10 +290,16 @@ _GUESS_TAG_RE = re.compile(r"<guess\b[^>]*>.*?</guess>", re.IGNORECASE | re.DOTA
 
 
 def has_single_guess_tag(text: str) -> bool:
-    """True iff the text contains exactly one <guess>...</guess> tag."""
+    """Format reward: exactly one well-formed 5-letter <guess> tag.
+
+    Counts 5-letter guesses (`_GUESS_RE`), NOT bare ``<guess>...</guess>`` blocks
+    (`_GUESS_TAG_RE`): thinking models echo the prompt template's 4-letter
+    ``<guess>WORD</guess>`` example, which is not a real guess and previously
+    inflated the `_GUESS_TAG_RE` count to >1 — killing ~91% of turns and making
+    the run measure format compliance instead of Wordle solving (2026-06 fix)."""
     if not text:
         return False
-    return len(_GUESS_TAG_RE.findall(text)) == 1
+    return len(_GUESS_RE.findall(text)) == 1
 
 
 def extract_guess(text: str) -> str | None:
@@ -1021,16 +1027,22 @@ def rollout_completion(example: Example, *, generate_turn, lora_path: str, token
             temperature=float(args.rollout_temperature),
             max_new_tokens=int(args.rollout_max_new_tokens),
         )
-        guess = extract_guess(text or "")
+        # Lenient extraction: take the LAST 5-letter <guess> (thinking models
+        # reason first, emit the real guess last). A legal guess lets the game
+        # CONTINUE even when the format is messy — format is now a graded reward,
+        # NOT a game-ending gate. The old `not format_ok` break + template-echo
+        # tag over-count killed ~91% of turns, so the run measured format, not Wordle.
+        _guesses = extract_guesses(text or "")
+        guess = _guesses[-1] if _guesses else None
         single_guess_tag_ok = has_single_guess_tag(text or "")
         if single_guess_tag_ok:
             single_guess_tag_hits += 1
         format_ok = single_guess_tag_ok and guess is not None
         if format_ok:
             format_hits += 1
-        if not format_ok or not is_valid_guess(guess, history):
-            # Bad format or invalid Wordle action: end this local rollout and
-            # avoid inventing public feedback for an invalid game action.
+        if guess is None or not is_valid_guess(guess, history):
+            # No legal guess extractable: end this local rollout (don't invent
+            # public feedback for a non-action). Messy-but-legal guesses continue.
             info_scores.append(0.0)
             invalid_action = True
             break
@@ -1059,9 +1071,9 @@ def rollout_completion(example: Example, *, generate_turn, lora_path: str, token
     )
     wordle_components = _wordle_reward_components(
         solved=solved,
-        turns_with_guess=single_guess_tag_hits,
+        turns_with_guess=valid_hits,
         latest_feedback=latest_feedback,
-        format_reward=1.0 if turns_used > 0 and single_guess_tag_hits == turns_used else 0.0,
+        format_reward=single_guess_tag_rate,
         valid_guess_rate=valid_guess_rate,
         terminal_valid=not invalid_action,
         invalid_action=invalid_action,
