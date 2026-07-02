@@ -2211,6 +2211,26 @@ def _user_prompt_text(prompt: Any) -> str:
     return ""
 
 
+_GSM8K_GOLD: dict[str, str] | None = None
+
+
+def _gsm8k_gold_lookup(prompt_text: str) -> str | None:
+    """Gold final-answer for a GSM8K prompt, loaded once from ``$GSM8K_GOLD_JSON``
+    (a {prompt_content: answer} map). GSM8K gold is NOT computable from the
+    question (unlike multiplication), so it is supplied out-of-band and keyed by
+    the exact user-content string the prompt was built with."""
+    global _GSM8K_GOLD
+    if _GSM8K_GOLD is None:
+        path = os.environ.get("GSM8K_GOLD_JSON", "")
+        try:
+            _GSM8K_GOLD = json.load(open(path)) if path else {}
+        except Exception:  # noqa: BLE001 - missing/bad gold map => unscorable
+            _GSM8K_GOLD = {}
+        logger.info("gsm8k gold map: %d entries from %r", len(_GSM8K_GOLD), path)
+    g = _GSM8K_GOLD.get(prompt_text)
+    return str(g) if g is not None else None
+
+
 def _score_answer(prompt_text: str, completion_text: str, task: str) -> bool | None:
     """Return True/False if the completion contains the correct answer, or None
     if the task scorer can't parse the problem (so accuracy skips it)."""
@@ -2230,6 +2250,12 @@ def _score_answer(prompt_text: str, completion_text: str, task: str) -> bool | N
             return int(m.group(0).replace(",", "")) == int(target)
         except ValueError:
             return False
+    if task == "gsm8k":
+        # GSM8K answers are integers; the post-"Answer:" region is short. Lenient
+        # integer-membership match (strip $/commas), like multiplication but
+        # integer-boundary-safe.
+        nums = re.findall(r"-?\d+", (completion_text or "").replace(",", "").replace("$", ""))
+        return target in nums
     return None
 
 
@@ -2252,6 +2278,8 @@ def _target_answer_text(prompt_text: str, task: str) -> str | None:
             return str(_safe_eval_arith(expr))
         except (ValueError, SyntaxError, ZeroDivisionError):
             return None
+    if task == "gsm8k":
+        return _gsm8k_gold_lookup(prompt_text)
     return None
 
 
@@ -4103,6 +4131,21 @@ class Config:
     # KL gate (datum-path change).
     opd_correct_prefix_only: bool = False
 
+    # Expansion-lock filter (filler-RFT pivot, 2026-06-27). Keep a sampled
+    # rollout as a positive training datum ONLY when the with-pause answer is
+    # correct AND the model FAILS the same problem WITHOUT the pause buffer
+    # (greedy no-pause). This trains exactly the filler-DEPENDENT frontier — the
+    # runbook's "lock in the pass@8 expansion as reliable pass@1" — instead of
+    # plain RFT, which teaches the arithmetic in-weights so acc_nopause rises
+    # until the buffer is redundant (buffer_delta collapses; observed run-1).
+    # Implemented by sampling one greedy no-pause completion per prompt (the eval
+    # "nopause" arm = answer cue only), scoring it, and zeroing sample_ok for any
+    # prompt already solved without the buffer so opd_correct_prefix_only masks
+    # it. REQUIRES opd_correct_prefix_only=true. Shrinks valid tokens/step (only
+    # the gap subset survives) — pair with a larger prompts/step. Adds one greedy
+    # no-pause sampling pass per step. Default False (no behavior change).
+    opd_only_train_on_pause_gap: bool = False
+
     # Pause-position-supervised variant (only meaningful with teacher_cot_mode=
     # "insert"). When False (default) the student's pause/CoT region is MASKED
     # out of the loss, so only answer positions are distilled — the buffer is
@@ -5613,6 +5656,82 @@ async def _prepare_opd_batch(
     sample_ok_by_sample: list[int] = _sample_answer_correctness(
         completions, prompts, G, chat_tokenizer, config.eval_task
     )
+
+    # Expansion-lock pivot (opd_only_train_on_pause_gap): restrict positive
+    # supervision to the filler-DEPENDENT frontier — problems the model gets
+    # RIGHT with the pause buffer but WRONG without it. Sample one greedy
+    # no-pause completion per prompt (prefill = answer cue only, the eval
+    # "nopause" arm), score it, and zero sample_ok for any sample whose prompt
+    # the model already solves no-pause, so opd_correct_prefix_only masks it.
+    if config.opd_only_train_on_pause_gap:
+        if not config.opd_correct_prefix_only:
+            raise ValueError(
+                "opd_only_train_on_pause_gap requires opd_correct_prefix_only=true "
+                "(the gap filter is applied through the same sample_ok masking)"
+            )
+        # Mirror the eval "nopause" arm EXACTLY (it works — acc_nopause ~0.5): sample
+        # each prompt with an assistant prefill of ONLY the answer cue (no pause buffer),
+        # greedy, and score the raw completion. NB: _sample_student_batch returns EMPTY
+        # completions at student_prefill_count=0 (its prefix-stripping is pause-path-
+        # specific), so we sample directly via client.sample like the eval.
+        _np_params = tomi.SamplingParams(
+            max_tokens=config.max_new_tokens,
+            temperature=0.0,
+            chat_continue_final_message=bool(config.student_prefill_suffix),
+            **_chat_sampling_extras(config),
+        )
+
+        async def _nopause_ok(client: Any, p: Any) -> int:
+            sp = list(p) + (
+                [{"role": "assistant", "content": config.student_prefill_suffix}]
+                if config.student_prefill_suffix else []
+            )
+            try:
+                resp = await asyncio.wait_for(
+                    client.sample(prompt=sp, sampling_params=_np_params, num_samples=1),
+                    timeout=max(float(config.request_timeout), 1.0),
+                )
+            except Exception:  # noqa: BLE001 - sampling failure => unscorable
+                return -1
+            seqs = getattr(resp, "sequences", None) or []
+            if not seqs:
+                return -1
+            seq = seqs[0]
+            toks = list(getattr(seq, "tokens", None) or [])
+            text = getattr(seq, "text", None) or (
+                chat_tokenizer.decode(toks, skip_special_tokens=True) if toks else ""
+            )
+            v = _score_answer(_user_prompt_text(p), text, config.eval_task)
+            return -1 if v is None else int(v)
+
+        nopause_ok_by_prompt = list(
+            await asyncio.gather(
+                *[
+                    _nopause_ok(sampling_clients[i % len(sampling_clients)], p)
+                    for i, p in enumerate(prompts)
+                ]
+            )
+        )
+        n_prompts = len(prompts)
+        nopause_correct = sum(
+            1 for p in range(n_prompts) if int(nopause_ok_by_prompt[p]) == 1
+        )
+        kept = 0
+        for sample_idx in range(len(sample_ok_by_sample)):
+            prompt_idx = sample_idx // G
+            if prompt_idx < n_prompts and int(nopause_ok_by_prompt[prompt_idx]) == 1:
+                # Already solved without the buffer → not filler-dependent: drop it.
+                sample_ok_by_sample[sample_idx] = 0
+            elif int(sample_ok_by_sample[sample_idx]) == 1:
+                kept += 1
+        logger.info(
+            "expansion-lock: nopause_solved=%d/%d prompts; kept %d/%d samples "
+            "(pause-correct AND nopause-wrong) for supervision",
+            nopause_correct,
+            n_prompts,
+            kept,
+            len(sample_ok_by_sample),
+        )
 
     cache_path = (
         output_dir / f"teacher_hidden_step{step}_mb{microbatch_idx}.safetensors"
