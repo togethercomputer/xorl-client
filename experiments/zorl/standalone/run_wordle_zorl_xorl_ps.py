@@ -306,6 +306,11 @@ def main():
                         c.get("perturbation_mode") or gen.get("perturbation_mode") or args.perturbation_mode
                     ),
                     "rank": int(c.get("rank") or gen.get("lora_rank") or args.lora_rank),
+                    # Observability passthrough; the ACTIVE noise scheme is the
+                    # XORL_ZORL_NOISE_LAYOUT env on BOTH the PS and the scorers
+                    # (must be flipped together — a mismatch silently folds
+                    # noise the scorers never served).
+                    "noise_layout": c.get("noise_layout") or gen.get("noise_layout") or "",
                 }
                 for c in candidates
             ]
