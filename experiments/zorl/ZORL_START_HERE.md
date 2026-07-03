@@ -58,16 +58,17 @@ prompt/reward/eval), candidates as seeds, base sync via Mooncake p2p fp8.
 - Launch manifest: `xorl-infra` `k8s/zorl/qwen3_6-35b-a3b-zorl-wordle-ps-trainer-grpo-match.yaml`
   (self-contained: waits for scorers → starts PS → runs driver). Scorer pool
   `qwen3_6-35b-a3b-zorl-wordle-w35-sglang.yaml` (32×TP2 FP8) + `zorl-w35-smg-router.yaml`.
-- **Status (2026-07-03): the expert weight-name blocker is ROOT-CAUSED and
-  FIXED in code** (sglang `zorl-ps-fp32` commit `62892dc26`, pushed);
-  function-level validated. Remaining: restart the 4 scorers to pick up the
-  fix + run the debug sync cycle (see the resolved-blocker section below —
-  the agent session was permission-blocked from `kubectl delete pod`).
-  4 debug scorers UP but running PRE-fix code; trainer killed. ~11 more bugs
-  cleared past the original 8 — the fresh_ab fold works end-to-end AND the
-  full 35B model transfers over Mooncake RDMA. **Debug at 4 replicas**
-  (`SGLANG_REPLICAS=4`, `NUM_PAIRS=8`, `TRAIN_SIZE=8`, `STEPS=4`) — cheap
-  ~15-min cycle to the sync.
+- **Status (2026-07-03): the expert weight-name blocker is FIXED and
+  LIVE-VALIDATED.** Two sglang `zorl-ps-fp32` commits (`62892dc26` routed
+  experts, `cfd740741` shared_expert gate/up — both the same LoRA-wrapper
+  `.base_layer` disease, see below). Debug run `bpn2s`
+  (4 scorers, NUM_PAIRS=8, TRAIN_SIZE=8, STEPS=4): the post-fold sync now
+  completes end-to-end — **34.7 GB / 61943 params / 43 buckets in ~202 s**
+  (step-2 repeat sync 193 s, warm cache), receivers `prepare→complete` 200,
+  zero locator errors, and the post-sync held-out probe sits at the honest
+  cold floor (`parent_solve_rate=0.0137`, composite 0.397 ≈ cold 0.451) —
+  the FP8 expert scatter lands intact. The full GRPO-match run is UNBLOCKED:
+  scale scorers to 32 and launch per "To resume" below.
 - **Bug ladder cleared** (all committed/pushed):
   1–8. (original: max_sampling_loras, EP=1, fold OOM, lora_path null, idempotent
   registration, abort wedge, MTP guard, nccl→p2p — see git history).
@@ -99,43 +100,44 @@ prompt/reward/eval), candidates as seeds, base sync via Mooncake p2p fp8.
   120 base params / ~15 s, MoE-only), AND the **full 35B RDMA transfer**
   (root 1017 MB + 809 MB/1546-param bucket, py-spy-confirmed complete).
 
-### ✅ RESOLVED (2026-07-03) — expert weight-name blocker was the LoRA-wrapper hop
+### ✅ RESOLVED + LIVE-VALIDATED (2026-07-03) — the LoRA-wrapper hop, twice
 **Root cause:** the scorers serve MoE-expert LoRA (`--lora-target-modules
 gate_proj up_proj down_proj`), so `get_lora_layer` (isinstance match — catches
-`DeepEPMoE` too) wraps every `FusedMoE` in `FusedMoEWithLoRA` and the real
-module sits at `model.layers.N.mlp.experts.base_layer`. The receiver's
-`_emit_fused_moe_locators` built hf_names from the RAW `module_name`, keying
-every expert locator `...experts.base_layer.{i}.gate_proj.weight[...]` while
-the sender pushes `...experts.{i}.gate_proj.weight` → zero matches on all 1540
-expert tensors (run l9lrt 19:59: `receiver tensor_map is incomplete ...
-'model.layers.0.mlp.experts.0.gate_proj.weight': no receiver locator; … 1535
-more`). NOT the block-scale early-return (no skip-warnings because emission ran
-to completion — just under wrong names). `8e44c42cf` stripped `.base_layer.`
-for every dense branch via `_hf_name`; the fused-MoE branch was the one place
-that bypassed it. The earlier "receiver wants fused gate_up_proj" framing was
-wrong — the receiver emits BOTH fused and per-expert names; both were polluted.
-**Fix:** sglang `zorl-ps-fp32` commit `62892dc26` (pushed) — strip the
-`.base_layer` suffix/hop into `hf_module_name` for all fused + per-expert +
-scale hf_names (raw `module_name` kept for `consumed_param_names`), plus an
-INFO line per FusedMoE dumping the resolved hf prefix + first per-expert name.
-**Validated** by executing the emit function (mock FP8 module, real code):
-pre-fix = 18/18 locators polluted at `...experts.base_layer`; post-fix = exact
-sender names (weights + `weight_scale_inv` + fused), wrapped ≡ unwrapped.
-**Remaining (operator step — agent was permission-blocked from pod deletes):**
-1. `kubectl delete pod -n apanda zorl-w35-sglang-0 zorl-w35-sglang-1
-   zorl-w35-sglang-2 zorl-w35-sglang-3` — STS is OnDelete; fresh pods pick the
-   fixed code off the PVC. Wait 4/4 Ready + `/health` 200.
-2. `kubectl create -f
-   ~/xorl-infra/k8s/zorl/generated/zorl-w35-grpomatch-debug4-20260703.yaml`
-   (pre-patched debug knobs: SGLANG_REPLICAS=4, NUM_PAIRS=8, TRAIN_SIZE=8,
-   STEPS=4).
-3. Gate the sync: scorer logs must show `[P2P tensor_map] FusedMoE ... hf
-   prefix 'model.layers.N.mlp.experts'` (no `base_layer`), trainer server.log
-   no `tensor_map is incomplete`. If prepare 400s/wedges on the reused-fleet
-   state → full teardown per rule below, recreate at 4, retry.
-4. Correctness gate before trusting the scatter (FP8 expert slices have no
-   ES-side k3 gate): receiver content sniff on an expert tensor, post-sync
-   `/generate` sanity, honest floor ≈ 0.008–0.03 (not gibberish/zero).
+`DeepEPMoE` too) wraps target modules in LoRA wrappers, nesting the real module
+at `<name>.base_layer`. The receiver's locator builder derived HF names from
+the RAW module path in two places:
+1. `_emit_fused_moe_locators` keyed every routed-expert locator
+   `...experts.base_layer.{i}.gate_proj.weight[...]` while the sender pushes
+   `...experts.{i}.gate_proj.weight` → zero matches on all 1540 expert tensors
+   (run l9lrt: `'model.layers.0.mlp.experts.0.gate_proj.weight': no receiver
+   locator; … 1535 more`). Fixed in `62892dc26`.
+2. The `MergedColumnParallelLinear` branch fed the wrapped path into
+   `_guess_merged_subnames`, whose leaf is now `base_layer` → sub-names
+   `base_layer_shard{0,1}` → `shared_expert.gate_proj/up_proj` (+scales) had
+   no locator (run j6cft — surfaced only after fix 1 cleared the experts).
+   Fixed in `cfd740741` (also hardens QKV/MergedRepeated/qkvz/conv1d paths).
+NOT the block-scale early-return (no skip-warnings because emission ran to
+completion — just under wrong names). `8e44c42cf` had stripped `.base_layer.`
+for the plain-suffix branches via `_hf_name`; these two leaf-derivation sites
+bypassed it. General lesson: when a receiver name-map misses names it was
+"designed to emit", suspect wrapper-injected module-path hops and validate by
+EXECUTING the emit path with the wrapped name.
+**Live validation (debug run `bpn2s`, 4 scorers, NUM_PAIRS=8, TRAIN_SIZE=8,
+STEPS=4):**
+- Locator dump (added in `62892dc26`): `FusedMoE
+  'model.layers.N.mlp.experts.base_layer' -> hf prefix
+  'model.layers.N.mlp.experts'`, `block_scale_locators=True`, first per-expert
+  name exact — the wrapper hop confirmed live and stripped.
+- Post-fold sync: **34.7 GB / 61943 params / 43 buckets, 202 s** (repeat sync
+  193 s on the warm cache); receivers `prepare→complete_weights_update` 200;
+  zero `tensor_map is incomplete` / `no receiver locator` anywhere.
+- Correctness: post-sync held-out probe `parent_solve_rate=0.0137` (honest
+  cold floor 0.008–0.03), composite 0.397 ≈ cold 0.451; ES population sane
+  (best 1.043 / mean 0.631); all 4 scorer logs error-free. A wrong FP8
+  expert scatter would have collapsed all of these.
+- Benign log noise to expect: boot-window ZMQ `Host unreachable` health
+  retries, and endpoint-registration auto-sync rejected by the intentional
+  MTP guard (the real sync path is `sync_inference_weights`).
 
 ### ⚠️ Cluster caveat
 The PS pod was killed by a clean external SIGTERM ("Normal Killing", NOT OOM) =
