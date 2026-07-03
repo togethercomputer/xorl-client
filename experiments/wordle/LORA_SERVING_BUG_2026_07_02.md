@@ -166,8 +166,33 @@ serving/kernel noise floor into larger logprob divergence — magnitude is not t
 warmup while k3 accelerated. Calibration: full-weight GRPO trained to ~0.8 in-training at a
 constant k3≈5.5e-2 — 4-25× above these levels.
 
-**Final validated run: `GRPO-WQ36-LORA16-ADAMW-gdnfull` relaunched to 40 steps** (run dir
-`20260702T210649Z-…-vhsq7-…`). Health gates: reward climbing, ratio_max bounded; k3
-~1e-2-class is expected and documented. Honest held-out eval (retries=0, NG≥128,
-`eval_wordle_sglang.py --lora-path`) on its final policy. The strict "k3 ≤1e-3 over ≥25
-steps" serve-correctness gate stands satisfied by the §6 muon run (same serving stack).
+**5e-4 outcome (`vhsq7`, stopped at s23): fast climb, then genuine divergence.** Peaked
+234/512 in-training at s14 (full-weight needed ~18 steps for less), but k3 kept compounding
+(1e-2 @s6 → **0.196 @s23**, ratio_max →120) and reward swung 234→27→105. At 5e-4 the
+policy moves so fast that training goes seriously off-policy — the same "5e-4 too hot"
+failure the river port hit, just slower to bite on xorl. Stopped; per-step exports kept.
+
+**Honest held-out eval of the salvaged 5e-4 policies** (NG=128, seed-777 slices, retries=0,
+temp 0.2, `eval_wordle_sglang.py --lora-path`, adapters re-served via the fused repack —
+`evals/lora-gdnfull-vhsq7/`):
+
+| policy (export) | held-out exact | trained-slice exact |
+|---|---|---|
+| policy-000013 (s14 peak source) | 0.297 | 0.313 |
+| policy-000015 | **0.313** | 0.375 |
+
+Base+think honest floor = **0.00** ⇒ +31pp held-out from 14-15 LoRA steps; held-out ≈
+trained ⇒ generalization, not memorization. **LoRA GRPO on this stack is train/serve-correct
+and learns.** Definition-of-done: the ≤1e-3/≥25-step serve-correctness gate = §6 muon run;
+training gains = this eval.
+
+**Go-forward: `GRPO-WQ36-LORA16-ADAMW2E4-gdnfull`** (adamw 2e-4, run `pzjbt`, own pool
+`wordle-k3lora2-smp` at mem-fraction 0.80 — 0.85 left too little runtime headroom over the
+rank-48 pool on one node and OOM-looped) — expect the fast climb with bounded off-policy
+drift. Lessons: LoRA lr ladder on this task is muon 5e-5 ≪ (too slow), adamw 5e-4 ≫ (diverges
+by ~s20), adamw 2e-4 = target.
+
+**Provenance note (applies to ALL these runs and the k3-comparison六 runs):** `--reward-key
+wordle_retrieval_reward` silently falls back to the SHAPED reward (no `wr_*` keys logged);
+the optimization target was the shaped reward throughout. Solve counts (`exact=N/512`) and
+the held-out evals above are unaffected (real solves).
