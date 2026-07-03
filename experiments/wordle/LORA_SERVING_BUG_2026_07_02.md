@@ -192,7 +192,23 @@ rank-48 pool on one node and OOM-looped) — expect the fast climb with bounded 
 drift. Lessons: LoRA lr ladder on this task is muon 5e-5 ≪ (too slow), adamw 5e-4 ≫ (diverges
 by ~s20), adamw 2e-4 = target.
 
-**Provenance note (applies to ALL these runs and the k3-comparison六 runs):** `--reward-key
+## 8. AdamW lr ladder (2026-07-03) — honest held-out evals (NG=128, retries=0, seed-777)
+
+| run | in-training peak | k3 trajectory | held-out exact | trained exact |
+|---|---|---|---|---|
+| muon 5e-5 (moeonly) | 41/512 @s23 | floor 3e-4 flat (25-step gate) | — | — |
+| adamw 5e-4 (gdnfull, `vhsq7`) | 234/512 @s14 | 1e-2@s6 → **0.196@s23** (diverged, stopped) | 0.297–0.313 | 0.313–0.375 |
+| **adamw 2e-4 (gdnfull, `28swv`)** | **256/512 @s14** | 2.6e-3@s7 → 4.2e-2@s14, **plateaued/declining** 2.9e-2@s17 | **0.500** (policy-000013) | 0.477 |
+| adamw 5e-5 (gdnfull, `bwmpr`) | running | — | — | — |
+
+The 2e-4 peak policy (14 LoRA steps) matches the full-weight k3pnr3 in-training peak
+(0.5 @s38) on the honest held-out gate in a third of the steps, with format rate 0.99 and
+held-out ≥ trained. Stopped at s18 (user call: still oscillating 121-256 post-peak; the
+5e-5 run tests the steadier end of the ladder). All per-step exports of every run are kept
+under the respective `server_output_k3lora_gdn*/sampler_weights/` for salvage evals via
+`repack_gdn_lora.py` + `--lora-path`.
+
+**Provenance note (applies to ALL these runs and the k3-comparison six runs):** `--reward-key
 wordle_retrieval_reward` silently falls back to the SHAPED reward (no `wr_*` keys logged);
 the optimization target was the shaped reward throughout. Solve counts (`exact=N/512`) and
 the held-out evals above are unaffected (real solves).
