@@ -35,12 +35,31 @@ standalone/
 
 ## Running
 
-Launch manifests + rebuild script are in xorl-infra `k8s/marin/` (see its README for the pinned
-SGLang SHA `362725903`, the full numerics env profile, and the stack topology). Engine-side
-changes are upstreamed as xorl-internal PRs #431/#432/#433.
+The stack is three groups of plain servers plus this driver (the RL loop never links against
+the engine — it talks to a Tinker-compatible API: `forward_backward` / `optim_step` /
+`save_weights_for_sampler` / `sample`):
+
+1. **Samplers**: 8× single-GPU SGLang servers behind a round-robin router, launched with
+   `--rl-on-policy-target xorl-batch-invariant --enable-fp32-lm-head --attention-backend fa3
+   --disable-custom-all-reduce` and env `SGLANG_BATCH_INVARIANT_OPS=mean,rms_norm`,
+   `SGLANG_RMSNORM_FP32_WEIGHT_MUL=1`, `SGLANG_DISABLE_ROPE_COMPILE=1`,
+   `SGLANG_FLA_TRIL_PRECISION=ieee`.
+2. **Trainer**: one 8-GPU [xorl](https://github.com/togethercomputer/xorl) server
+   (`python -m xorl.server.launcher --mode auto --config <cfg>.yaml`), FSDP2 shard 8, with
+   `lm_head_fp32: true`, `rmsnorm_mode: sglang`, env `XORL_BATCH_INVARIANT_MATMUL=1`, and
+   KV-cache-preserving P2P weight sync (`cache_invalidation_mode=none`). All engine-side
+   features used here are in the public xorl repo (`apanda-dev`).
+3. **Driver**: `standalone/train_marin_grpo.py` from this directory — drgrpo
+   (`beta=0`, clip 0.2/0.28, `kl_type=k3`, `logprob_temperature=0.7`), fully on-policy.
+
+This numerics profile is what holds the sampler↔trainer K3 at ~1e-8 (clipping never fires);
+drop pieces of it and you reintroduce off-policy error. Training curves + the imported SkyRL
+reference trajectory are public in
+[W&B](https://wandb.ai/together-research/xorl-marin-rl-6279): runs `nw155nmj` (training),
+`3comlb0c` (reference), `7odwm4bz` (timing).
 
 Extra deps beyond `xorl_client`: `math_verify` (grader), `transformers` (tokenizer), `datasets`
-(HF data loading). The k8s driver pods satisfy these via the engine checkout's venv.
+(HF data loading).
 
 Tests: `PYTHONPATH=. python -m pytest experiments/marin/standalone/tests` from the repo root,
 using an interpreter with the deps above.
