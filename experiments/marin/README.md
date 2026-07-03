@@ -46,7 +46,8 @@ the engine — it talks to a Tinker-compatible API: `forward_backward` / `optim_
    `SGLANG_FLA_TRIL_PRECISION=ieee`.
 2. **Trainer**: one 8-GPU [xorl](https://github.com/togethercomputer/xorl) server
    (`python -m xorl.server.launcher --mode auto --config <cfg>.yaml`), FSDP2 shard 8, with
-   `lm_head_fp32: true`, `rmsnorm_mode: sglang`, env `XORL_BATCH_INVARIANT_MATMUL=1`, and
+   `lm_head_fp32: true`, `rmsnorm_mode: sglang`, `rope_native: true` (the trainer
+   `XORL_BATCH_INVARIANT_MATMUL` gate is available but was not set in the validated runs), and
    KV-cache-preserving P2P weight sync (`cache_invalidation_mode=none`). All engine-side
    features used here are in the public xorl repo (`apanda-dev`).
 3. **Driver**: `standalone/train_marin_grpo.py` from this directory — drgrpo
