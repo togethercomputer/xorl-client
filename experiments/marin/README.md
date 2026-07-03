@@ -10,8 +10,8 @@ Result: reproduced and exceeded the reference reward trajectory (last-10 mean +0
 `metrics.csv` concatenates 3 restart segments — always dedup by `trainer/global_step` keep-last;
 `summarize_repro_progress.py` and `import_reference_wandb.py` handle this.
 Key finding: pipeline-RL (policy-lag 1) collapsed at step ~21 (off-policy lag × length-penalty →
-box-cliff death spiral); the fix is fully on-policy operation. Full RCA + run ledger live in the
-engine repo at `experiments/marin_rl_6279/{RUNBOOK,HANDOFF}.md` (branch `feature/marin-rl-6279`).
+box-cliff death spiral; K3 spiking 1e-6 → 8e-2 was the leading indicator); the fix is fully
+on-policy operation, which the fast weight sync makes affordable.
 
 ## Layout
 
