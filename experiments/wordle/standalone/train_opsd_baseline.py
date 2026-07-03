@@ -1644,14 +1644,22 @@ def export_and_load_sampler(
         # (see repack_gdn_lora.py); repack the per-step export before loading.
         fused_path = lora_path.parent / (lora_path.name + "-fused")
         repack_started = time.time()
+        # Cap torch CPU threads and deprioritize: the repack shares the head
+        # node with the engine ranks, and an uncapped OMP pool can thrash from
+        # ~20s to ~40min under contention.
+        repack_env = dict(os.environ)
+        repack_env["OMP_NUM_THREADS"] = "16"
+        repack_env["MKL_NUM_THREADS"] = "16"
         subprocess.run(
             [
+                "nice", "-n", "10",
                 sys.executable,
                 str(Path(__file__).resolve().parent / "repack_gdn_lora.py"),
                 "--input", str(lora_path),
                 "--output", str(fused_path),
             ],
             check=True,
+            env=repack_env,
         )
         print(f"[gdn-repack] {lora_path.name} -> {fused_path.name} in {time.time() - repack_started:.1f}s", flush=True)
         lora_path = fused_path
