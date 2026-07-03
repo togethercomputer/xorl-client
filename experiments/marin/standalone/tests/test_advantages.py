@@ -119,6 +119,34 @@ def test_compute_group_advantages_normalizes_per_prompt_group() -> None:
     assert compute_group_advantages(records) == [1.0, -1.0, 1.0, -1.0]
 
 
+def test_compute_group_advantages_sample_std_matches_skyrl_semantics() -> None:
+    # SkyRL compute_grpo_outcome_advantage: sample std (N-1), always divide by (std + 1e-6).
+    records = [
+        RolloutRecord("p0", [1, 2], [3], [-0.1], 1.0),
+        RolloutRecord("p0", [1, 2], [4], [-0.2], 0.0),
+    ]
+    advantages = compute_group_advantages(records, std_mode="sample")
+    # mean 0.5, sample std = sqrt(((0.5)^2 + (0.5)^2) / 1) = 0.7071...
+    expected = 0.5 / (0.7071067811865476 + 1e-6)
+    assert advantages[0] == pytest.approx(expected)
+    assert advantages[1] == pytest.approx(-expected)
+
+
+def test_compute_group_advantages_sample_std_constant_group_is_zero() -> None:
+    records = [
+        RolloutRecord("p0", [1, 2], [3], [-0.1], 1.0),
+        RolloutRecord("p0", [1, 2], [4], [-0.2], 1.0),
+    ]
+    assert compute_group_advantages(records, std_mode="sample") == [0.0, 0.0]
+
+
+def test_compute_group_advantages_sample_std_singleton_group_keeps_raw_reward() -> None:
+    # SkyRL singleton semantics: mean 0, std 1 -> advantage = reward / (1 + 1e-6).
+    records = [RolloutRecord("p0", [1, 2], [3], [-0.1], 2.0)]
+    advantages = compute_group_advantages(records, std_mode="sample")
+    assert advantages[0] == pytest.approx(2.0 / (1.0 + 1e-6))
+
+
 def test_force_nonzero_advantages_for_smoke_leaves_real_signal_unchanged() -> None:
     advantages, forced = _force_nonzero_advantages_for_smoke([1.0, -1.0])
     assert advantages == [1.0, -1.0]

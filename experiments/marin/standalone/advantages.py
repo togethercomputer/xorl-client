@@ -34,7 +34,18 @@ class RolloutRecord:
     routed_experts: Any | None = None
 
 
-def compute_group_advantages(records: Sequence[RolloutRecord], *, eps: float = 1e-8) -> list[float]:
+def compute_group_advantages(
+    records: Sequence[RolloutRecord], *, eps: float = 1e-8, std_mode: str = "population"
+) -> list[float]:
+    """Group-relative (GRPO) advantages: per-prompt mean-center, divide by group std.
+
+    std_mode:
+        population: population std (divide by N); groups with std <= eps keep advantage 0.
+        sample: SkyRL-exact semantics — sample std (N-1, torch.std), always divide by
+            (std + 1e-6), singleton groups use mean 0 / std 1 (compute_grpo_outcome_advantage).
+    """
+    if std_mode not in ("population", "sample"):
+        raise ValueError(f"Unknown std_mode {std_mode!r}")
     by_prompt: dict[Hashable, list[int]] = defaultdict(list)
     for index, record in enumerate(records):
         by_prompt[record.prompt_id].append(index)
@@ -42,6 +53,16 @@ def compute_group_advantages(records: Sequence[RolloutRecord], *, eps: float = 1
     advantages = [0.0] * len(records)
     for indices in by_prompt.values():
         rewards = [float(records[index].reward) for index in indices]
+        if std_mode == "sample":
+            if len(rewards) == 1:
+                mean, std = 0.0, 1.0
+            else:
+                mean = sum(rewards) / len(rewards)
+                variance = sum((reward - mean) ** 2 for reward in rewards) / (len(rewards) - 1)
+                std = sqrt(variance)
+            for index, reward in zip(indices, rewards, strict=True):
+                advantages[index] = (reward - mean) / (std + 1e-6)
+            continue
         mean = sum(rewards) / len(rewards)
         variance = sum((reward - mean) ** 2 for reward in rewards) / len(rewards)
         std = sqrt(variance)

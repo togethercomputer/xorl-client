@@ -168,6 +168,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--drgrpo-clip-low", type=float, default=0.2)
     parser.add_argument("--drgrpo-clip-high", type=float, default=0.2)
     parser.add_argument(
+        "--advantage-std-mode",
+        choices=["population", "sample"],
+        default="population",
+        help="Group-advantage std: 'population' (divide by N) or 'sample' (SkyRL-exact: N-1 + eps).",
+    )
+    parser.add_argument(
         "--drgrpo-num-chunks",
         type=int,
         default=int(os.environ.get("MARIN_DRGRPO_NUM_CHUNKS", str(DEFAULT_DRGRPO_LOSS_PARAMS["num_chunks"]))),
@@ -2567,7 +2573,7 @@ def main() -> int:
                     ),
                 }
             )
-            advantages = compute_group_advantages(records)
+            advantages = compute_group_advantages(records, std_mode=args.advantage_std_mode)
             forced_advantages_for_smoke = False
             if args.force_nonzero_advantages_for_smoke:
                 advantages, forced_advantages_for_smoke = _force_nonzero_advantages_for_smoke(advantages)
