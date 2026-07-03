@@ -51,7 +51,7 @@ the engine — it talks to a Tinker-compatible API: `forward_backward` / `optim_
    KV-cache-preserving P2P weight sync (`cache_invalidation_mode=none`). All engine-side
    features used here are in the public xorl repo (`apanda-dev`).
 3. **Driver**: `standalone/train_marin_grpo.py` from this directory — drgrpo
-   (`beta=0`, clip 0.2/0.28, `kl_type=k3`, `logprob_temperature=0.7`), fully on-policy.
+   (`beta=0`, clip 0.2 symmetric, `kl_type=k3`, `logprob_temperature=0.7`), fully on-policy.
 
 This numerics profile is what holds the sampler↔trainer K3 at ~1e-8 (clipping never fires);
 drop pieces of it and you reintroduce off-policy error. Training curves + the imported SkyRL
