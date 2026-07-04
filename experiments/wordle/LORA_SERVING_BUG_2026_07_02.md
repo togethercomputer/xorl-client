@@ -199,14 +199,20 @@ by ~s20), adamw 2e-4 = target.
 | muon 5e-5 (moeonly) | 41/512 @s23 | floor 3e-4 flat (25-step gate) | — | — |
 | adamw 5e-4 (gdnfull, `vhsq7`) | 234/512 @s14 | 1e-2@s6 → **0.196@s23** (diverged, stopped) | 0.297–0.313 | 0.313–0.375 |
 | **adamw 2e-4 (gdnfull, `28swv`)** | **256/512 @s14** | 2.6e-3@s7 → 4.2e-2@s14, **plateaued/declining** 2.9e-2@s17 | **0.500** (policy-000013) | 0.477 |
-| adamw 5e-5 (gdnfull, `bwmpr`) | running | — | — | — |
+| adamw 5e-5 (gdnfull, `gh6mj`, throughput fixes applied) | 191/512 @s29, still climbing @s39 | 2.8e-4@s1 → 4.3e-3@s36, no destabilization | 0.297 (policy-000039) | 0.328 |
 
 The 2e-4 peak policy (14 LoRA steps) matches the full-weight k3pnr3 in-training peak
 (0.5 @s38) on the honest held-out gate in a third of the steps, with format rate 0.99 and
-held-out ≥ trained. Stopped at s18 (user call: still oscillating 121-256 post-peak; the
-5e-5 run tests the steadier end of the ladder). All per-step exports of every run are kept
+held-out ≥ trained. Stopped at s18 (user call: still oscillating 121-256 post-peak). The
+5e-5 run (`gh6mj`) tested the steadier end of the ladder: it never destabilized (k3 flat,
+in-training reward climbing to 191/512 by s29 with no sign of a plateau by s39) but, being
+the lowest lr, it also converges slower per step — 0.297 held-out at s39 is *below* the
+2e-4 run's 0.500 at s14, consistent with "not done climbing yet" rather than a worse
+ceiling. `gh6mj` was stopped by an unrelated `/shared` disk-full crash at step 40 (see §9),
+not a training failure or divergence. All per-step exports of every run are kept
 under the respective `server_output_k3lora_gdn*/sampler_weights/` for salvage evals via
-`repack_gdn_lora.py` + `--lora-path`.
+`repack_gdn_lora.py` + `--lora-path` (except the five superseded runs deleted 2026-07-04 to
+relieve a cluster-wide disk-full incident — see §9).
 
 **Provenance note (applies to ALL these runs and the k3-comparison six runs):** `--reward-key
 wordle_retrieval_reward` silently falls back to the SHAPED reward (no `wr_*` keys logged);
@@ -256,3 +262,56 @@ of 512 candidates drains to a handful of stragglers well before the per-turn bar
 releases everyone), so ~75% of step wall-clock was rollout with samplers mostly idle. Step
 dt: `bwmpr` 1796-2041s/step → `gh6mj` 1200-1468s/step. `wordle-k3pnr3` (dead trainer,
 `UnexpectedAdmissionError`, orphaned 8-sampler+SMG fleet) was also torn down, freeing 16 GPUs.
+
+**`gh6mj` result: 39/40 steps completed cleanly, killed by an unrelated infra incident.**
+Reward climbed to 191/512 by s29 and was still rising at s39 (170-184/512, no plateau, no
+divergence) — the throughput fixes held for the full run. Step 40 itself hit
+`OSError: [Errno 28] No space left on device` writing generation logs: `/shared` was at
+**100% capacity cluster-wide** (473T total, 166G free) at the time, likely affecting other
+users' jobs too. Root cause on our side: ~471GB of superseded, already-salvage-evaled LoRA
+run exports (`server_output_k3lora{,_moe,_moe2,_gdn,_gdn2e4}`) accumulating under
+`/shared/apanda/wordle-sft-runs/` — non-fused per-step adapter exports (~2.5GB × 40 steps ×
+5 finished runs) were never pruned (only the `-fused` repack dirs get auto-pruned per
+`export_and_load_sampler`'s cleanup). Deleted with user approval 2026-07-04; `/shared` back
+to 36T free. `gh6mj`'s own step-000039 (fused, still loaded on all 8 samplers) was verified
+intact before and after the cleanup and used for the final held-out eval (§8).
+**Lesson for future long runs on this recipe: prune non-fused `policy-NNNNNN` export dirs
+periodically, not just the fused ones — they aren't needed once the fused copy is loaded.**
+
+## 10. xorl vs. river cross-check (2026-07-04) — the gap is run length, not a capability gap
+
+A parallel river-client port of this exact recipe (`train_grpo_wordle_river.py`,
+`RIVER_VS_XORL.md`, both in `xorl-client-wordle-science-20260614`) reached **57.1% held-out
+at step 90** and **54.1% at step 128** (its winning config `GRPO-WQ36-LORA16-IS-river-shaped`,
+`--lr 5e-5 --steps 128`, eval on all 170 reserved words at temperature=1.0). At first glance
+this looks like xorl trails badly (0.30-0.50 vs 0.54-0.57). Checked for real causes rather
+than assuming a capability gap:
+
+- **Same held-out set — ruled out as a confound.** Both stacks import `tasks/wordle.py` from
+  sibling checkouts of the same repo; verified directly: `WORD_LIST` size 4266
+  (`wordle-python` source) and the first 5 of the seed-777/count-170 shuffle
+  (`relax, yearn, weeny, years, fluke`) are **identical** on both. NG=128 (xorl, a random
+  128-word subset of the 170) vs 170 (river, the full set) is a minor sampling-noise
+  difference, not a systematic one.
+- **Eval temperature differs** (river 1.0, xorl 0.2) but this should if anything favor xorl
+  (lower temp → more confident guesses from a competent policy), so it doesn't explain xorl
+  trailing.
+- **Train temperature differs**: river used `--temperature 1.0 --logprob-temperature 1.0`
+  throughout; xorl's recipe uses 0.7/0.7, inherited from an early SGLang-numerical-parity
+  choice, never tuned for GRPO learning quality. Real, untested lever — lower rollout
+  diversity could mean weaker per-step advantage signal — but see below, xorl doesn't look
+  weaker per-step.
+- **The actual answer: xorl was never run anywhere near river's step count.** River's
+  winning run used 128 steps, peaking at 90. Every xorl LoRA-GDN run to date stopped
+  early for an unrelated reason — 5e-4 diverged (~s16-20), 2e-4 was manually stopped at s18
+  out of caution (still oscillating, not degrading), 5e-5 (`gh6mj`, the SAME lr as river's
+  winner) hit an infra crash at s40 (§9) while still climbing. **None of them ran out of
+  learning signal; all of them were cut off by something else first.** The 2e-4 run's
+  0.500 held-out at just 14 steps — 1/6th of river's step-90 checkpoint — for only 7 points
+  less solve rate is the strongest evidence xorl's per-step learning rate is comparable to
+  or better than river's, not worse.
+
+**Follow-up (not yet run): let one xorl config (5e-5 or 2e-4, GDN-full targets, current
+throughput-fixed stack) run the full 90-128 steps without interruption**, ideally also
+trying `--student-temperature 1.0 --logprob-temperature 1.0` to match river's recipe
+exactly, before drawing any conclusion about a ceiling difference between the two stacks.
