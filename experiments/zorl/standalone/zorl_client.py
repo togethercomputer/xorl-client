@@ -1026,6 +1026,22 @@ def _candidate_score_route(
     if routing == "owner_via_smg":
         owner_url = _candidate_owner_url(candidate)
         return infer_urls[job_idx % len(infer_urls)], {"X-SMG-Target-Worker": owner_url}
+    if routing == "smg_sticky":
+        # Per-GAME worker pinning through the SMG: every turn of one
+        # (candidate, example) job replays to the same worker, so the game's
+        # growing conversation prefix (and the candidate's prompt prefix)
+        # stays radix-cache-resident. Plain smg round-robins each TURN across
+        # the fleet -> zero prefix reuse on multi-turn games. Stable crc32
+        # spreads games uniformly; the route is computed once per job and its
+        # headers reused for all turns.
+        import zlib
+
+        workers = _url_list(str(getattr(args, "infer_url", "") or ""))
+        if workers:
+            key = f"{candidate.get('candidate_id', '')}\x00{int(job_idx)}".encode()
+            pick = workers[zlib.crc32(key) % len(workers)]
+            return infer_urls[job_idx % len(infer_urls)], {"X-SMG-Target-Worker": pick}
+        return infer_urls[job_idx % len(infer_urls)], None
     return infer_urls[job_idx % len(infer_urls)], None
 
 
@@ -2034,7 +2050,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--candidate-routing",
-        choices=["owner", "owner_via_smg", "smg"],
+        choices=["owner", "owner_via_smg", "smg", "smg_sticky"],
         default=None,
         help=(
             "Candidate scoring route. owner_via_smg sends scoring requests to SMG with "
