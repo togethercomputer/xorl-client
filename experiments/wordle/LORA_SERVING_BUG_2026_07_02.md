@@ -212,3 +212,47 @@ under the respective `server_output_k3lora_gdn*/sampler_weights/` for salvage ev
 wordle_retrieval_reward` silently falls back to the SHAPED reward (no `wr_*` keys logged);
 the optimization target was the shaped reward throughout. Solve counts (`exact=N/512`) and
 the held-out evals above are unaffected (real solves).
+
+## 9. Throughput: topology bug fix (real, ~2×) + sampler-fleet fix (real, ~30%); recompute
+## method changed nothing on real data (synthetic benchmark misled)
+
+**Bug found via `nvidia-smi` on the live `bwmpr` (5e-5) trainer pod**: GPUs 0-3 at 95-96%
+util, GPUs 4-7 at 0%. `grpo-ep8x1node-lora16-gdnfull.yaml` had `expert_parallel_size: 4` /
+`data_parallel_shard_size: 4` — a stale comment-driven leftover from an earlier 4-GPU-node
+version of this recipe ("EP4 ... -> 4-GPU node") that nobody updated when it moved to the
+current 8-GPU pod. World size = 4, not 8; every LoRA run today (`vhsq7`, `28swv`, `bwmpr`)
+ran on half the paid-for trainer. **Fixed to `expert_parallel_size: 8` /
+`data_parallel_shard_size: 8`** in both config copies (not touching the then-live pod).
+
+**Throughput-tuner sweep** (`xorl-throughput-tuner` skill; two k8s smoke jobs, dummy data,
+8 steps, corrected EP8/dp_shard8 topology, LoRA-16 GDN-full targets) on two free nodes:
+
+| candidate | warm MFU (synthetic dummy data) |
+|---|---|
+| `recompute_full_layer`, micro_batch_size=4 (matches the CLI harness's own batching) | **~4.8%** (steps 5-8: 4.83/4.82/4.81/4.80%) |
+| `recompute_before_dispatch`, mbs=4 | OOM (matches the doc's prior finding) |
+| `recompute_before_dispatch`, mbs=1 | **~6.5%** (steps 2,3,4,7,8: 6.46-6.62%) — ~35% faster |
+
+`micro_batch_size` defaults to **1** in `Arguments` and the wordle recipe never overrides
+it, so production's real per-forward_backward shape already matches the mbs=1 benchmark,
+not mbs=4 — de-risking the switch to `recompute_before_dispatch` in production.
+
+**Live validation (relaunch `gh6mj`, replacing `bwmpr`, same 5e-5 lr):** step 1 completed
+with no OOM on real ragged Wordle data — confirms `recompute_before_dispatch` is safe in
+production. But the fb speedup **did not transfer**: warm tok/s/GPU at step 2 was **437**
+(`gh6mj`, recompute_before_dispatch) vs **436.5** (`bwmpr`, recompute_full_layer) —
+statistically identical (~1% MFU either way). This matches a precedent already in
+`THROUGHPUT_DEBUGGING_HANDOFF.md`: synthetic-data MFU on this model overstates real MFU by
+roughly an order of magnitude (real per-rank shapes are tiny/ragged — short Wordle turns,
+imbalanced across ranks — which the recompute method doesn't address). Keeping
+`recompute_before_dispatch` since it's proven safe and equally fast, but it is NOT the lever
+the synthetic sweep predicted.
+
+**What actually sped up the live run (~30-33%, real and reproducible):** an 8-worker SMG
+(`k3lora-combined-smg`) fronting both idle sampler pools (`wordle-k3lora-smp` +
+`wordle-k3lora2-smp`), replacing the prior 4-direct-samplers-no-router setup. Diagnosed
+cause: samplers ran at `#running-req: 1-4` out of a 256-request cap (active-drain — a batch
+of 512 candidates drains to a handful of stragglers well before the per-turn barrier
+releases everyone), so ~75% of step wall-clock was rollout with samplers mostly idle. Step
+dt: `bwmpr` 1796-2041s/step → `gh6mj` 1200-1468s/step. `wordle-k3pnr3` (dead trainer,
+`UnexpectedAdmissionError`, orphaned 8-sampler+SMG fleet) was also torn down, freeing 16 GPUs.
