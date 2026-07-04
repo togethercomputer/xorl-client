@@ -49,13 +49,40 @@ the four repos above.
    `zorl-grpo-match-directive`, `mooncake-p2p-preference`, `zorl-beat-093`,
    `zorl-wordle-think-budget-independent`, `zorl-bf16-fold-drops-small-updates`.
 
-## The current live run (state as of 2026-07-02)
+## The current live run (state as of 2026-07-04, post throughput-consolidation)
 
-**Goal:** the GRPO-matched Wordle science run — `fresh_ab`-into-base through the
-xorl PS at GRPO's own recipe (muon lr 5e-6 cosine warmup 8, steps 128, same
-prompt/reward/eval), candidates as seeds, base sync via Mooncake p2p fp8.
+**Active arm: RANK-1 × POP-1024** (user-directed 2026-07-03; deviations from
+the GRPO-match recipe: rank 1/alpha 1, σ=6e-4 by 1/√r, NUM_PAIRS=512 → 1024
+candidates, rollouts-per-puzzle 1, held-out probe OFF). Launch manifest:
+`k8s/zorl/qwen3_6-35b-a3b-zorl-wordle-ps-trainer-rank1pop1024-folddelta.yaml`
+(config `configs/zorl/…ps_muon_folddelta.yaml`: `sync_inference_method:
+sparse_delta`, `idle_session_timeout: 604800`). Scorer pool env now carries:
+noise layout `philox_subseed_v2`, `max-loras-per-batch 128`,
+`max-loaded-loras 1152`, `max-mamba-cache-size 256`, `cuda-graph-max-bs 128`,
+`mem-fraction 0.78`, light-validate. The rank-16 GRPO-match manifest remains
+for the science arm.
 
-- Launch manifest: `xorl-infra` `k8s/zorl/qwen3_6-35b-a3b-zorl-wordle-ps-trainer-grpo-match.yaml`
+**Measured step anatomy at pop-1024 (run bjz8q lineage, 2026-07-04):**
+wave 32,768 games ≈ 31 min (~17.5 games/s avg; the dominant cost and the next
+frontier — in-SM rank-1 generation) + fold v2 ≈ 10-15 s (philox sub-seeded
+GEMM fold, `zorl-ps` — Muon NS batching in progress) + fold-aware sparse-delta
+sync ≈ 3-10 s (~0.73 GB deltas; one full-push prime per relaunch; version
+chain self-heals receiver drift). apply= went 533 s → 12 s. The 131k-game
+per-candidate held-out probe (4× a step) is disabled — `--eval-max-pairs`
+exists for a cheap probe if wanted.
+
+**Operational learnings that keep runs alive** (all bitten 2026-07-03/04):
+engine idle-session reaper (fix: `idle_session_timeout` in the PS config);
+SMG deregisters workers permanently after ~10 failed probes → after EVERY
+fleet roll re-add via `POST /workers` and verify 32/32 before launch;
+rank-divergent preamble failures used to wedge ranks 1-3 in FSDP2 unshard →
+consensus gate (`_sync_preamble_consensus`, zorl-ps `9ccdb94bd`+merge) makes
+ALL sync failures clean + self-healing; scorer-side sparse-delta GPU apply
+needs ~1.3 GiB free (mem 0.78); monitor trainer runs via `kubectl logs -f`
+(NFS `tail -F` wedges silently) and alert on failure SIGNATURES, not just
+frozen logs.
+
+- Previous GRPO-match launch manifest: `qwen3_6-35b-a3b-zorl-wordle-ps-trainer-grpo-match.yaml`
   (self-contained: waits for scorers → starts PS → runs driver). Scorer pool
   `qwen3_6-35b-a3b-zorl-wordle-w35-sglang.yaml` (32×TP2 FP8) + `zorl-w35-smg-router.yaml`.
 - **Status (2026-07-03): the expert weight-name blocker is FIXED and
