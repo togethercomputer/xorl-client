@@ -102,6 +102,11 @@ def build_parser():
                    help="Every N steps, score the current candidates on the held-out set; the "
                         "candidate MEAN is a sigma^2-accurate parent proxy (antithetic pairs cancel "
                         "the linear term) -> the honest generalization curve. 0 = off.")
+    g.add_argument("--eval-max-pairs", type=int, default=0,
+                   help="Subsample the held-out probe to the first N antithetic pairs "
+                        "(2N candidates); 0 = whole population. The candidate-mean parent "
+                        "estimator keeps its antithetic bias cancellation under pair "
+                        "subsampling; at pop-1024 the full probe is 4x a training step.")
     g.add_argument("--eval-rollouts", type=int, default=1,
                    help="rollouts/puzzle for the periodic held-out eval (cheap: 1)")
     g.add_argument("--smg-url", default="",
@@ -402,9 +407,22 @@ def main():
         if args.eval_interval and (step % args.eval_interval == 0) and eval_examples:
             eval_args = copy.copy(args)
             eval_args.rollouts_per_puzzle = int(args.eval_rollouts)
+            # The candidate-mean parent estimator does not need the whole
+            # population: at pop-1024 the full probe is 1024x128 = 131k games
+            # (~2h, 4x a training step — run fzwxd step 1). Subsampling PAIRS
+            # keeps the antithetic O(sigma) cancellation; --eval-max-pairs 16
+            # -> 32 cands x 128 held-out = ~4 min at the same bias.
+            eval_candidates = candidates
+            if int(getattr(args, "eval_max_pairs", 0) or 0) > 0:
+                keep = {
+                    i for i in range(int(args.eval_max_pairs))
+                }
+                eval_candidates = [
+                    c for c in candidates if int(c.get("perturbation_index", 0)) in keep
+                ] or candidates
             try:
                 held_rewards, _ = zc.score_candidates(
-                    score_urls, candidates=candidates, examples=eval_examples,
+                    score_urls, candidates=eval_candidates, examples=eval_examples,
                     task=task, args=eval_args, tokenizer=tokenizer,
                 )
 
