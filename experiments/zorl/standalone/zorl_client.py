@@ -1036,7 +1036,10 @@ def _candidate_score_route(
         # headers reused for all turns.
         import zlib
 
-        workers = _url_list(str(getattr(args, "infer_url", "") or ""))
+        # NOTE: --infer-url may parse as a LIST; str() of a list injects
+        # quotes/brackets into the split URLs (run fdhzt: every candidate
+        # request 503d on a quoted X-SMG-Target-Worker). Pass through raw.
+        workers = _url_list(getattr(args, "infer_url", None) or [])
         if workers:
             key = f"{candidate.get('candidate_id', '')}\x00{int(job_idx)}".encode()
             pick = workers[zlib.crc32(key) % len(workers)]
