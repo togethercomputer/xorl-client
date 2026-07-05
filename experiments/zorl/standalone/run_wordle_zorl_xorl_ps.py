@@ -114,6 +114,9 @@ def build_parser():
                         "When set, scoring routes through SMG (use --candidate-routing owner_via_smg so "
                         "each candidate is pinned to its owner worker via X-SMG-Target-Worker). LoRA "
                         "load/unload still go DIRECT to worker pods (SMG doesn't proxy them).")
+    g.add_argument("--dry-run", action="store_true",
+                   help="Launch-validation smoke: load the task + tokenizer + datasets, print the "
+                        "resolved recipe, and exit BEFORE contacting the PS or any scorer.")
     return parser
 
 
@@ -160,6 +163,16 @@ def main():
         f"multi_turn={getattr(task, 'is_multi_turn', False)}",
         flush=True,
     )
+
+    if getattr(args, "dry_run", False):
+        sample = train_pool[0]
+        print(
+            f"[dry-run] task={args.task} OK: first project={sample.project} "
+            f"prompt_tokens={len(sample.prompt_ids)} metadata_keys={sorted(sample.metadata.keys())}",
+            flush=True,
+        )
+        print("[dry-run] exiting before PS create_model / scorer registration", flush=True)
+        return 0
 
     # 1. create the ZORL LoRA-parent model + Muon ES optimizer on the PS.
     print("[step 1] create_model (LoRA parent + Muon ES optimizer + ZORL session) on the PS...", flush=True)

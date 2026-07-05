@@ -82,7 +82,10 @@ def load_task(name: str):
     if name == "mult":
         from . import mult
         return mult
+    if name == "marin_math":
+        from . import marin_math
+        return marin_math
     raise ValueError(
         f"Unknown task: {name!r}. Expected one of: countdown, gsm8k, alphabet_sort, "
-        "wordle, opd_multiplication, mult"
+        "wordle, opd_multiplication, mult, marin_math"
     )

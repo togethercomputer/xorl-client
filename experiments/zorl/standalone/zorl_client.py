@@ -1629,10 +1629,15 @@ def score_candidates(infer_url, *, candidates, examples: list[Example], task, ar
         rewards = []
         texts = []
         score_blob = {}
+        # Tasks that need generation metadata (completion token counts /
+        # finish_reason, e.g. marin_math's length-penalized reward) can expose
+        # score_result(example, result_dict); text-only tasks keep the plain
+        # score_completion contract.
+        score_result = getattr(task, "score_result", None)
         for r in results:
             txt = r.get("text", "") or ""
             texts.append(txt)
-            s = task.score_completion(ex, txt)
+            s = score_result(ex, r) if score_result is not None else task.score_completion(ex, txt)
             rewards.append(float(s.get("reward", 0.0)))
             # Capture the last score blob for per-project metrics. If a task wants
             # to aggregate across rollouts it can override; rollouts_per_puzzle=1
@@ -1960,7 +1965,11 @@ def probe_parent(infer_url, *, parent_lora_name, examples: list[Example], task, 
             except RuntimeError as e:
                 print(f"      WARN: probe failed for {ex.project}: {e}")
                 return {"reward": 0.0, "exact_match": 0.0}
-            scored = [task.score_completion(ex, r.get("text", "")) for r in results]
+            score_result = getattr(task, "score_result", None)
+            scored = [
+                score_result(ex, r) if score_result is not None else task.score_completion(ex, r.get("text", ""))
+                for r in results
+            ]
         # Average per-rollout scores across the N samples. Falls back to a
         # single score when probe_n == 1 (no extra cost).
         keys = set().union(*(s.keys() for s in scored)) if scored else set()
@@ -1999,7 +2008,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     args. Behavior of main() is unchanged.
     """
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--task", required=True, choices=["countdown", "gsm8k", "alphabet_sort", "wordle", "opd_multiplication", "mult"], help="Which task to train on")
+    parser.add_argument("--task", required=True, choices=["countdown", "gsm8k", "alphabet_sort", "wordle", "opd_multiplication", "mult", "marin_math"], help="Which task to train on")
     parser.add_argument(
         "--infer-url",
         required=True,
