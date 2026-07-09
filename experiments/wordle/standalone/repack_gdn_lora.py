@@ -114,7 +114,17 @@ def repack(
         gdn.setdefault(m.group("prefix"), {})[f"{proj[0]}_{m.group('ab')}"] = t
 
     if not gdn:
-        raise ValueError("no linear_attn.{q,k,v,o}_proj LoRA tensors found")
+        # No GDN targets in this adapter (e.g. MoE-only / attention-only target
+        # sets): nothing to fuse. Pass tensors through at their native rank so
+        # main() still rewrites adapter_config target_modules to leaf names
+        # (the sglang can_support fix) with rank/alpha/scaling unchanged.
+        some_A = next(
+            (t for n, t in passthrough.items() if n.endswith("lora_A.weight")), None
+        )
+        if some_A is None:
+            raise ValueError("no LoRA tensors found in adapter at all")
+        native_r = some_A.shape[1] if some_A.dim() == 3 else some_A.shape[0]
+        return dict(passthrough), native_r, native_r
 
     # ---- infer ranks ----
     some = next(iter(gdn.values()))
@@ -125,12 +135,41 @@ def repack(
     out: dict[str, torch.Tensor] = {}
 
     def pad_A(A: torch.Tensor) -> torch.Tensor:
+        # 3D = sglang_shared_outer MoE experts.w{1,2,3}.lora_A: [E, r, in], rank on dim 1
+        # (E=1 for shared, E=num_experts for per-expert). 2D = [r, in], rank on dim 0.
+        if A.dim() == 3:
+            assert A.shape[1] == r, f"rank mismatch(3D A): {A.shape} vs r={r}"
+            return torch.cat(
+                [
+                    A,
+                    torch.zeros(
+                        A.shape[0], R - r, A.shape[2], dtype=A.dtype, device=A.device
+                    ),
+                ],
+                dim=1,
+            )
         assert A.shape[0] == r, f"rank mismatch: {A.shape} vs r={r}"
-        return torch.cat([A, torch.zeros(R - r, A.shape[1], dtype=A.dtype)], dim=0)
+        return torch.cat(
+            [A, torch.zeros(R - r, A.shape[1], dtype=A.dtype, device=A.device)], dim=0
+        )
 
     def pad_B(B: torch.Tensor) -> torch.Tensor:
+        # 3D = shared_outer MoE lora_B: [E, out, r], rank on dim 2 (last). 2D = [out, r], rank dim 1.
+        if B.dim() == 3:
+            assert B.shape[2] == r, f"rank mismatch(3D B): {B.shape} vs r={r}"
+            return torch.cat(
+                [
+                    B,
+                    torch.zeros(
+                        B.shape[0], B.shape[1], R - r, dtype=B.dtype, device=B.device
+                    ),
+                ],
+                dim=2,
+            )
         assert B.shape[1] == r, f"rank mismatch: {B.shape} vs r={r}"
-        return torch.cat([B, torch.zeros(B.shape[0], R - r, dtype=B.dtype)], dim=1)
+        return torch.cat(
+            [B, torch.zeros(B.shape[0], R - r, dtype=B.dtype, device=B.device)], dim=1
+        )
 
     # ---- fused GDN tensors ----
     for prefix, parts in sorted(gdn.items()):
@@ -187,6 +226,9 @@ def check_equivalence(
     prefixes = sorted(
         {GDN_RE.match(n).group("prefix") for n in tensors_in if GDN_RE.match(n)}
     )[:n_layers_check]
+    if not prefixes:
+        print("[check] no GDN tensors found; passthrough only")
+        return
     hidden = tensors_in[f"{prefixes[0]}.q_proj.lora_A.weight"].shape[1]
     x = torch.randn(5, hidden, dtype=torch.float64)
     worst = 0.0
@@ -214,7 +256,9 @@ def check_equivalence(
             B_p = tensors_out[f"{p}.out_proj.lora_B.weight"].double()
             err_o = ((xo @ A_p.T @ B_p.T) - (xo @ A_o.T @ B_o.T)).abs().max().item()
             worst = max(worst, err_o)
-    print(f"[check] fused-vs-separate max |delta| over {len(prefixes)} layers: {worst:.3e}")
+    print(
+        f"[check] fused-vs-separate max |delta| over {len(prefixes)} layers: {worst:.3e}"
+    )
     # The mapping is exact in exact arithmetic; the only residual is fp64 GEMM
     # accumulation-order noise (K=3r fused vs K=r separate contraction).
     assert worst < 1e-12, f"repack equivalence check failed: {worst}"
@@ -222,8 +266,12 @@ def check_equivalence(
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--input", required=True, help="PEFT adapter dir (separate GDN names)")
-    ap.add_argument("--output", required=True, help="output adapter dir (fused GDN names)")
+    ap.add_argument(
+        "--input", required=True, help="PEFT adapter dir (separate GDN names)"
+    )
+    ap.add_argument(
+        "--output", required=True, help="output adapter dir (fused GDN names)"
+    )
     ap.add_argument("--gdn-only", action="store_true", help="drop all non-GDN tensors")
     ap.add_argument(
         "--keep-self-attn",
@@ -262,6 +310,14 @@ def main() -> None:
     # so the pool wraps model.layers.<L>.linear_attn.{in_proj_qkvz,out_proj}
     # iff these leaf names are in the (server ∪ adapter) target set.
     leaves = sorted({n.split(".lora_")[0].rsplit(".", 1)[-1] for n in new_tensors})
+    # sglang_shared_outer keys the MoE experts as w1/w3/w2; sglang's loader renames those
+    # tensor keys to gate/up/down_proj (lora.py) but only AFTER can_support() checks
+    # target_modules, and get_normalized_target_modules has NO w1/w2/w3 mapping — so a
+    # w1/w2/w3 target_modules list is not a subset of the server's {gate_proj,up_proj,down_proj}
+    # pool and the adapter is rejected. Emit the post-rename proj names here (tensor KEYS stay
+    # w1/w2/w3, which sglang still renames on load).
+    _slot_map = {"w1": "gate_proj", "w3": "up_proj", "w2": "down_proj"}
+    leaves = sorted({_slot_map.get(n, n) for n in leaves})
     cfg["target_modules"] = leaves
 
     out_dir.mkdir(parents=True, exist_ok=True)
