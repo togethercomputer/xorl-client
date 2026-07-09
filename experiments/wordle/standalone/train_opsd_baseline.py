@@ -1307,6 +1307,7 @@ def _post_sglang(
     timeout: float = 300.0,
     attempts: int = 1,
     retry_interval: float = 5.0,
+    allow_non_json_success: bool = False,
 ) -> dict[str, Any] | list:
     url = f"{infer_url.rstrip('/')}{path}"
     attempts = max(1, int(attempts))
@@ -1320,7 +1321,14 @@ def _post_sglang(
                 timeout=timeout,
             )
             resp.raise_for_status()
-            return resp.json() if resp.content else {}
+            if not resp.content:
+                return {}
+            try:
+                return resp.json()
+            except ValueError:
+                if allow_non_json_success:
+                    return {}
+                raise
         except requests.RequestException as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             if status is not None and 400 <= int(status) < 500 and int(status) not in {408, 409, 425, 429}:
@@ -1352,7 +1360,35 @@ def _is_sglang_missing_lora_error(exc: Exception) -> bool:
     )
 
 
+def _is_same_lora_already_loaded_error(error: object, lora_path: str) -> bool:
+    text = str(error)
+    return "already loaded" in text.lower() and lora_path in text
+
+
 def unload_sglang_lora(infer_url: str, lora_name: str) -> None:
+    # Abort in-flight/straggler requests before pulling the adapter out from
+    # under them: a scheduled batch referencing the adapter during the
+    # unload/reload window kills the scheduler (mem_pool.py `assert
+    # lora_adapter is not None`; observed on slow TP2 fleets 2026-07-09, and
+    # the likely mechanism of the k3lora1e4so-v1 s44 load race). flush_cache
+    # aborts queued+running requests and clears the radix/kv state; rollout
+    # workers retry their generates against the fresh adapter afterwards.
+    if _env_int("OPSD_SGLANG_FLUSH_BEFORE_LORA_SWAP", 1):
+        try:
+            _post_sglang(
+                infer_url,
+                "/flush_cache",
+                {},
+                timeout=60.0,
+                attempts=2,
+                retry_interval=2.0,
+                allow_non_json_success=True,
+            )
+        except Exception as exc:
+            print(
+                f"WARN: flush_cache before LoRA unload failed on {infer_url}: {exc}",
+                flush=True,
+            )
     try:
         _post_sglang(
             infer_url,
@@ -1367,18 +1403,30 @@ def unload_sglang_lora(infer_url: str, lora_name: str) -> None:
 
 
 def load_sglang_lora(infer_url: str, *, lora_name: str, lora_path: str) -> None:
-    result = _post_sglang(
-        infer_url,
-        "/load_lora_adapter",
-        {"lora_name": lora_name, "lora_path": lora_path, "pinned": False},
-        timeout=_env_float("OPSD_SGLANG_LOAD_TIMEOUT", 300.0),
-        attempts=_env_int("OPSD_SGLANG_LOAD_RETRY_ATTEMPTS", 60),
-        retry_interval=_env_float("OPSD_SGLANG_RETRY_INTERVAL", 5.0),
-    )
+    try:
+        result = _post_sglang(
+            infer_url,
+            "/load_lora_adapter",
+            {"lora_name": lora_name, "lora_path": lora_path, "pinned": False},
+            timeout=_env_float("OPSD_SGLANG_LOAD_TIMEOUT", 300.0),
+            attempts=_env_int("OPSD_SGLANG_LOAD_RETRY_ATTEMPTS", 60),
+            retry_interval=_env_float("OPSD_SGLANG_RETRY_INTERVAL", 5.0),
+        )
+    except RuntimeError as exc:
+        # sglang returns HTTP 400 (not success=False) for a repeat load; a retry
+        # after a transient failure then kills the run (2026-07-08, k3lora1e4so
+        # step 44). Idempotent only when the server holds the SAME path we asked
+        # for — a name collision onto a different path must still raise.
+        if _is_same_lora_already_loaded_error(exc, lora_path):
+            return
+        raise
     if isinstance(result, dict) and result.get("success", True) is False:
         error = result.get("error_message") or result
-        if "already loaded" not in str(error).lower():
-            raise RuntimeError(f"load_lora_adapter({lora_name}) failed on {infer_url}: {error}")
+        if _is_same_lora_already_loaded_error(error, lora_path):
+            return
+        raise RuntimeError(
+            f"load_lora_adapter({lora_name}) failed on {infer_url}: {error}"
+        )
 
 
 def generate_with_sglang(
