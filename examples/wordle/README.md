@@ -4,7 +4,7 @@ This example runs the Wordle RL experiment against trainer and SGLang/SMG
 endpoints that you have already started. It does not create Kubernetes objects,
 discover pods, schedule GPUs, or manage sampler processes.
 
-Install the example dependencies and run:
+Install the example dependencies from a checkout or installed distribution and run:
 
 ```bash
 pip install -e '.[examples]'

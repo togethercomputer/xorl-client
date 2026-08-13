@@ -15,6 +15,9 @@ def test_shipped_presets_load_and_resolve_data(name):
     config = load_config(ROOT / f"examples/wordle/configs/{name}.yaml")
     assert Path(config.wordle.targets_path).is_file()
     assert config.preset == name
+    assert config.generation.no_stop_trim
+    if name == "zero_k3":
+        assert config.trainer.loss_fn_params["compute_kl_stats"] is True
 
 
 def test_unknown_fields_and_invalid_preset_combinations_rejected():

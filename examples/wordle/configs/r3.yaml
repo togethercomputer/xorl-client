@@ -28,6 +28,7 @@ generation:
   top_p: 1.0
   top_k: -1
   ignore_eos: true
+  no_stop_trim: true
   stop: ["</guess>"]
   batch_size: 16
   concurrency: 4

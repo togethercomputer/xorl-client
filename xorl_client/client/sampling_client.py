@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import random
 from dataclasses import dataclass
@@ -493,22 +494,64 @@ class SamplingClient:
         raise RuntimeError(f"Sampling failed after {self.max_retries + 1} attempts: {last_error}")
 
     def _parse_sample_response(self, data: dict, return_logprobs: bool) -> types.SampledSequence:
-        """Parse a single sample response - just pass through the fields directly."""
+        """Parse one SGLang response without weakening behavior-policy evidence."""
+        output_ids = data.get("output_ids")
+        if not isinstance(output_ids, list) or any(
+            isinstance(token, bool) or not isinstance(token, int)
+            for token in output_ids
+        ):
+            raise ValueError("sample response output_ids must be a list of integers")
+
         meta_info = data.get("meta_info", {})
+        if not isinstance(meta_info, dict):
+            raise ValueError("sample response meta_info must be an object")
         raw_logprobs = meta_info.get("output_token_logprobs")
 
-        # output_token_logprobs is a list of [logprob, token_id, ???] tuples
-        # Extract just the logprob (first element) from each tuple
         output_logprobs = None
-        if raw_logprobs is not None:
-            output_logprobs = [item[0] if item[0] is not None else 0.0 for item in raw_logprobs]
+        if return_logprobs:
+            if not isinstance(raw_logprobs, list):
+                raise ValueError(
+                    "sample response is missing output_token_logprobs"
+                )
+            if len(raw_logprobs) != len(output_ids):
+                raise ValueError(
+                    "sample response token/logprob cardinality mismatch: "
+                    f"{len(output_ids)} tokens != {len(raw_logprobs)} logprobs"
+                )
+            output_logprobs = []
+            for index, (token_id, item) in enumerate(
+                zip(output_ids, raw_logprobs, strict=True)
+            ):
+                if not isinstance(item, (list, tuple)) or len(item) < 2:
+                    raise ValueError(
+                        f"output_token_logprobs[{index}] must contain logprob and token ID"
+                    )
+                value, recorded_token_id = item[0], item[1]
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError(
+                        f"output_token_logprobs[{index}] has a non-numeric logprob"
+                    )
+                logprob = float(value)
+                if not math.isfinite(logprob):
+                    raise ValueError(
+                        f"output_token_logprobs[{index}] has a non-finite logprob"
+                    )
+                if (
+                    isinstance(recorded_token_id, bool)
+                    or not isinstance(recorded_token_id, int)
+                    or recorded_token_id != token_id
+                ):
+                    raise ValueError(
+                        f"output_token_logprobs[{index}] token ID does not match output_ids"
+                    )
+                output_logprobs.append(logprob)
 
         # Extract stop reason from SGLang's meta_info
         finish_reason = meta_info.get("finish_reason", {})
         stop_reason: types.StopReason = "length" if finish_reason == "length" else "stop"
 
         return types.SampledSequence(
-            tokens=data.get("output_ids", []),
+            tokens=output_ids,
             logprobs=output_logprobs,
             text=data.get("text", ""),
             stop_reason=stop_reason,

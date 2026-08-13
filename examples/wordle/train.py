@@ -147,13 +147,52 @@ def _finite_metric(metrics: list[dict[str, float]], names: tuple[str, ...]) -> b
     return bool(values) and all(math.isfinite(value) for value in values)
 
 
-def _metric_max(metrics: list[dict[str, float]], name: str) -> float | None:
-    values = [
-        abs(float(value))
-        for record in metrics
-        for key, value in record.items()
-        if name in key.lower() and math.isfinite(float(value))
-    ]
+def _metric_leaf(key: str) -> str:
+    return key.lower().replace(":", "/").rsplit("/", 1)[-1]
+
+
+def _k3_max(metrics: list[dict[str, float]]) -> float | None:
+    """Return one K3 value per forward result, preferring the tokenwise maximum."""
+
+    values: list[float] = []
+    for record in metrics:
+        debug = [
+            float(value)
+            for key, value in record.items()
+            if _metric_leaf(key).endswith("kl_k3_debug_max")
+            and math.isfinite(float(value))
+        ]
+        summary = [
+            float(value)
+            for key, value in record.items()
+            if _metric_leaf(key) in {"kl_sample_train_k3", "k3"}
+            and math.isfinite(float(value))
+        ]
+        selected = debug or summary
+        if not selected:
+            return None
+        values.append(max(abs(value) for value in selected))
+    return max(values) if values else None
+
+
+def _ratio_error_max(metrics: list[dict[str, float]]) -> float | None:
+    """Return max distance from the identity ratio across every forward result."""
+
+    values: list[float] = []
+    for record in metrics:
+        record_errors: list[float] = []
+        for key, value in record.items():
+            number = float(value)
+            if not math.isfinite(number):
+                continue
+            leaf = _metric_leaf(key)
+            if leaf.endswith("ratio_error"):
+                record_errors.append(abs(number))
+            elif leaf.endswith(("ratio_mean", "ratio_min", "ratio_max")):
+                record_errors.append(abs(number - 1.0))
+        if not record_errors:
+            return None
+        values.append(max(record_errors))
     return max(values) if values else None
 
 
@@ -222,8 +261,8 @@ class ExperimentRunner:
                 finite_loss = True
             if not self.config.correctness.require_finite_gradient:
                 finite_gradient = True
-            k3 = _metric_max(forward_metrics, "k3")
-            ratio = _metric_max(forward_metrics, "ratio")
+            k3 = _k3_max(forward_metrics)
+            ratio = _ratio_error_max(forward_metrics)
             gates = True
             if self.config.correctness.max_k3 is not None:
                 gates &= k3 is not None and k3 <= self.config.correctness.max_k3

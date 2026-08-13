@@ -53,6 +53,7 @@ def _sampling_params(
             stop=config.generation.stop or None,
             stop_token_ids=config.generation.stop_token_ids or None,
             ignore_eos=config.generation.ignore_eos,
+            no_stop_trim=config.generation.no_stop_trim,
             sampling_seed=seed,
         )
         for seed in seeds

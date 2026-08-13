@@ -6,7 +6,12 @@ import pytest
 from examples.wordle.artifacts import ArtifactStore
 from examples.wordle.config import load_config
 from examples.wordle.task import WordleTask
-from examples.wordle.train import ExperimentRunner, XorlTrainerBackend
+from examples.wordle.train import (
+    ExperimentRunner,
+    XorlTrainerBackend,
+    _k3_max,
+    _ratio_error_max,
+)
 from xorl_client import types
 
 
@@ -168,3 +173,17 @@ def test_cispo_backend_passes_absolute_ratio_bounds():
     assert client.call[1] == "cispo"
     assert client.call[2]["clip_low_threshold"] == 0.0
     assert client.call[2]["clip_high_threshold"] == 4.0
+
+
+def test_zero_k3_metrics_use_k3_and_ratio_distance_from_one():
+    metrics = [
+        {
+            "kl_sample_train_k3": 2e-7,
+            "kl_k3_debug_max": 8e-7,
+            "ratio_mean": 1.0,
+            "ratio_min": 0.999_998,
+            "ratio_max": 1.000_003,
+        }
+    ]
+    assert _k3_max(metrics) == pytest.approx(8e-7)
+    assert _ratio_error_max(metrics) == pytest.approx(3e-6)

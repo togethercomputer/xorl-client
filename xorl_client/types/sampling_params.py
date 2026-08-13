@@ -33,6 +33,9 @@ class SamplingParams:
     ignore_eos: bool = False
     """Continue generation until another stop condition or the token limit."""
 
+    no_stop_trim: bool = False
+    """Keep matched stop strings in SGLang's returned text and token IDs."""
+
     return_routed_experts: bool = False
     """For R3 (Rollout Routing Replay) in MoE models."""
 
@@ -60,6 +63,8 @@ class SamplingParams:
             result["stop_token_ids"] = self.stop_token_ids
         if self.ignore_eos:
             result["ignore_eos"] = True
+        if self.no_stop_trim:
+            result["no_stop_trim"] = True
         if self.seed is not None:
             result["seed"] = self.seed
         if self.sampling_seed is not None:

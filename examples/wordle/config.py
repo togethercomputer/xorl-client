@@ -72,6 +72,7 @@ class GenerationConfig(StrictModel):
     top_p: float = Field(default=1.0, gt=0, le=1)
     top_k: int = -1
     ignore_eos: bool = False
+    no_stop_trim: bool = True
     stop: list[str] = Field(default_factory=lambda: ["</guess>"])
     stop_token_ids: list[int] = Field(default_factory=list)
     batch_size: int = Field(default=16, gt=0)
@@ -140,6 +141,15 @@ class ExperimentConfig(StrictModel):
             raise ValueError("the cispo preset and trainer.loss_fn=cispo must agree")
         if self.preset == "zero_k3" and self.correctness.max_k3 is None:
             raise ValueError("zero_k3 preset requires correctness.max_k3")
+        if (
+            self.preset == "zero_k3"
+            and self.trainer.loss_fn_params.get("compute_kl_stats") is not True
+        ):
+            raise ValueError("zero_k3 preset requires compute_kl_stats=true")
+        if "</guess>" in self.generation.stop and not self.generation.no_stop_trim:
+            raise ValueError(
+                "stopping on </guess> requires generation.no_stop_trim=true"
+            )
         if self.preset == "r3":
             raise ValueError(
                 "the R3 preset is a fail-closed integration seam until the public "

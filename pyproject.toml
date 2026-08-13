@@ -65,6 +65,9 @@ Repository = "https://github.com/xorl-ai/xorl-client"
 [tool.setuptools.dynamic]
 version = {attr = "xorl_client.__version__"}
 
+[tool.setuptools.package-data]
+"examples.wordle" = ["README.md", "configs/*.yaml", "data/*.md", "data/*.txt"]
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
