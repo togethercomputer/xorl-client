@@ -30,6 +30,9 @@ class SamplingParams:
     stop_token_ids: Optional[List[int]] = None
     """Stop token IDs for generation."""
 
+    ignore_eos: bool = False
+    """Continue generation until another stop condition or the token limit."""
+
     return_routed_experts: bool = False
     """For R3 (Rollout Routing Replay) in MoE models."""
 
@@ -55,6 +58,8 @@ class SamplingParams:
                 result["stop"] = valid_stops
         if self.stop_token_ids is not None:
             result["stop_token_ids"] = self.stop_token_ids
+        if self.ignore_eos:
+            result["ignore_eos"] = True
         if self.seed is not None:
             result["seed"] = self.seed
         if self.sampling_seed is not None:

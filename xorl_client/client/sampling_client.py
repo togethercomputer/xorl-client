@@ -10,9 +10,8 @@ import asyncio
 import logging
 import os
 import random
-import time
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 
 import httpx
 
@@ -542,6 +541,143 @@ class SamplingClient:
             >>> print(response.text)
         """
         return await self._sample_async(prompt, sampling_params, num_samples, return_logprobs, lora_path)
+
+    async def generate_batch_native_async(
+        self,
+        input_ids_batch: List[List[int]],
+        sampling_params: Union[types.SamplingParams, List[types.SamplingParams]],
+        *,
+        return_logprobs: bool = True,
+        lora_path: Optional[str] = None,
+    ) -> List[types.SampleResponse]:
+        """Generate one response per token-ID prompt in one SGLang request.
+
+        A list of sampling parameters enables a distinct ``sampling_seed`` for
+        each row. Cardinality and decision-time token/logprob alignment are
+        strict because either mismatch would corrupt grouped policy-loss data.
+        """
+
+        if not input_ids_batch or not all(
+            isinstance(row, list)
+            and row
+            and all(isinstance(token, int) for token in row)
+            for row in input_ids_batch
+        ):
+            raise ValueError("input_ids_batch must contain non-empty integer rows")
+        if isinstance(sampling_params, list):
+            if len(sampling_params) != len(input_ids_batch):
+                raise ValueError(
+                    "sampling parameter cardinality mismatch: "
+                    f"{len(sampling_params)} != {len(input_ids_batch)}"
+                )
+            params_payload: dict | list[dict] = [
+                params.to_dict() for params in sampling_params
+            ]
+            routed_flags = {
+                params.return_routed_experts for params in sampling_params
+            }
+            if len(routed_flags) != 1:
+                raise ValueError(
+                    "return_routed_experts must be shared across a native batch"
+                )
+            return_routed_experts = next(iter(routed_flags))
+        elif isinstance(sampling_params, types.SamplingParams):
+            params_payload = sampling_params.to_dict()
+            return_routed_experts = sampling_params.return_routed_experts
+        else:
+            raise TypeError("sampling_params must be SamplingParams or a list of them")
+
+        payload: dict[str, Any] = {
+            "input_ids": input_ids_batch,
+            "sampling_params": params_payload,
+            "return_logprob": return_logprobs,
+        }
+        if self._model:
+            payload["model"] = self._model
+        effective_lora = lora_path if lora_path is not None else self._lora_name
+        if effective_lora:
+            payload["lora_path"] = effective_lora
+        if return_routed_experts:
+            payload["return_routed_experts"] = True
+
+        last_error: Optional[Exception] = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                async with self._create_client() as client:
+                    response = await client.post("/generate", json=payload)
+                    response.raise_for_status()
+                    data = response.json()
+                if isinstance(data, list):
+                    response_list = data
+                elif isinstance(data, dict) and any(
+                    key in data for key in ("meta_info", "output_ids", "text")
+                ):
+                    response_list = [data]
+                elif isinstance(data, dict) and all(
+                    str(index) in data for index in range(len(data))
+                ):
+                    response_list = [data[str(index)] for index in range(len(data))]
+                else:
+                    raise ValueError("native batch response must be a list of rows")
+                if len(response_list) != len(input_ids_batch):
+                    raise ValueError(
+                        "native batch response cardinality mismatch: "
+                        f"expected {len(input_ids_batch)}, got {len(response_list)}"
+                    )
+                rows: List[types.SampleResponse] = []
+                for item in response_list:
+                    if not isinstance(item, dict):
+                        raise ValueError("native batch response rows must be objects")
+                    sequence = self._parse_sample_response(item, return_logprobs)
+                    if return_logprobs and (
+                        sequence.logprobs is None
+                        or len(sequence.logprobs) != len(sequence.tokens)
+                    ):
+                        raise ValueError(
+                            "native batch output token/logprob alignment mismatch: "
+                            f"{len(sequence.tokens)} tokens vs "
+                            f"{0 if sequence.logprobs is None else len(sequence.logprobs)} logprobs"
+                        )
+                    rows.append(
+                        types.SampleResponse(
+                            sequences=[sequence],
+                            meta_info=dict(item.get("meta_info") or {}),
+                        )
+                    )
+                return rows
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in (502, 503, 504):
+                    raise RuntimeError(
+                        f"Sampling failed: HTTP {exc.response.status_code} - {exc.response.text}"
+                    ) from exc
+                last_error = exc
+            except (httpx.TimeoutException, httpx.RequestError) as exc:
+                last_error = exc
+            if attempt >= self.max_retries:
+                break
+            await asyncio.sleep(self._get_retry_delay(attempt))
+        raise RuntimeError(
+            f"Native batch generation failed after {self.max_retries + 1} attempts: {last_error}"
+        ) from last_error
+
+    def generate_batch_native(
+        self,
+        input_ids_batch: List[List[int]],
+        sampling_params: Union[types.SamplingParams, List[types.SamplingParams]],
+        *,
+        return_logprobs: bool = True,
+        lora_path: Optional[str] = None,
+    ) -> AsyncAPIFuture[List[types.SampleResponse]]:
+        """Future wrapper for :meth:`generate_batch_native_async`."""
+
+        return wrap_coroutine(
+            self.generate_batch_native_async(
+                input_ids_batch,
+                sampling_params,
+                return_logprobs=return_logprobs,
+                lora_path=lora_path,
+            )
+        )
 
     async def sample_batch_async(
         self,
