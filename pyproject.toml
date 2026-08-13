@@ -41,6 +41,8 @@ examples = [
     "wandb>=0.15.0",
     "tinker-cookbook",
     "chz",
+    "PyYAML>=6.0",
+    "transformers>=4.45.0",
 ]
 serverless = [
     "openai>=1.0.0",
