@@ -1,11 +1,12 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 import pytest
 
 from examples.wordle.artifacts import ArtifactStore
 from examples.wordle.config import load_config
 from examples.wordle.task import WordleTask
-from examples.wordle.train import ExperimentRunner
+from examples.wordle.train import ExperimentRunner, XorlTrainerBackend
 from xorl_client import types
 
 
@@ -148,3 +149,22 @@ def test_two_steps_checkpoint_restore_final_sync_and_no_repeated_step(tmp_path):
         "terminal_audit.json",
     ):
         assert (store.root / relative).is_file()
+
+
+def test_cispo_backend_passes_absolute_ratio_bounds():
+    config = load_config(ROOT / "examples/wordle/configs/cispo.yaml")
+
+    class Client:
+        def __init__(self):
+            self.call = None
+
+        async def forward_backward(self, datums, loss_fn, loss_fn_params):
+            self.call = (datums, loss_fn, loss_fn_params)
+            return SimpleNamespace(loss_fn_outputs=[], metrics={"loss": 0.5})
+
+    client = Client()
+    backend = XorlTrainerBackend(client, config)
+    asyncio.run(backend.forward_backward([object()]))
+    assert client.call[1] == "cispo"
+    assert client.call[2]["clip_low_threshold"] == 0.0
+    assert client.call[2]["clip_high_threshold"] == 4.0

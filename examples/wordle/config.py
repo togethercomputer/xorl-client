@@ -22,8 +22,10 @@ class ModelConfig(StrictModel):
 
 
 class TrainerConfig(StrictModel):
-    loss_fn: Literal["importance_sampling"] = "importance_sampling"
+    loss_fn: Literal["importance_sampling", "cispo"] = "importance_sampling"
     loss_fn_params: dict[str, Any] = Field(default_factory=dict)
+    cispo_clip_low_threshold: float = Field(default=0.0, ge=0.0)
+    cispo_clip_high_threshold: float = Field(default=4.0, ge=0.0)
     steps: int = Field(default=2, gt=0)
     learning_rate: float = Field(default=1e-5, gt=0)
     beta1: float = Field(default=0.9, gt=0, lt=1)
@@ -33,8 +35,20 @@ class TrainerConfig(StrictModel):
     grad_clip_norm: float = Field(default=1.0, ge=0)
     checkpoint_every: int = Field(default=1, gt=0)
 
+    @model_validator(mode="after")
+    def validate_cispo_bounds(self) -> "TrainerConfig":
+        if self.cispo_clip_high_threshold < self.cispo_clip_low_threshold:
+            raise ValueError(
+                "cispo_clip_high_threshold must be >= cispo_clip_low_threshold"
+            )
+        return self
+
     def effective_loss_fn_params(self) -> dict[str, Any]:
-        return dict(self.loss_fn_params)
+        params = dict(self.loss_fn_params)
+        if self.loss_fn == "cispo":
+            params["clip_low_threshold"] = self.cispo_clip_low_threshold
+            params["clip_high_threshold"] = self.cispo_clip_high_threshold
+        return params
 
 
 class WordleConfig(StrictModel):
@@ -109,7 +123,7 @@ class R3Config(StrictModel):
 
 
 class ExperimentConfig(StrictModel):
-    preset: Literal["importance_sampling", "zero_k3", "r3"]
+    preset: Literal["importance_sampling", "cispo", "zero_k3", "r3"]
     model: ModelConfig
     trainer: TrainerConfig
     wordle: WordleConfig
@@ -122,6 +136,8 @@ class ExperimentConfig(StrictModel):
 
     @model_validator(mode="after")
     def preset_contract(self) -> "ExperimentConfig":
+        if (self.preset == "cispo") != (self.trainer.loss_fn == "cispo"):
+            raise ValueError("the cispo preset and trainer.loss_fn=cispo must agree")
         if self.preset == "zero_k3" and self.correctness.max_k3 is None:
             raise ValueError("zero_k3 preset requires correctness.max_k3")
         if self.preset == "r3":

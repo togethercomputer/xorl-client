@@ -29,6 +29,9 @@ Presets
 - `importance_sampling.yaml` expects ordinary native SGLang `/generate`,
   decision-token logprobs, LoRA weight synchronization, and XoRL's
   `importance_sampling` trainer loss. It sends no R3 fields.
+- `cispo.yaml` sends `loss_fn: cispo` with explicit absolute importance-ratio
+  bounds `clip_low_threshold: 0.0` and `clip_high_threshold: 4.0`. It requires
+  a trainer endpoint built with the corresponding XoRL server-side CISPO loss.
 - `zero_k3.yaml` additionally requires the already-running trainer and sampler
   to use a coherent exact or batch-invariant path. It gates recorded K3 and
   ratio error; it does not launch or reconfigure endpoints.

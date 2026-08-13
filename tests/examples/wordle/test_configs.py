@@ -10,7 +10,7 @@ from examples.wordle.train import _validate_capabilities
 ROOT = Path(__file__).parents[3]
 
 
-@pytest.mark.parametrize("name", ["importance_sampling", "zero_k3"])
+@pytest.mark.parametrize("name", ["importance_sampling", "cispo", "zero_k3"])
 def test_shipped_presets_load_and_resolve_data(name):
     config = load_config(ROOT / f"examples/wordle/configs/{name}.yaml")
     assert Path(config.wordle.targets_path).is_file()
@@ -39,3 +39,26 @@ def test_demonstrably_missing_endpoint_capability_fails_early():
 def test_r3_preset_is_a_fail_closed_integration_seam():
     with pytest.raises(ValidationError, match="fail-closed integration seam"):
         load_config(ROOT / "examples/wordle/configs/r3.yaml")
+
+
+def test_cispo_preset_passes_explicit_absolute_ratio_bounds():
+    config = load_config(ROOT / "examples/wordle/configs/cispo.yaml")
+    assert config.trainer.loss_fn == "cispo"
+    assert config.trainer.effective_loss_fn_params() == {
+        "compute_kl_stats": True,
+        "clip_low_threshold": 0.0,
+        "clip_high_threshold": 4.0,
+    }
+
+
+def test_cispo_rejects_inverted_bounds_and_mismatched_preset():
+    config = load_config(ROOT / "examples/wordle/configs/cispo.yaml")
+    raw = config.model_dump()
+    raw["trainer"]["cispo_clip_low_threshold"] = 4.0
+    raw["trainer"]["cispo_clip_high_threshold"] = 0.0
+    with pytest.raises(ValidationError, match="cispo_clip_high_threshold"):
+        ExperimentConfig.model_validate(raw)
+    raw = config.model_dump()
+    raw["preset"] = "importance_sampling"
+    with pytest.raises(ValidationError, match="must agree"):
+        ExperimentConfig.model_validate(raw)
