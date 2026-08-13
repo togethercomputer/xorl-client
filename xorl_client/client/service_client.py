@@ -10,12 +10,17 @@ import asyncio
 import logging
 import os
 from concurrent.futures import Future
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from xorl_client import types
 from xorl_client.client.api_future_impl import _APIFuture
 from xorl_client.client.client_holder import ClientHolder
 from xorl_client.exceptions import InternalServerError, BadRequestError
+
+if TYPE_CHECKING:
+    from xorl_client.client.rest_client import RestClient
+    from xorl_client.client.sampling_client import SamplingClient
+    from xorl_client.client.training_client import TrainingClient
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +96,9 @@ class ServiceClient:
         if api_key is None:
             api_key = os.environ.get("XORL_API_KEY")
 
-        self.holder = ClientHolder(base_url=base_url, model=model, api_key=api_key, timeout=timeout, **kwargs)
+        self.holder = ClientHolder(
+            base_url=base_url, model=model, api_key=api_key, timeout=timeout, **kwargs
+        )
         logger.info(f"ServiceClient initialized: base_url={base_url}, model={model}")
 
     def _create_lora_training_client_submit(
@@ -108,7 +115,12 @@ class ServiceClient:
         from xorl_client.client.training_client import TrainingClient
 
         # Warn about LoRA parameters that can't be adjusted from user side
-        if rank != 32 or alpha is not None or dropout != 0.0 or target_modules is not None:
+        if (
+            rank != 32
+            or alpha is not None
+            or dropout != 0.0
+            or target_modules is not None
+        ):
             logger.warning(
                 "Note: LoRA parameters (rank, alpha, dropout, target_modules) are currently "
                 "configured on the server side and cannot be adjusted from the client. "
@@ -129,7 +141,9 @@ class ServiceClient:
         )
 
         # Send create model request to server
-        logger.info(f"Creating LoRA training client: model_id={model_id}, base_model={base_model}, rank={rank}")
+        logger.info(
+            f"Creating LoRA training client: model_id={model_id}, base_model={base_model}, rank={rank}"
+        )
         request_start_time = time.time()
 
         try:
@@ -160,16 +174,22 @@ class ServiceClient:
             else:
                 # Old format: immediate response with {model_id, status}
                 if "model_id" in response and "status" in response:
-                    logger.info(f"Model created: model_id={response['model_id']}, status={response['status']}")
+                    logger.info(
+                        f"Model created: model_id={response['model_id']}, status={response['status']}"
+                    )
                 else:
-                    raise RuntimeError(f"Unexpected response format from create_model: {response}")
+                    raise RuntimeError(
+                        f"Unexpected response format from create_model: {response}"
+                    )
 
         except RuntimeError as e:
             logger.error(f"Failed to create model: {e}")
             raise
 
         # Create and return TrainingClient
-        training_client = TrainingClient(holder=self.holder, model_id=model_id, base_model=base_model)
+        training_client = TrainingClient(
+            holder=self.holder, model_id=model_id, base_model=base_model
+        )
 
         # Return a completed future
         future: Future[TrainingClient] = Future()
@@ -226,7 +246,9 @@ class ServiceClient:
 
         # Send create model request to server
         # For full-weights mode, we still call create_model but without meaningful lora_config
-        logger.info(f"Creating training client: model_id={model_id}, base_model={base_model}")
+        logger.info(
+            f"Creating training client: model_id={model_id}, base_model={base_model}"
+        )
         request_start_time = time.time()
 
         try:
@@ -258,16 +280,22 @@ class ServiceClient:
             else:
                 # Old format: immediate response with {model_id, status}
                 if "model_id" in response and "status" in response:
-                    logger.info(f"Model created: model_id={response['model_id']}, status={response['status']}")
+                    logger.info(
+                        f"Model created: model_id={response['model_id']}, status={response['status']}"
+                    )
                 else:
-                    raise RuntimeError(f"Unexpected response format from create_model: {response}")
+                    raise RuntimeError(
+                        f"Unexpected response format from create_model: {response}"
+                    )
 
         except RuntimeError as e:
             logger.error(f"Failed to create model: {e}")
             raise
 
         # Create and return TrainingClient
-        training_client = TrainingClient(holder=self.holder, model_id=model_id, base_model=base_model)
+        training_client = TrainingClient(
+            holder=self.holder, model_id=model_id, base_model=base_model
+        )
 
         # Return a completed future
         future: Future[TrainingClient] = Future()
@@ -348,6 +376,7 @@ class ServiceClient:
         model: Optional[str] = None,
         api_key: Optional[str] = None,
         timeout: float = 1800.0,
+        api_format: Optional[str] = None,
     ) -> "SamplingClient":
         """Create a sampling client for inference.
 
@@ -366,6 +395,8 @@ class ServiceClient:
             model: Model identifier for API routing (optional)
             api_key: API key for authentication (default: XORL_INFERENCE_API_KEY env var)
             timeout: Request timeout in seconds (default: 120.0)
+            api_format: Inference API format passed to SamplingClient. Use
+                "chat_completions" when sampling through Dispatch.
 
         Returns:
             SamplingClient instance
@@ -396,13 +427,17 @@ class ServiceClient:
                 raise RuntimeError(f"Failed to create sampling session: {error_msg}")
 
             lora_name = response.get("lora_name", "")
-            logger.info(f"Sampling session created: lora_name={lora_name}, model_path={model_path}")
+            logger.info(
+                f"Sampling session created: lora_name={lora_name}, model_path={model_path}"
+            )
 
         except (InternalServerError, BadRequestError) as e:
             # Check if this is a "LoRA already loaded" error - not fatal, just warn
             error_msg = str(e)
             if "already loaded" in error_msg.lower():
-                logger.warning(f"LoRA adapter is already loaded on inference worker, continuing: {error_msg}")
+                logger.warning(
+                    f"LoRA adapter is already loaded on inference worker, continuing: {error_msg}"
+                )
             else:
                 logger.error(f"Failed to create sampling session for {model_path}: {e}")
                 raise
@@ -411,13 +446,16 @@ class ServiceClient:
             raise
 
         # Create SamplingClient that connects to inference engine
-        logger.info(f"Creating sampling client: base_url={base_url}, model={model}, model_path={model_path}")
+        logger.info(
+            f"Creating sampling client: base_url={base_url}, model={model}, model_path={model_path}"
+        )
         return SamplingClient(
             base_url=base_url,
             model_path=model_path,
             model=model,
             api_key=api_key,
             timeout=timeout,
+            api_format=api_format,
         )
 
     def create_rest_client(
@@ -492,7 +530,9 @@ class ServiceClient:
                 )
 
         if base_model is None:
-            raise ValueError("base_model is required to create training client from state")
+            raise ValueError(
+                "base_model is required to create training client from state"
+            )
 
         # Extract model_id from checkpoint path to preserve the original model_id
         model_id = _extract_model_id_from_xorl_uri(checkpoint_path)
@@ -561,7 +601,9 @@ class ServiceClient:
                 )
 
         if base_model is None:
-            raise ValueError("base_model is required to create training client from state")
+            raise ValueError(
+                "base_model is required to create training client from state"
+            )
 
         # Extract model_id from checkpoint path to preserve the original model_id
         model_id = _extract_model_id_from_xorl_uri(checkpoint_path)
@@ -622,7 +664,9 @@ class ServiceClient:
                 )
 
         if base_model is None:
-            raise ValueError("base_model is required to create training client from state")
+            raise ValueError(
+                "base_model is required to create training client from state"
+            )
 
         # Extract model_id from checkpoint path to preserve the original model_id
         model_id = _extract_model_id_from_xorl_uri(checkpoint_path)
@@ -684,7 +728,9 @@ class ServiceClient:
                 )
 
         if base_model is None:
-            raise ValueError("base_model is required to create training client from state")
+            raise ValueError(
+                "base_model is required to create training client from state"
+            )
 
         # Extract model_id from checkpoint path to preserve the original model_id
         model_id = _extract_model_id_from_xorl_uri(checkpoint_path)

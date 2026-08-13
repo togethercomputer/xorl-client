@@ -36,8 +36,14 @@ class SamplingParams:
     no_stop_trim: bool = False
     """Keep matched stop strings in SGLang's returned text and token IDs."""
 
+    custom_params: Optional[Dict[str, Any]] = None
+    """Backend-specific sampling controls passed through to the inference server."""
+
     return_routed_experts: bool = False
     """For R3 (Rollout Routing Replay) in MoE models."""
+
+    return_expert_logits: bool = False
+    """Return expert routing logits for R3 replay in MoE models."""
 
     seed: Optional[int] = None
     """Random seed for reproducible generation."""
@@ -65,6 +71,8 @@ class SamplingParams:
             result["ignore_eos"] = True
         if self.no_stop_trim:
             result["no_stop_trim"] = True
+        if self.custom_params is not None:
+            result["custom_params"] = self.custom_params
         if self.seed is not None:
             result["seed"] = self.seed
         if self.sampling_seed is not None:
