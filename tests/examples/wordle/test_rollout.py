@@ -13,11 +13,22 @@ ROOT = Path(__file__).parents[3]
 
 
 class Tokenizer:
+    pieces = {
+        10: "<guess>[ABIDE]",
+        11: "</guess>",
+        20: "<guess>[ABIDE]</guess>",
+        21: "<guess>[ABOVE]</guess>",
+        22: "<guess>[ACTOR]</guess>",
+        23: "<guess>[ACUTE]</guess>",
+        24: "<guess>[ADIEU]</guess>",
+        25: "<guess>[CRANE]</guess>",
+    }
+
     def apply_chat_template(self, messages, tokenize, add_generation_prompt):
         return [1, 2, len(messages)]
 
     def decode(self, tokens, skip_special_tokens=False):
-        return "<guess>[ABIDE]</guess>"
+        return "".join(self.pieces[token] for token in tokens)
 
 
 class Sampler:
@@ -45,15 +56,49 @@ class SixTurnSampler(Sampler):
     words = ["abide", "above", "actor", "acute", "adieu", "crane"]
 
     async def generate_batch_native_async(self, prompts, params, return_logprobs):
-        word = self.words[len(self.seeds) // len(prompts)]
+        word_index = len(self.seeds) // len(prompts)
+        word = self.words[word_index]
         self.seeds.extend(p.sampling_seed for p in params)
         return [
             types.SampleResponse(
                 sequences=[
                     types.SampledSequence(
-                        tokens=[10],
+                        tokens=[20 + word_index],
                         logprobs=[-0.1],
                         text=f"<guess>[{word.upper()}]</guess>",
+                    )
+                ],
+                meta_info={},
+            )
+            for _ in prompts
+        ]
+
+
+class MultiGuessTokenizer(Tokenizer):
+    pieces = {
+        10: "<guess>[ABIDE]</guess>",
+        11: " trailing chatter ",
+        12: "<guess>[CRANE]</guess>",
+        13: "<|im_end|>",
+    }
+
+    def decode(self, tokens, skip_special_tokens=False):
+        return "".join(self.pieces[token] for token in tokens)
+
+
+class MultiGuessSampler(Sampler):
+    async def generate_batch_native_async(self, prompts, params, return_logprobs):
+        self.seeds.extend(p.sampling_seed for p in params)
+        return [
+            types.SampleResponse(
+                sequences=[
+                    types.SampledSequence(
+                        tokens=[10, 11, 12, 13],
+                        logprobs=[-0.1, -0.2, -0.3, -0.4],
+                        text=(
+                            "<guess>[ABIDE]</guess> trailing chatter "
+                            "<guess>[CRANE]</guess>"
+                        ),
                     )
                 ],
                 meta_info={},
@@ -132,6 +177,43 @@ def test_unsolved_valid_game_reaches_all_six_turns():
     )
     assert len(emitted[0][0].turns) == 6
     assert not emitted[0][0].solved
+
+
+def test_multi_guess_reward_and_gradient_use_the_same_first_action():
+    config = load_config(ROOT / "examples/wordle/configs/importance_sampling.yaml")
+    config.wordle = config.wordle.model_copy(
+        update={"train_targets": 4, "eval_targets": 2, "group_size": 2}
+    )
+    emitted = []
+    trajectories = asyncio.run(
+        rollout_complete_groups(
+            task=_task(config),
+            tokenizer=MultiGuessTokenizer(),
+            sampler=MultiGuessSampler(),
+            targets=["abide"],
+            step=1,
+            config=config,
+            on_group_complete=lambda group: (
+                emitted.append(group) or asyncio.sleep(0)
+            ),
+        )
+    )
+
+    assert len(emitted) == 1
+    assert all(row.solved and row.history == [("abide", "GGGGG")] for row in trajectories)
+    for row in trajectories:
+        turn = row.turns[0]
+        assert turn.guess == "abide"
+        assert not turn.format_ok
+        assert turn.output_tokens == [10]
+        assert turn.old_logprobs == [-0.1]
+        assert turn.text == "<guess>[ABIDE]</guess>"
+        assert "<guess>[CRANE]</guess>" in turn.raw_text
+        assert turn.truncated_after_action
+
+    datums, metrics = build_group_datums(emitted[0], r3_enabled=False)
+    assert all(datum.loss_fn_inputs["target_tokens"].tolist()[-1] == 10 for datum in datums)
+    assert metrics["truncated_after_action_turns"] == 2
 
 
 def test_r3_datum_seam_fails_closed():

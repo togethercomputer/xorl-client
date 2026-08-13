@@ -21,6 +21,8 @@ class TurnRecord:
     output_tokens: list[int]
     old_logprobs: list[float]
     text: str
+    raw_text: str
+    truncated_after_action: bool
     guess: str | None
     format_ok: bool
     valid_guess: bool
@@ -55,6 +57,32 @@ def _sampling_params(
         )
         for seed in seeds
     ]
+
+
+def _truncate_after_first_action(
+    tokenizer, output_tokens: Sequence[int], *, response_text: str
+) -> tuple[list[int], str, bool]:
+    """Keep generated tokens only through the first completed guess tag."""
+
+    output = [int(token) for token in output_tokens]
+    if not output:
+        return [], "", False
+    if not hasattr(tokenizer, "decode"):
+        if parse_action(response_text)[1]:
+            return output, response_text, False
+        raise TypeError(
+            "tokenizer.decode is required to align a malformed Wordle response"
+        )
+    decoded = tokenizer.decode(output, skip_special_tokens=False)
+    guess, _ = parse_action(decoded)
+    if guess is None:
+        return output, decoded, False
+
+    for keep_count in range(1, len(output) + 1):
+        prefix = tokenizer.decode(output[:keep_count], skip_special_tokens=False)
+        if parse_action(prefix)[0] is not None:
+            return output[:keep_count], prefix, keep_count < len(output)
+    raise RuntimeError("decoded Wordle action has no token-aligned completion boundary")
 
 
 async def rollout_complete_groups(
@@ -124,12 +152,26 @@ async def rollout_complete_groups(
         for future in asyncio.as_completed(tasks):
             chunk, responses = await future
             for (trajectory, prompt, _), response in zip(chunk, responses, strict=True):
-                output = list(response.tokens)
-                logprobs = list(response.logprobs or [])
-                text = response.text
-                if not text and hasattr(tokenizer, "decode"):
-                    text = tokenizer.decode(output, skip_special_tokens=False)
-                guess, format_ok = parse_action(text)
+                raw_output = list(response.tokens)
+                raw_logprobs = list(response.logprobs or [])
+                if len(raw_output) != len(raw_logprobs):
+                    raise ValueError(
+                        "generated token/logprob alignment mismatch: "
+                        f"{len(raw_output)} tokens != {len(raw_logprobs)} logprobs"
+                    )
+                raw_text = response.text or tokenizer.decode(
+                    raw_output, skip_special_tokens=False
+                )
+                output, text, truncated = _truncate_after_first_action(
+                    tokenizer, raw_output, response_text=raw_text
+                )
+                logprobs = raw_logprobs[: len(output)]
+                guess, format_ok = parse_action(raw_text)
+                trained_guess, _ = parse_action(text)
+                if guess != trained_guess:
+                    raise RuntimeError(
+                        "generated text and token IDs disagree on the played Wordle action"
+                    )
                 valid_guess = task.valid_guess(guess, trajectory.history)
                 feedback = ""
                 if valid_guess:
@@ -144,6 +186,8 @@ async def rollout_complete_groups(
                         output_tokens=output,
                         old_logprobs=logprobs,
                         text=text,
+                        raw_text=raw_text,
+                        truncated_after_action=truncated,
                         guess=guess,
                         format_ok=format_ok,
                         valid_guess=valid_guess,
@@ -180,11 +224,13 @@ def build_group_datums(
     )
     datums: list[types.Datum] = []
     generated_tokens = 0
+    truncated_turns = 0
     for trajectory, advantage in zip(group, advantages, strict=True):
         for turn in trajectory.turns:
             if not turn.output_tokens:
                 continue
             generated_tokens += len(turn.output_tokens)
+            truncated_turns += int(turn.truncated_after_action)
             datums.append(
                 build_policy_datum(
                     prompt_tokens=turn.prompt_tokens,
@@ -198,6 +244,7 @@ def build_group_datums(
         "trajectories": float(len(group)),
         "datums": float(len(datums)),
         "generated_tokens": float(generated_tokens),
+        "truncated_after_action_turns": float(truncated_turns),
         "reward_sum": float(sum(rewards)),
         "exact_sum": float(sum(row.reward["exact_match"] for row in group)),
         "format_sum": float(sum(row.reward["format_rate"] for row in group)),

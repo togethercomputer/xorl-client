@@ -29,6 +29,9 @@ def test_parsing_and_legal_repeated_illegal_guesses(tmp_path):
     )
     assert parse_action("<guess>[ABIDE]</guess>") == ("abide", True)
     assert parse_action("noise <guess>ABIDE</guess>") == ("abide", False)
+    assert parse_action(
+        "<guess>ABIDE</guess> chatter <guess>CRANE</guess>"
+    ) == ("abide", False)
     assert parse_action("no guess") == (None, False)
     assert task.valid_guess("abide", [])
     assert not task.valid_guess("abide", [("abide", "XXXXX")])

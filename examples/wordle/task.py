@@ -56,16 +56,21 @@ def compute_feedback(guess: str, target: str) -> str:
 
 def extract_guess(text: str) -> str | None:
     matches = _GUESS_RE.findall(text or "")
-    return matches[-1].lower() if matches else None
+    return matches[0].lower() if matches else None
 
 
 def parse_action(text: str) -> tuple[str | None, bool]:
-    """Return the last guess and whether the response is exactly one guess tag."""
+    """Return the first guess and whether the response is exactly one guess tag.
+
+    The environment plays the first completed action. Rollout construction uses
+    the same boundary for policy-loss tokens, so malformed multi-action output
+    cannot receive reward for a guess that is absent from the training row.
+    """
 
     stripped = (text or "").strip()
     matches = _GUESS_RE.findall(stripped)
     exact = bool(len(matches) == 1 and _GUESS_RE.fullmatch(stripped))
-    return (matches[-1].lower() if matches else None), exact
+    return (matches[0].lower() if matches else None), exact
 
 
 @dataclass(frozen=True)
