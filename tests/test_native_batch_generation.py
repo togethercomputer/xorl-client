@@ -47,9 +47,7 @@ def test_native_batch_preserves_per_row_seeds_metadata_and_logprobs():
                 [[1, 2], [3, 4]],
                 [
                     SamplingParams(max_tokens=2, sampling_seed=101),
-                    SamplingParams(
-                        max_tokens=2, sampling_seed=102, ignore_eos=True
-                    ),
+                    SamplingParams(max_tokens=2, sampling_seed=102, ignore_eos=True),
                 ],
             )
         )
@@ -114,8 +112,14 @@ def test_native_batch_accepts_one_shared_parameter_object():
         return _response(
             200,
             [
-                {"output_ids": [2], "meta_info": {"output_token_logprobs": [[-1.0, 2]]}},
-                {"output_ids": [3], "meta_info": {"output_token_logprobs": [[-2.0, 3]]}},
+                {
+                    "output_ids": [2],
+                    "meta_info": {"output_token_logprobs": [[-1.0, 2]]},
+                },
+                {
+                    "output_ids": [3],
+                    "meta_info": {"output_token_logprobs": [[-2.0, 3]]},
+                },
             ],
         )
 

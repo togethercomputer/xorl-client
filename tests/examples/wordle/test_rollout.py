@@ -172,7 +172,7 @@ def test_unsolved_valid_game_reaches_all_six_turns():
             targets=["clown"],
             step=1,
             config=config,
-            on_group_complete=lambda group: (emitted.append(group) or asyncio.sleep(0)),
+            on_group_complete=lambda group: emitted.append(group) or asyncio.sleep(0),
         )
     )
     assert len(emitted[0][0].turns) == 6
@@ -193,14 +193,14 @@ def test_multi_guess_reward_and_gradient_use_the_same_first_action():
             targets=["abide"],
             step=1,
             config=config,
-            on_group_complete=lambda group: (
-                emitted.append(group) or asyncio.sleep(0)
-            ),
+            on_group_complete=lambda group: emitted.append(group) or asyncio.sleep(0),
         )
     )
 
     assert len(emitted) == 1
-    assert all(row.solved and row.history == [("abide", "GGGGG")] for row in trajectories)
+    assert all(
+        row.solved and row.history == [("abide", "GGGGG")] for row in trajectories
+    )
     for row in trajectories:
         turn = row.turns[0]
         assert turn.guess == "abide"
@@ -212,7 +212,9 @@ def test_multi_guess_reward_and_gradient_use_the_same_first_action():
         assert turn.truncated_after_action
 
     datums, metrics = build_group_datums(emitted[0], r3_enabled=False)
-    assert all(datum.loss_fn_inputs["target_tokens"].tolist()[-1] == 10 for datum in datums)
+    assert all(
+        datum.loss_fn_inputs["target_tokens"].tolist()[-1] == 10 for datum in datums
+    )
     assert metrics["truncated_after_action_turns"] == 2
 
 
