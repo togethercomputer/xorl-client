@@ -18,6 +18,8 @@ def test_shipped_presets_load_and_resolve_data(name):
     assert config.generation.no_stop_trim
     if name == "zero_k3":
         assert config.trainer.loss_fn_params["compute_kl_stats"] is True
+        assert config.correctness.max_k3 == 0.0
+        assert config.correctness.max_ratio_error == 0.0
 
 
 def test_unknown_fields_and_invalid_preset_combinations_rejected():

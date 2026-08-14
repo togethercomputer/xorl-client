@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from xorl_client import SamplingClient, ServiceClient, types
+from xorl_client.rl import learning_rate_at_step
 
 from .artifacts import ArtifactStore, git_source_info, redact_url, terminal_audit
 from .config import ExperimentConfig, load_config
@@ -67,10 +68,18 @@ class XorlTrainerBackend:
         )
         return _normalize_forward_result(result)
 
-    async def optimizer_step(self) -> dict[str, float]:
+    async def optimizer_step(self, step: int) -> dict[str, float]:
+        learning_rate = learning_rate_at_step(
+            base_learning_rate=self.config.trainer.learning_rate,
+            step=step,
+            total_steps=self.config.trainer.steps,
+            schedule=self.config.trainer.learning_rate_schedule,
+            warmup_steps=self.config.trainer.learning_rate_warmup_steps,
+            min_learning_rate=self.config.trainer.min_learning_rate,
+        )
         result = await self.client.optim_step(
             types.AdamParams(
-                learning_rate=self.config.trainer.learning_rate,
+                learning_rate=learning_rate,
                 beta1=self.config.trainer.beta1,
                 beta2=self.config.trainer.beta2,
                 eps=self.config.trainer.eps,
@@ -254,13 +263,9 @@ class ExperimentRunner:
             tail = coalescer.flush()
             if tail is not None:
                 await submit_batch(tail)
-            optimizer_metrics = await self.trainer.optimizer_step()
             finite_loss = _finite_metric(forward_metrics, ("loss",))
-            finite_gradient = _finite_metric([optimizer_metrics], ("grad",))
             if not self.config.correctness.require_finite_loss:
                 finite_loss = True
-            if not self.config.correctness.require_finite_gradient:
-                finite_gradient = True
             k3 = _k3_max(forward_metrics)
             ratio = _ratio_error_max(forward_metrics)
             gates = True
@@ -271,10 +276,33 @@ class ExperimentRunner:
                     ratio is not None
                     and ratio <= self.config.correctness.max_ratio_error
                 )
-            if not finite_loss or not finite_gradient or not gates:
+            gate_record = {
+                "step": step,
+                "finite_loss": finite_loss,
+                "k3": k3,
+                "ratio_error": ratio,
+                "correctness_gates_passed": gates,
+                "optimizer_step_requested": False,
+                "optimizer_step_complete": False,
+            }
+            self.store.write_preoptimizer_gate(step, gate_record)
+            if not finite_loss or not gates:
                 raise RuntimeError(
                     f"step {step} correctness failure: finite_loss={finite_loss}, "
-                    f"finite_gradient={finite_gradient}, k3={k3}, ratio={ratio}, gates={gates}"
+                    f"k3={k3}, ratio={ratio}, gates={gates}; optimizer not requested"
+                )
+            gate_record["optimizer_step_requested"] = True
+            self.store.write_preoptimizer_gate(step, gate_record)
+            optimizer_metrics = await self.trainer.optimizer_step(step)
+            finite_gradient = _finite_metric([optimizer_metrics], ("grad",))
+            if not self.config.correctness.require_finite_gradient:
+                finite_gradient = True
+            gate_record["optimizer_step_complete"] = True
+            gate_record["finite_gradient"] = finite_gradient
+            self.store.write_preoptimizer_gate(step, gate_record)
+            if not finite_gradient:
+                raise RuntimeError(
+                    f"step {step} optimizer returned a non-finite or missing gradient metric"
                 )
             sync = await self.trainer.sync()
             if not sync.get("success"):
@@ -309,6 +337,14 @@ class ExperimentRunner:
                 "valid_guess_rate": totals.get("valid_sum", 0.0) / trajectory_count,
                 "forward_backward": forward_metrics,
                 "optimizer": optimizer_metrics,
+                "learning_rate": learning_rate_at_step(
+                    base_learning_rate=self.config.trainer.learning_rate,
+                    step=step,
+                    total_steps=self.config.trainer.steps,
+                    schedule=self.config.trainer.learning_rate_schedule,
+                    warmup_steps=self.config.trainer.learning_rate_warmup_steps,
+                    min_learning_rate=self.config.trainer.min_learning_rate,
+                ),
                 "optimizer_complete": True,
                 "finite_loss": finite_loss,
                 "finite_gradient": finite_gradient,

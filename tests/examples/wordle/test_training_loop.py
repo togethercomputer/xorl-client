@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
@@ -57,7 +58,7 @@ class Trainer:
         self.events.append(("forward_backward", len(datums)))
         return {"loss": 0.5, "k3": 0.0, "ratio_error": 0.0}
 
-    async def optimizer_step(self):
+    async def optimizer_step(self, step):
         self.events.append(("optimizer", None))
         return {"grad_norm": 1.0}
 
@@ -139,7 +140,11 @@ def test_two_steps_checkpoint_restore_final_sync_and_no_repeated_step(tmp_path):
     )
     audit = asyncio.run(resumed.run(start_step=state.step + 1))
     assert audit["success"]
-    assert sorted(path.name for path in store.steps.glob("step-*.json")) == [
+    assert sorted(
+        path.name
+        for path in store.steps.glob("step-*.json")
+        if path.name[5:-5].isdigit()
+    ) == [
         "step-00000001.json",
         "step-00000002.json",
     ]
@@ -187,3 +192,44 @@ def test_zero_k3_metrics_use_k3_and_ratio_distance_from_one():
     ]
     assert _k3_max(metrics) == pytest.approx(8e-7)
     assert _ratio_error_max(metrics) == pytest.approx(3e-6)
+
+
+def test_zero_k3_gate_runs_before_optimizer(tmp_path):
+    config = load_config(ROOT / "examples/wordle/configs/zero_k3.yaml")
+    config.trainer = config.trainer.model_copy(update={"steps": 1})
+    config.wordle = config.wordle.model_copy(
+        update={
+            "train_targets": 2,
+            "eval_targets": 1,
+            "targets_per_step": 1,
+            "group_size": 2,
+        }
+    )
+    config.artifacts = config.artifacts.model_copy(
+        update={"output_dir": str(tmp_path)}
+    )
+    store = ArtifactStore(tmp_path)
+    store.initialize(run_config={}, source_info={}, resume=False)
+    trainer = Trainer()
+
+    async def mismatched(_datums):
+        trainer.events.append(("forward_backward", 1))
+        return {"loss": 0.5, "k3": 1e-12, "ratio_error": 0.0}
+
+    trainer.forward_backward = mismatched
+    runner = ExperimentRunner(
+        config=config,
+        task=_task(config),
+        tokenizer=Tokenizer(),
+        sampler=Sampler(),
+        trainer=trainer,
+        store=store,
+        session_id="session",
+    )
+    with pytest.raises(RuntimeError, match="optimizer not requested"):
+        asyncio.run(runner.run())
+    assert not any(event[0] == "optimizer" for event in trainer.events)
+    gate = json.loads(
+        (store.steps / "step-00000001-preoptimizer.json").read_text()
+    )
+    assert gate["optimizer_step_requested"] is False

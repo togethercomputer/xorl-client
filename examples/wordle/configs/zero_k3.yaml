@@ -47,8 +47,8 @@ streaming:
 correctness:
   require_finite_loss: true
   require_finite_gradient: true
-  max_k3: 0.000001
-  max_ratio_error: 0.00001
+  max_k3: 0.0
+  max_ratio_error: 0.0
 artifacts:
   output_dir: artifacts/wordle/zero-k3
   resume_from: null

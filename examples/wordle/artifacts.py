@@ -68,6 +68,10 @@ class ArtifactStore:
         self.steps.mkdir(parents=True, exist_ok=True)
         _json(self.steps / f"step-{step:08d}.json", record, exclusive=True)
 
+    def write_preoptimizer_gate(self, step: int, record: dict) -> None:
+        self.steps.mkdir(parents=True, exist_ok=True)
+        _json(self.steps / f"step-{step:08d}-preoptimizer.json", record)
+
     def append_checkpoint(self, record: dict) -> None:
         _append(self.root / "checkpoints.jsonl", record)
 
@@ -76,6 +80,8 @@ class ArtifactStore:
         if not self.steps.is_dir():
             return records
         for path in sorted(self.steps.glob("step-*.json")):
+            if not path.name[5:-5].isdigit():
+                continue
             record = json.loads(path.read_text(encoding="utf-8"))
             if before_step is None or int(record["step"]) < before_step:
                 records.append(record)

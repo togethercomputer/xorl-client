@@ -28,6 +28,9 @@ class TrainerConfig(StrictModel):
     cispo_clip_high_threshold: float = Field(default=4.0, ge=0.0)
     steps: int = Field(default=2, gt=0)
     learning_rate: float = Field(default=1e-5, gt=0)
+    learning_rate_schedule: Literal["constant", "cosine"] = "constant"
+    learning_rate_warmup_steps: int = Field(default=0, ge=0)
+    min_learning_rate: float = Field(default=0.0, ge=0)
     beta1: float = Field(default=0.9, gt=0, lt=1)
     beta2: float = Field(default=0.95, gt=0, lt=1)
     eps: float = Field(default=1e-12, gt=0)
@@ -41,6 +44,10 @@ class TrainerConfig(StrictModel):
             raise ValueError(
                 "cispo_clip_high_threshold must be >= cispo_clip_low_threshold"
             )
+        if self.learning_rate_warmup_steps > self.steps:
+            raise ValueError("learning_rate_warmup_steps cannot exceed steps")
+        if self.min_learning_rate > self.learning_rate:
+            raise ValueError("min_learning_rate cannot exceed learning_rate")
         return self
 
     def effective_loss_fn_params(self) -> dict[str, Any]:
@@ -139,8 +146,13 @@ class ExperimentConfig(StrictModel):
     def preset_contract(self) -> "ExperimentConfig":
         if (self.preset == "cispo") != (self.trainer.loss_fn == "cispo"):
             raise ValueError("the cispo preset and trainer.loss_fn=cispo must agree")
-        if self.preset == "zero_k3" and self.correctness.max_k3 is None:
-            raise ValueError("zero_k3 preset requires correctness.max_k3")
+        if self.preset == "zero_k3" and (
+            self.correctness.max_k3 != 0.0
+            or self.correctness.max_ratio_error != 0.0
+        ):
+            raise ValueError(
+                "zero_k3 preset requires literal max_k3=0 and max_ratio_error=0"
+            )
         if (
             self.preset == "zero_k3"
             and self.trainer.loss_fn_params.get("compute_kl_stats") is not True
