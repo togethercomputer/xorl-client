@@ -32,6 +32,16 @@ def _routing_rows(payload: Any) -> int:
     return int(rows) if isinstance(rows, int) and not isinstance(rows, bool) else 0
 
 
+def _routing_payload_bytes(payload: Any) -> int:
+    if not isinstance(payload, dict) or payload.get("schema") != _ROUTING_SPANS_SCHEMA:
+        return 0
+    return sum(
+        int(span.get("rows", 0)) * int(span.get("row_nbytes", 0))
+        for span in payload.get("spans", [])
+        if isinstance(span, dict)
+    )
+
+
 def _slice_spans(payload: Any, rows: int) -> list[dict[str, Any]] | None:
     if rows == 0:
         return []
@@ -338,6 +348,14 @@ async def rollout_complete_groups(
                         raise ValueError(
                             "R3 expert IDs and selected weights have different shapes"
                         )
+                    payload_bytes = _routing_payload_bytes(
+                        routed_experts
+                    ) + _routing_payload_bytes(routed_expert_logits)
+                    if payload_bytes > config.r3.max_payload_bytes:
+                        raise ValueError(
+                            "R3 routing payload exceeds max_payload_bytes: "
+                            f"{payload_bytes} > {config.r3.max_payload_bytes}"
+                        )
                 trajectory.turns.append(
                     TurnRecord(
                         turn=turn,
@@ -422,7 +440,16 @@ def build_group_datums(
             if r3_enabled
             else 0
         ),
-        "r3_payload_bytes": 0.0,
+        "r3_payload_bytes": float(
+            sum(
+                _routing_payload_bytes(turn.routed_experts)
+                + _routing_payload_bytes(turn.routed_expert_logits)
+                for row in group
+                for turn in row.turns
+            )
+            if r3_enabled
+            else 0
+        ),
         "r3_payload_time_ms": 0.0,
     }
     return datums, metrics

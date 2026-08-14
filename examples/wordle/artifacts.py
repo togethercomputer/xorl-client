@@ -68,9 +68,23 @@ class ArtifactStore:
         self.steps.mkdir(parents=True, exist_ok=True)
         _json(self.steps / f"step-{step:08d}.json", record, exclusive=True)
 
-    def write_preoptimizer_gate(self, step: int, record: dict) -> None:
+    def write_preoptimizer_gate(self, step: int, record: dict) -> Path:
+        """Write an immutable, attempt-specific pre-optimizer receipt."""
         self.steps.mkdir(parents=True, exist_ok=True)
-        _json(self.steps / f"step-{step:08d}-preoptimizer.json", record)
+        attempt = 1
+        while True:
+            path = self.steps / (
+                f"step-{step:08d}-preoptimizer-attempt-{attempt:04d}.json"
+            )
+            if not path.exists():
+                break
+            attempt += 1
+        _json(
+            path,
+            {**record, "attempt": attempt},
+            exclusive=True,
+        )
+        return path
 
     def append_checkpoint(self, record: dict) -> None:
         _append(self.root / "checkpoints.jsonl", record)

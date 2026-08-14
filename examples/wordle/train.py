@@ -282,8 +282,8 @@ class ExperimentRunner:
                 "k3": k3,
                 "ratio_error": ratio,
                 "correctness_gates_passed": gates,
-                "optimizer_step_requested": False,
-                "optimizer_step_complete": False,
+                "evaluated_before_optimizer": True,
+                "optimizer_step_requested_at_write": False,
             }
             self.store.write_preoptimizer_gate(step, gate_record)
             if not finite_loss or not gates:
@@ -291,15 +291,10 @@ class ExperimentRunner:
                     f"step {step} correctness failure: finite_loss={finite_loss}, "
                     f"k3={k3}, ratio={ratio}, gates={gates}; optimizer not requested"
                 )
-            gate_record["optimizer_step_requested"] = True
-            self.store.write_preoptimizer_gate(step, gate_record)
             optimizer_metrics = await self.trainer.optimizer_step(step)
             finite_gradient = _finite_metric([optimizer_metrics], ("grad",))
             if not self.config.correctness.require_finite_gradient:
                 finite_gradient = True
-            gate_record["optimizer_step_complete"] = True
-            gate_record["finite_gradient"] = finite_gradient
-            self.store.write_preoptimizer_gate(step, gate_record)
             if not finite_gradient:
                 raise RuntimeError(
                     f"step {step} optimizer returned a non-finite or missing gradient metric"

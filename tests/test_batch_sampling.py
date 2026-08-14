@@ -202,7 +202,11 @@ class TestPauseContinueGeneration(unittest.TestCase):
         async def run_test():
             same = _make_httpx_response(
                 400,
-                json={"error_message": "adapter already loaded from /weights/step-1"},
+                json={
+                    "success": False,
+                    "error_message": "adapter policy is already loaded",
+                    "loaded_adapters": {"policy": "/weights/step-1"},
+                },
             )
             with patch("httpx.AsyncClient.post", return_value=same):
                 result = await self.client.load_lora_adapter_async(
@@ -212,7 +216,11 @@ class TestPauseContinueGeneration(unittest.TestCase):
 
             collision = _make_httpx_response(
                 400,
-                json={"error_message": "adapter already loaded from /weights/old"},
+                json={
+                    "success": False,
+                    "error_message": "adapter policy is already loaded",
+                    "loaded_adapters": {"policy": "/weights/old"},
+                },
             )
             with patch("httpx.AsyncClient.post", return_value=collision):
                 with self.assertRaises(httpx.HTTPStatusError):

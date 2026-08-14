@@ -149,7 +149,8 @@ class TestSamplingClientGeneratePayload(unittest.TestCase):
                                 ]
                             },
                             "finish_reason": "stop",
-                            "input_token_ids": [11, 12, 13],
+                            "token_ids": [40, 42],
+                            "prompt_token_ids": [11, 12, 13],
                         }
                     ],
                     "metadata": {"weight_version": 7},
@@ -198,6 +199,8 @@ class TestSamplingClientGeneratePayload(unittest.TestCase):
         self.assertEqual(payload["top_p"], 0.9)
         self.assertEqual(payload["n"], 1)
         self.assertIs(payload["logprobs"], True)
+        self.assertIs(payload["return_token_ids"], True)
+        self.assertIs(payload["return_prompt_token_ids"], True)
         self.assertEqual(payload["logprob_start_len"], 2)
         self.assertEqual(payload["lora_path"], "step-000123")
         self.assertIs(payload["return_routed_experts"], True)

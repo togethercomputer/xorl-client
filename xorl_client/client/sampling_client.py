@@ -664,6 +664,8 @@ class SamplingClient:
             "top_k": params["top_k"],
             "n": num_samples,
             "logprobs": return_logprobs,
+            "return_token_ids": True,
+            "return_prompt_token_ids": True,
         }
 
         if "messages" in prompt_data:
@@ -800,7 +802,7 @@ class SamplingClient:
 
         tokens: List[int] = []
         output_logprobs: Optional[List[float]] = None
-        raw_output_ids = choice.get("output_ids")
+        raw_output_ids = choice.get("token_ids")
         if isinstance(raw_output_ids, list) and all(
             isinstance(tok, int) for tok in raw_output_ids
         ):
@@ -822,7 +824,7 @@ class SamplingClient:
             if logprob_tokens:
                 tokens = logprob_tokens
 
-        raw_prompt_tokens = choice.get("input_token_ids")
+        raw_prompt_tokens = choice.get("prompt_token_ids")
         prompt_tokens = None
         if isinstance(raw_prompt_tokens, list) and all(
             isinstance(tok, int) for tok in raw_prompt_tokens
@@ -1502,7 +1504,7 @@ class SamplingClient:
         last_error: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
             try:
-                async with self._create_client() as client:
+                async with self._request_client() as client:
                     response = await client.post("/generate", json=payload)
                     response.raise_for_status()
                     data = response.json()
@@ -1755,8 +1757,18 @@ class SamplingClient:
                 body = {"error_message": response.text}
             if response.is_error or body.get("success") is False:
                 error = str(body.get("error_message") or body)
-                if "already loaded" in error.lower() and lora_path in error:
-                    return {"success": True, "already_loaded": True, **body}
+                loaded_adapters = body.get("loaded_adapters")
+                loaded = (
+                    loaded_adapters.get(lora_name)
+                    if isinstance(loaded_adapters, dict)
+                    else None
+                )
+                loaded_path = (
+                    loaded.get("lora_path") if isinstance(loaded, dict) else loaded
+                )
+                if "already loaded" in error.lower() and loaded_path == lora_path:
+                    self._lora_name = lora_name
+                    return {**body, "success": True, "already_loaded": True}
                 response.raise_for_status()
                 raise RuntimeError(f"load_lora_adapter({lora_name}) failed: {error}")
             self._lora_name = lora_name
@@ -1800,6 +1812,7 @@ class SamplingClient:
     ) -> dict:
         """Safely pause, flush, swap adapters, and resume pipelined generation."""
         await self.pause_generation_async(mode="retract")
+        swap_error: BaseException | None = None
         try:
             await self.flush_cache_async()
             if current_lora_name:
@@ -1809,8 +1822,16 @@ class SamplingClient:
             return await self.load_lora_adapter_async(
                 lora_name=lora_name, lora_path=lora_path, pinned=pinned
             )
+        except BaseException as exc:
+            swap_error = exc
+            raise
         finally:
-            await self.continue_generation_async()
+            try:
+                await self.continue_generation_async()
+            except Exception:
+                if swap_error is None:
+                    raise
+                logger.exception("Failed to resume generation after LoRA swap failure")
 
     def swap_lora_adapter(self, **kwargs: Any) -> AsyncAPIFuture[dict]:
         return wrap_coroutine(self.swap_lora_adapter_async(**kwargs))

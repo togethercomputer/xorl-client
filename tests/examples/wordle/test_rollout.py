@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from examples.wordle.config import load_config
 from examples.wordle.rollout import build_group_datums, rollout_complete_groups
 from examples.wordle.task import WordleTask
@@ -317,3 +319,24 @@ def test_r3_reuses_overlapping_prefix_as_append_only_spans():
     assert metrics["r3_payload_present_datums"] == 4
     assert all(datum.routed_experts["rows"] == 4 for datum in datums)
     assert all(datum.routed_expert_logits["rows"] == 4 for datum in datums)
+    assert metrics["r3_payload_bytes"] > 0
+
+
+def test_r3_payload_cap_is_enforced_before_training():
+    config = load_config(ROOT / "examples/wordle/configs/r3.yaml")
+    config.wordle = config.wordle.model_copy(
+        update={"train_targets": 4, "eval_targets": 2, "group_size": 2}
+    )
+    config.r3 = config.r3.model_copy(update={"max_payload_bytes": 1})
+    with pytest.raises(ValueError, match="exceeds max_payload_bytes"):
+        asyncio.run(
+            rollout_complete_groups(
+                task=_task(config),
+                tokenizer=Tokenizer(),
+                sampler=R3Sampler(),
+                targets=["above"],
+                step=1,
+                config=config,
+                on_group_complete=lambda _group: asyncio.sleep(0),
+            )
+        )

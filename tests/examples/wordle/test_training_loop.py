@@ -229,7 +229,18 @@ def test_zero_k3_gate_runs_before_optimizer(tmp_path):
     with pytest.raises(RuntimeError, match="optimizer not requested"):
         asyncio.run(runner.run())
     assert not any(event[0] == "optimizer" for event in trainer.events)
-    gate = json.loads(
-        (store.steps / "step-00000001-preoptimizer.json").read_text()
-    )
-    assert gate["optimizer_step_requested"] is False
+    gates = sorted(store.steps.glob("step-00000001-preoptimizer-attempt-*.json"))
+    assert len(gates) == 1
+    gate = json.loads(gates[0].read_text())
+    assert gate["evaluated_before_optimizer"] is True
+    assert gate["optimizer_step_requested_at_write"] is False
+
+    async def exact(_datums):
+        trainer.events.append(("forward_backward", 1))
+        return {"loss": 0.5, "k3": 0.0, "ratio_error": 0.0}
+
+    trainer.forward_backward = exact
+    audit = asyncio.run(runner.run())
+    assert audit["success"]
+    gates = sorted(store.steps.glob("step-00000001-preoptimizer-attempt-*.json"))
+    assert [json.loads(path.read_text())["attempt"] for path in gates] == [1, 2]
