@@ -325,44 +325,27 @@ class TrainingClient:
         for datum in data:
             if isinstance(datum, types.Datum):
                 datum_dict = datum.to_dict()
-                datum_dict.pop("routed_experts", None)
-                datum_dict.pop("routed_expert_logits", None)
                 datums_dicts.append(datum_dict)
-                if datum.routed_experts is not None:
-                    all_routed_experts.append(datum.routed_experts)
-                if datum.routed_expert_logits is not None:
-                    all_routed_expert_logits.append(datum.routed_expert_logits)
             elif hasattr(datum, "to_dict"):
                 datum_dict = datum.to_dict()
-                datum_dict.pop("routed_experts", None)
-                datum_dict.pop("routed_expert_logits", None)
                 datums_dicts.append(datum_dict)
-                if (
-                    hasattr(datum, "routed_experts")
-                    and datum.routed_experts is not None
-                ):
-                    all_routed_experts.append(datum.routed_experts)
-                if (
-                    hasattr(datum, "routed_expert_logits")
-                    and datum.routed_expert_logits is not None
-                ):
-                    all_routed_expert_logits.append(datum.routed_expert_logits)
             elif hasattr(datum, "model_dump"):
                 datum_dict = datum.model_dump()
                 datums_dicts.append(self._convert_tinker_datum(datum_dict))
             elif isinstance(datum, dict):
                 datum_dict = dict(datum)
-                routed = datum_dict.pop("routed_experts", None)
-                routed_logits = datum_dict.pop("routed_expert_logits", None)
                 datums_dicts.append(datum_dict)
-                if routed is not None:
-                    all_routed_experts.append(routed)
-                if routed_logits is not None:
-                    all_routed_expert_logits.append(routed_logits)
             else:
                 raise TypeError(
                     f"Expected Datum, dict, or Pydantic model, got {type(datum).__name__}"
                 )
+
+            routed = datum_dict.pop("routed_experts", None)
+            routed_logits = datum_dict.pop("routed_expert_logits", None)
+            if routed is not None:
+                all_routed_experts.append(routed)
+            if routed_logits is not None:
+                all_routed_expert_logits.append(routed_logits)
 
         return datums_dicts, all_routed_experts, all_routed_expert_logits
 

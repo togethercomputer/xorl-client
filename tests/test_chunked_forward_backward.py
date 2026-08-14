@@ -261,6 +261,38 @@ class TestConvertDatums:
         with pytest.raises(ValueError, match="must be paired"):
             client._chunked_datums([indices_only])
 
+    @pytest.mark.parametrize("serializer", ["to_dict", "model_dump"])
+    def test_convert_datums_preserves_serialized_r3_routing(self, serializer):
+        client = _make_training_client()
+        routed = [[[0, 1]]]
+        routed_logits = [[[0.6, 0.4]]]
+        payload = {
+            **_make_datum_dict(num_tokens=2),
+            "routed_experts": routed,
+            "routed_expert_logits": routed_logits,
+        }
+
+        class SerializedDatum:
+            def to_dict(self):
+                if serializer != "to_dict":
+                    raise AttributeError
+                return dict(payload)
+
+            def model_dump(self):
+                return dict(payload)
+
+        datum = SerializedDatum()
+        if serializer == "model_dump":
+            del SerializedDatum.to_dict
+
+        client._validate_r3_routing([datum])
+        datums, all_routed, all_routed_logits = client._convert_datums([datum])
+
+        assert "routed_experts" not in datums[0]
+        assert "routed_expert_logits" not in datums[0]
+        assert all_routed == [routed]
+        assert all_routed_logits == [routed_logits]
+
     def test_convert_datums_with_dicts(self):
         """Converting dict datums should pass through."""
         client = _make_training_client()
