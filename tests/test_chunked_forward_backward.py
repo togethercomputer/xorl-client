@@ -248,7 +248,7 @@ class TestConvertDatums:
         assert "routed_experts" not in dicts[0]  # Removed from dict
         assert "routed_expert_logits" not in dicts[0]
 
-    def test_chunking_rejects_partial_r3_routing(self):
+    def test_chunking_accepts_indices_only_and_rejects_partial_r3_routing(self):
         client = _make_training_client()
         complete = _make_datum_dict(num_tokens=5)
         complete["routed_experts"] = [[[0, 1]]]
@@ -258,8 +258,28 @@ class TestConvertDatums:
 
         with pytest.raises(ValueError, match="present on every datum"):
             client._chunked_datums([complete, missing])
-        with pytest.raises(ValueError, match="must be paired"):
-            client._chunked_datums([indices_only])
+        chunks = client._chunked_datums([indices_only])
+        assert len(chunks) == 1
+        assert chunks[0][1] == [indices_only]
+
+        logits_only = {
+            **_make_datum_dict(num_tokens=5),
+            "routed_expert_logits": [[[0.6, 0.4]]],
+        }
+        with pytest.raises(ValueError, match="routed_experts must be present"):
+            client._chunked_datums([logits_only])
+
+        indices_only_second = {
+            **_make_datum_dict(num_tokens=5),
+            "routed_experts": [[[1, 2]]],
+        }
+        with_logits = {
+            **_make_datum_dict(num_tokens=5),
+            "routed_experts": [[[0, 1]]],
+            "routed_expert_logits": [[[0.6, 0.4]]],
+        }
+        with pytest.raises(ValueError, match="logits must be present on every datum"):
+            client._chunked_datums([with_logits, indices_only_second])
 
     @pytest.mark.parametrize("serializer", ["to_dict", "model_dump"])
     def test_convert_datums_preserves_serialized_r3_routing(self, serializer):

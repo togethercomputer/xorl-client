@@ -288,7 +288,7 @@ class TrainingClient:
 
     @classmethod
     def _validate_r3_routing(cls, data: List[Any]) -> None:
-        """Require routing replay fields to be complete and paired across a request."""
+        """Require complete expert indices and, when supplied, complete logits."""
         if not data:
             return
         experts_present = [
@@ -300,13 +300,13 @@ class TrainingClient:
         ]
         if not any(experts_present) and not any(logits_present):
             return
-        if experts_present != logits_present:
+        if any(logits_present) and not all(logits_present):
             raise ValueError(
-                "R3 routed_experts and routed_expert_logits must be paired on every datum"
+                "R3 routed_expert_logits must be present on every datum or absent from the request"
             )
         if not all(experts_present):
             raise ValueError(
-                "R3 routing fields must be present on every datum or absent from the request"
+                "R3 routed_experts must be present on every datum when routing replay is requested"
             )
 
     def _convert_datums(self, data: List) -> tuple:
