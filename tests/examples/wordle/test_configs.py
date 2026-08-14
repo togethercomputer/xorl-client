@@ -10,7 +10,7 @@ from examples.wordle.train import _validate_capabilities
 ROOT = Path(__file__).parents[3]
 
 
-@pytest.mark.parametrize("name", ["importance_sampling", "cispo", "zero_k3"])
+@pytest.mark.parametrize("name", ["importance_sampling", "cispo", "zero_k3", "r3"])
 def test_shipped_presets_load_and_resolve_data(name):
     config = load_config(ROOT / f"examples/wordle/configs/{name}.yaml")
     assert Path(config.wordle.targets_path).is_file()
@@ -41,9 +41,11 @@ def test_demonstrably_missing_endpoint_capability_fails_early():
     _validate_capabilities(config, {"sampler": {"unavailable": "connection refused"}})
 
 
-def test_r3_preset_is_a_fail_closed_integration_seam():
-    with pytest.raises(ValidationError, match="fail-closed integration seam"):
-        load_config(ROOT / "examples/wordle/configs/r3.yaml")
+def test_r3_preset_enables_binary_side_channel_without_requiring_zero_k3():
+    config = load_config(ROOT / "examples/wordle/configs/r3.yaml")
+    assert config.r3.enabled and config.r3.required
+    assert config.r3.binary_side_channel
+    assert config.correctness.max_k3 == 0.001
 
 
 def test_cispo_preset_passes_explicit_absolute_ratio_bounds():

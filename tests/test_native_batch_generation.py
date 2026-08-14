@@ -152,3 +152,34 @@ def test_native_batch_rejects_invalid_behavior_logprobs():
                 {"output_ids": [2], "meta_info": meta_info},
                 return_logprobs=True,
             )
+
+
+def test_native_batch_passes_binary_r3_controls_outside_sampling_params():
+    client = SamplingClient(base_url="http://sampler")
+
+    async def post(path, json):
+        assert json["return_routed_experts"] is True
+        assert json["return_expert_logits"] is True
+        assert json["return_routed_experts_file"] is True
+        assert json["routed_experts_start_len"] == [0, 17]
+        assert "return_routed_experts_file" not in json["sampling_params"][0]
+        return _response(
+            200,
+            [
+                {"output_ids": [2], "meta_info": {"output_token_logprobs": [[-1.0, 2]]}},
+                {"output_ids": [3], "meta_info": {"output_token_logprobs": [[-2.0, 3]]}},
+            ],
+        )
+
+    params = [
+        SamplingParams(
+            max_tokens=1,
+            return_routed_experts=True,
+            return_expert_logits=True,
+            return_routed_experts_file=True,
+            routed_experts_start_len=start,
+        )
+        for start in (0, 17)
+    ]
+    with patch("httpx.AsyncClient.post", side_effect=post):
+        asyncio.run(client.generate_batch_native_async([[1], [1]], params))

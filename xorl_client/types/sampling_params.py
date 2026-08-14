@@ -43,7 +43,13 @@ class SamplingParams:
     """For R3 (Rollout Routing Replay) in MoE models."""
 
     return_expert_logits: bool = False
-    """Return expert routing logits for R3 replay in MoE models."""
+    """Return selected router weights alongside expert IDs for R3."""
+
+    return_routed_experts_file: bool = False
+    """Return packed shared-storage descriptors instead of base64 routing bodies."""
+
+    routed_experts_start_len: int = 0
+    """Skip an already stored routing prefix of this many rows."""
 
     seed: Optional[int] = None
     """Random seed for reproducible generation."""

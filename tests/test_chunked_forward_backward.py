@@ -222,9 +222,10 @@ class TestConvertDatums:
         """Converting Datum objects should produce dicts."""
         client = _make_training_client()
         data = [_make_datum(num_tokens=5) for _ in range(3)]
-        dicts, routed = client._convert_datums(data)
+        dicts, routed, routed_logits = client._convert_datums(data)
         assert len(dicts) == 3
         assert len(routed) == 0
+        assert len(routed_logits) == 0
         for d in dicts:
             assert "model_input" in d
             assert "loss_fn_inputs" in d
@@ -237,20 +238,24 @@ class TestConvertDatums:
                 model_input=types.ModelInput.from_ints([1, 2, 3]),
                 loss_fn_inputs={"weights": [1.0, 1.0, 1.0]},
                 routed_experts=[[[0, 1]], [[1, 2]], [[0, 2]]],
+                routed_expert_logits=[[[0.6, 0.4]], [[0.7, 0.3]], [[0.8, 0.2]]],
             )
         ]
-        dicts, routed = client._convert_datums(data)
+        dicts, routed, routed_logits = client._convert_datums(data)
         assert len(dicts) == 1
         assert len(routed) == 1
+        assert len(routed_logits) == 1
         assert "routed_experts" not in dicts[0]  # Removed from dict
+        assert "routed_expert_logits" not in dicts[0]
 
     def test_convert_datums_with_dicts(self):
         """Converting dict datums should pass through."""
         client = _make_training_client()
         data = [_make_datum_dict(num_tokens=5)]
-        dicts, routed = client._convert_datums(data)
+        dicts, routed, routed_logits = client._convert_datums(data)
         assert len(dicts) == 1
         assert len(routed) == 0
+        assert len(routed_logits) == 0
 
     def test_convert_datums_simple(self):
         """Simple conversion should not extract routed_experts."""

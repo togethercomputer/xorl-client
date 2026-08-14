@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Sequence
+from typing import Any, Sequence
 
 from xorl_client import types
 
@@ -67,6 +67,8 @@ def build_policy_datum(
     output_tokens: Sequence[int],
     old_logprobs: Sequence[float],
     advantage: float,
+    routed_experts: Any = None,
+    routed_expert_logits: Any = None,
 ) -> types.Datum:
     """Construct a validated policy-loss datum for one generated turn."""
 
@@ -79,4 +81,6 @@ def build_policy_datum(
     return types.Datum(
         model_input=types.ModelInput.from_ints(combined[:-1]),
         loss_fn_inputs=loss_inputs,
+        routed_experts=routed_experts,
+        routed_expert_logits=routed_expert_logits,
     )

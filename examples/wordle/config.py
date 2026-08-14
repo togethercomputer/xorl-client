@@ -121,6 +121,7 @@ class ArtifactConfig(StrictModel):
 class R3Config(StrictModel):
     enabled: bool = False
     required: bool = False
+    binary_side_channel: bool = True
     max_payload_bytes: int = Field(default=268_435_456, gt=0)
 
     @model_validator(mode="after")
@@ -162,11 +163,8 @@ class ExperimentConfig(StrictModel):
             raise ValueError(
                 "stopping on </guess> requires generation.no_stop_trim=true"
             )
-        if self.preset == "r3":
-            raise ValueError(
-                "the R3 preset is a fail-closed integration seam until the public "
-                "selected-router-weight transport lands"
-            )
+        if self.preset == "r3" and not (self.r3.enabled and self.r3.required):
+            raise ValueError("the R3 preset requires r3.enabled=true and r3.required=true")
         if self.preset != "r3" and self.r3.enabled:
             raise ValueError("R3 can only be enabled by the r3 preset")
         return self

@@ -274,42 +274,55 @@ class TrainingClient:
             data: List of Datum objects or dicts
 
         Returns:
-            Tuple of (datums_dicts, all_routed_experts)
+            Tuple of datum dicts, routed expert IDs, and selected router weights.
         """
         datums_dicts = []
         all_routed_experts = []
+        all_routed_expert_logits = []
 
         for datum in data:
             if isinstance(datum, types.Datum):
                 datum_dict = datum.to_dict()
                 datum_dict.pop("routed_experts", None)
+                datum_dict.pop("routed_expert_logits", None)
                 datums_dicts.append(datum_dict)
                 if datum.routed_experts is not None:
                     all_routed_experts.append(datum.routed_experts)
+                if datum.routed_expert_logits is not None:
+                    all_routed_expert_logits.append(datum.routed_expert_logits)
             elif hasattr(datum, "to_dict"):
                 datum_dict = datum.to_dict()
                 datum_dict.pop("routed_experts", None)
+                datum_dict.pop("routed_expert_logits", None)
                 datums_dicts.append(datum_dict)
                 if (
                     hasattr(datum, "routed_experts")
                     and datum.routed_experts is not None
                 ):
                     all_routed_experts.append(datum.routed_experts)
+                if (
+                    hasattr(datum, "routed_expert_logits")
+                    and datum.routed_expert_logits is not None
+                ):
+                    all_routed_expert_logits.append(datum.routed_expert_logits)
             elif hasattr(datum, "model_dump"):
                 datum_dict = datum.model_dump()
                 datums_dicts.append(self._convert_tinker_datum(datum_dict))
             elif isinstance(datum, dict):
                 datum_dict = dict(datum)
                 routed = datum_dict.pop("routed_experts", None)
+                routed_logits = datum_dict.pop("routed_expert_logits", None)
                 datums_dicts.append(datum_dict)
                 if routed is not None:
                     all_routed_experts.append(routed)
+                if routed_logits is not None:
+                    all_routed_expert_logits.append(routed_logits)
             else:
                 raise TypeError(
                     f"Expected Datum, dict, or Pydantic model, got {type(datum).__name__}"
                 )
 
-        return datums_dicts, all_routed_experts
+        return datums_dicts, all_routed_experts, all_routed_expert_logits
 
     def _convert_datums_simple(self, data: List) -> List[Dict[str, Any]]:
         """Convert a list of datums to dicts (no routed_experts extraction).
@@ -408,7 +421,9 @@ class TrainingClient:
         # Single chunk: use simple path (no _CombinedAPIFuture overhead)
         if len(chunked) == 1:
             request_id, chunk_data = chunked[0]
-            datums_dicts, all_routed_experts = self._convert_datums(chunk_data)
+            datums_dicts, all_routed_experts, all_routed_expert_logits = (
+                self._convert_datums(chunk_data)
+            )
 
             request_data = {
                 "model_id": self.model_id,
@@ -426,6 +441,12 @@ class TrainingClient:
                 request_data["forward_backward_input"][
                     "routed_experts"
                 ] = all_routed_experts
+            if all_routed_expert_logits and len(all_routed_expert_logits) == len(
+                datums_dicts
+            ):
+                request_data["forward_backward_input"][
+                    "routed_expert_logits"
+                ] = all_routed_expert_logits
 
             async def _forward_backward_async():
                 start_time = time.time()
@@ -459,7 +480,9 @@ class TrainingClient:
         # Pre-convert all chunks and build request data
         chunk_requests = []
         for request_id, chunk_data in chunked:
-            datums_dicts, all_routed_experts = self._convert_datums(chunk_data)
+            datums_dicts, all_routed_experts, all_routed_expert_logits = (
+                self._convert_datums(chunk_data)
+            )
             rd = {
                 "model_id": self.model_id,
                 "seq_id": request_id + 1,
@@ -472,6 +495,12 @@ class TrainingClient:
                 rd["forward_backward_input"]["loss_fn_params"] = loss_fn_params
             if all_routed_experts and len(all_routed_experts) == len(datums_dicts):
                 rd["forward_backward_input"]["routed_experts"] = all_routed_experts
+            if all_routed_expert_logits and len(all_routed_expert_logits) == len(
+                datums_dicts
+            ):
+                rd["forward_backward_input"][
+                    "routed_expert_logits"
+                ] = all_routed_expert_logits
             chunk_requests.append((request_id, rd))
 
         async def _chunked_forward_backward_async():
@@ -545,7 +574,9 @@ class TrainingClient:
         # Single chunk: use simple path
         if len(chunked) == 1:
             request_id, chunk_data = chunked[0]
-            datums_dicts, all_routed_experts = self._convert_datums(chunk_data)
+            datums_dicts, all_routed_experts, all_routed_expert_logits = (
+                self._convert_datums(chunk_data)
+            )
 
             request_data = {
                 "model_id": self.model_id,
@@ -559,6 +590,12 @@ class TrainingClient:
                 request_data["forward_input"]["loss_fn_params"] = loss_fn_params
             if all_routed_experts and len(all_routed_experts) == len(datums_dicts):
                 request_data["forward_input"]["routed_experts"] = all_routed_experts
+            if all_routed_expert_logits and len(all_routed_expert_logits) == len(
+                datums_dicts
+            ):
+                request_data["forward_input"][
+                    "routed_expert_logits"
+                ] = all_routed_expert_logits
 
             async def _forward_async():
                 start_time = time.time()
@@ -587,7 +624,9 @@ class TrainingClient:
 
         chunk_requests = []
         for request_id, chunk_data in chunked:
-            datums_dicts, all_routed_experts = self._convert_datums(chunk_data)
+            datums_dicts, all_routed_experts, all_routed_expert_logits = (
+                self._convert_datums(chunk_data)
+            )
             rd = {
                 "model_id": self.model_id,
                 "seq_id": request_id + 1,
@@ -600,6 +639,12 @@ class TrainingClient:
                 rd["forward_input"]["loss_fn_params"] = loss_fn_params
             if all_routed_experts and len(all_routed_experts) == len(datums_dicts):
                 rd["forward_input"]["routed_experts"] = all_routed_experts
+            if all_routed_expert_logits and len(all_routed_expert_logits) == len(
+                datums_dicts
+            ):
+                rd["forward_input"][
+                    "routed_expert_logits"
+                ] = all_routed_expert_logits
             chunk_requests.append((request_id, rd))
 
         async def _chunked_forward_async():

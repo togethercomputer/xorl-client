@@ -1455,9 +1455,31 @@ class SamplingClient:
                     "return_routed_experts must be shared across a native batch"
                 )
             return_routed_experts = next(iter(routed_flags))
+            expert_logits_flags = {
+                params.return_expert_logits for params in sampling_params
+            }
+            file_flags = {
+                params.return_routed_experts_file for params in sampling_params
+            }
+            if len(expert_logits_flags) != 1 or len(file_flags) != 1:
+                raise ValueError(
+                    "R3 return flags must be shared across a native batch"
+                )
+            return_expert_logits = next(iter(expert_logits_flags))
+            return_routed_experts_file = next(iter(file_flags))
+            routed_experts_start_len: int | list[int] = [
+                int(params.routed_experts_start_len) for params in sampling_params
+            ]
         elif isinstance(sampling_params, types.SamplingParams):
             params_payload = sampling_params.to_dict()
             return_routed_experts = sampling_params.return_routed_experts
+            return_expert_logits = sampling_params.return_expert_logits
+            return_routed_experts_file = (
+                sampling_params.return_routed_experts_file
+            )
+            routed_experts_start_len = int(
+                sampling_params.routed_experts_start_len
+            )
         else:
             raise TypeError("sampling_params must be SamplingParams or a list of them")
 
@@ -1473,6 +1495,9 @@ class SamplingClient:
             payload["lora_path"] = effective_lora
         if return_routed_experts:
             payload["return_routed_experts"] = True
+            payload["return_expert_logits"] = return_expert_logits
+            payload["return_routed_experts_file"] = return_routed_experts_file
+            payload["routed_experts_start_len"] = routed_experts_start_len
 
         last_error: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
