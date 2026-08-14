@@ -1657,6 +1657,8 @@ class SamplingClient:
 
     async def pause_generation_async(self, mode: str = "in_place") -> dict:
         """Pause all in-flight generation on this SGLang server."""
+        if mode not in {"abort", "retract", "in_place"}:
+            raise ValueError("mode must be 'abort', 'retract', or 'in_place'")
         async with self._request_client() as client:
             response = await client.post(
                 "/pause_generation",
@@ -1666,16 +1668,127 @@ class SamplingClient:
             response.raise_for_status()
             return response.json()
 
-    async def continue_generation_async(self) -> dict:
+    def pause_generation(self, mode: str = "in_place") -> AsyncAPIFuture[dict]:
+        return wrap_coroutine(self.pause_generation_async(mode))
+
+    async def continue_generation_async(
+        self, *, torch_empty_cache: bool = True
+    ) -> dict:
         """Resume paused generation on this SGLang server."""
         async with self._request_client() as client:
             response = await client.post(
                 "/continue_generation",
-                json={},
+                json={"torch_empty_cache": torch_empty_cache},
                 timeout=30.0,
             )
             response.raise_for_status()
             return response.json()
+
+    def continue_generation(
+        self, *, torch_empty_cache: bool = True
+    ) -> AsyncAPIFuture[dict]:
+        return wrap_coroutine(
+            self.continue_generation_async(torch_empty_cache=torch_empty_cache)
+        )
+
+    async def flush_cache_async(self, *, timeout: float = 0.0) -> dict:
+        """Flush SGLang's radix/KV cache before a policy swap."""
+        async with self._request_client() as client:
+            response = await client.post(
+                "/flush_cache", params={"timeout": timeout}, timeout=max(30.0, timeout)
+            )
+            response.raise_for_status()
+            try:
+                return response.json()
+            except ValueError:
+                return {"success": True, "message": response.text}
+
+    def flush_cache(self, *, timeout: float = 0.0) -> AsyncAPIFuture[dict]:
+        return wrap_coroutine(self.flush_cache_async(timeout=timeout))
+
+    async def load_lora_adapter_async(
+        self,
+        *,
+        lora_name: str,
+        lora_path: str,
+        pinned: bool = False,
+        timeout: float = 300.0,
+    ) -> dict:
+        """Load a LoRA adapter, accepting repeat loads only for the same path."""
+        payload = {
+            "lora_name": lora_name,
+            "lora_path": lora_path,
+            "pinned": pinned,
+        }
+        async with self._request_client() as client:
+            response = await client.post(
+                "/load_lora_adapter", json=payload, timeout=timeout
+            )
+            try:
+                body = response.json()
+            except ValueError:
+                body = {"error_message": response.text}
+            if response.is_error or body.get("success") is False:
+                error = str(body.get("error_message") or body)
+                if "already loaded" in error.lower() and lora_path in error:
+                    return {"success": True, "already_loaded": True, **body}
+                response.raise_for_status()
+                raise RuntimeError(f"load_lora_adapter({lora_name}) failed: {error}")
+            self._lora_name = lora_name
+            return body
+
+    def load_lora_adapter(self, **kwargs: Any) -> AsyncAPIFuture[dict]:
+        return wrap_coroutine(self.load_lora_adapter_async(**kwargs))
+
+    async def unload_lora_adapter_async(
+        self,
+        *,
+        lora_name: str,
+        flush_before: bool = True,
+        timeout: float = 60.0,
+    ) -> dict:
+        """Unload an adapter after flushing cache references to the old policy."""
+        if flush_before:
+            await self.flush_cache_async()
+        async with self._request_client() as client:
+            response = await client.post(
+                "/unload_lora_adapter",
+                json={"lora_name": lora_name},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+        if self._lora_name == lora_name:
+            self._lora_name = None
+        return body
+
+    def unload_lora_adapter(self, **kwargs: Any) -> AsyncAPIFuture[dict]:
+        return wrap_coroutine(self.unload_lora_adapter_async(**kwargs))
+
+    async def swap_lora_adapter_async(
+        self,
+        *,
+        current_lora_name: Optional[str],
+        lora_name: str,
+        lora_path: str,
+        pinned: bool = False,
+    ) -> dict:
+        """Safely pause, flush, swap adapters, and resume pipelined generation."""
+        await self.pause_generation_async(mode="retract")
+        try:
+            await self.flush_cache_async()
+            if current_lora_name:
+                await self.unload_lora_adapter_async(
+                    lora_name=current_lora_name, flush_before=False
+                )
+            return await self.load_lora_adapter_async(
+                lora_name=lora_name, lora_path=lora_path, pinned=pinned
+            )
+        finally:
+            await self.continue_generation_async()
+
+    def swap_lora_adapter(self, **kwargs: Any) -> AsyncAPIFuture[dict]:
+        return wrap_coroutine(self.swap_lora_adapter_async(**kwargs))
 
     def close(self):
         """Close any pooled clients.

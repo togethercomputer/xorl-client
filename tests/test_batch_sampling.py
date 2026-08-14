@@ -6,6 +6,8 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
+import httpx
+
 from xorl_client import types
 from xorl_client.client.sampling_client import SamplingClient
 
@@ -189,10 +191,34 @@ class TestPauseContinueGeneration(unittest.TestCase):
                 result = await self.client.continue_generation_async()
                 mock_post.assert_called_once_with(
                     "/continue_generation",
-                    json={},
+                    json={"torch_empty_cache": True},
                     timeout=30.0,
                 )
                 self.assertEqual(result["status"], "resumed")
+
+        asyncio.run(run_test())
+
+    def test_lora_load_is_idempotent_only_for_same_path(self):
+        async def run_test():
+            same = _make_httpx_response(
+                400,
+                json={"error_message": "adapter already loaded from /weights/step-1"},
+            )
+            with patch("httpx.AsyncClient.post", return_value=same):
+                result = await self.client.load_lora_adapter_async(
+                    lora_name="policy", lora_path="/weights/step-1"
+                )
+                self.assertTrue(result["already_loaded"])
+
+            collision = _make_httpx_response(
+                400,
+                json={"error_message": "adapter already loaded from /weights/old"},
+            )
+            with patch("httpx.AsyncClient.post", return_value=collision):
+                with self.assertRaises(httpx.HTTPStatusError):
+                    await self.client.load_lora_adapter_async(
+                        lora_name="policy", lora_path="/weights/new"
+                    )
 
         asyncio.run(run_test())
 
