@@ -22,8 +22,11 @@ logger = logging.getLogger(__name__)
 Metrics = Dict[str, float]
 
 # Chunking constants
-MAX_CHUNK_LEN = 2048 # Maximum number of data items per chunk
-MAX_CHUNK_BYTES_COUNT = 5_000_000  # Maximum bytes per chunk (5MB)
+MAX_CHUNK_LEN = 2048  # Maximum number of data items per chunk
+# Maximum bytes per chunk (512 MiB). Small caps fragment every forward_backward into
+# many small engine calls and serialize the forward/backward path. Override with
+# XORL_CLIENT_MAX_CHUNK_BYTES_COUNT (or legacy XORL_CLIENT_MAX_CHUNK_BYTES).
+MAX_CHUNK_BYTES_COUNT = 512 * 1024 * 1024
 
 
 def combine_fwd_bwd_output_results(

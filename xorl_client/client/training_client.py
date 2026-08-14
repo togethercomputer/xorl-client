@@ -1657,6 +1657,7 @@ class TrainingClient:
         master_port: int = 29600,
         group_name: str = "weight_sync_group",
         buffer_size_mb: int = 1024,
+        pool: str = "default",
     ) -> APIFuture[types.AddInferenceEndpointResponse]:
         """Register an SGLang inference endpoint for NCCL weight sync.
 
@@ -1675,6 +1676,10 @@ class TrainingClient:
             master_port: Port for NCCL rendezvous (default: 29600)
             group_name: NCCL process group name (default: weight_sync_group)
             buffer_size_mb: Transfer bucket size in MB (default: 1024)
+            pool: Endpoint pool tag (default: "default"). Syncs can be restricted
+                to pools via sync_weights_to_inference(pools=[...]) — e.g. register
+                dedicated eval endpoints with pool="eval" so the per-step training
+                sync leaves them on frozen weights.
 
         Returns:
             APIFuture[AddInferenceEndpointResponse] with endpoint info and sync status
@@ -1700,6 +1705,7 @@ class TrainingClient:
             "master_port": master_port,
             "group_name": group_name,
             "buffer_size_mb": buffer_size_mb,
+            "pool": pool,
         }
 
         future = self.holder.post_async("/add_inference_endpoint", request_data)
@@ -2032,6 +2038,8 @@ class TrainingClient:
         master_address: Optional[str] = None,
         timeout: float = 1800.0,
         quantization: Optional[Dict[str, Any]] = None,
+        pools: Optional[List[str]] = None,
+        group_name: Optional[str] = None,
     ) -> APIFuture[types.SyncWeightsResponse]:
         """Sync current model weights to connected inference endpoint.
 
@@ -2042,6 +2050,17 @@ class TrainingClient:
         Args:
             sync_method: Transfer method - "nccl_ep_scatter" (default, multi-rank parallel),
                         "nccl" (single-rank), or "rdma_direct" (RDMA push)
+            master_address: Optional trainer address for rendezvous. If omitted,
+                XORL_WEIGHT_SYNC_MASTER_ADDRESS is used when set.
+            timeout: HTTP request timeout in seconds.
+            pools: Restrict the sync to endpoints registered with a pool tag in
+                this list (None = all endpoints, backward compatible). E.g.
+                pools=["default"] for the per-step training-sampler sync,
+                pools=["eval"] to refresh a dedicated eval pool at eval steps.
+            group_name: Optional NCCL/P2P process-group name override. Use a
+                distinct name per pool (e.g. "weight_sync_group_eval") so pool
+                syncs don't collide on the cached transfer group.
+            quantization: Optional transport quantization configuration.
 
         Returns:
             APIFuture[SyncWeightsResponse] with transfer stats
@@ -2054,7 +2073,12 @@ class TrainingClient:
         """
         request_data = {
             "sync_method": sync_method,
+            "timeout_s": timeout,
         }
+        if pools is not None:
+            request_data["pools"] = pools
+        if group_name is not None:
+            request_data["group_name"] = group_name
         master_address = master_address or os.environ.get(
             "XORL_WEIGHT_SYNC_MASTER_ADDRESS"
         )

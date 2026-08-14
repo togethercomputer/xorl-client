@@ -236,8 +236,8 @@ class TestChunkedHelpers:
 
     def test_chunking_constants(self):
         """Test chunking constants are defined."""
-        assert MAX_CHUNK_LEN == 1024
-        assert MAX_CHUNK_BYTES_COUNT == 5_000_000
+        assert MAX_CHUNK_LEN == 2048
+        assert MAX_CHUNK_BYTES_COUNT == 512 * 1024 * 1024
 
 
 class TestTwoPhaseFlow:
