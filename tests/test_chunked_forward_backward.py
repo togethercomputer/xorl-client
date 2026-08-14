@@ -248,6 +248,19 @@ class TestConvertDatums:
         assert "routed_experts" not in dicts[0]  # Removed from dict
         assert "routed_expert_logits" not in dicts[0]
 
+    def test_chunking_rejects_partial_r3_routing(self):
+        client = _make_training_client()
+        complete = _make_datum_dict(num_tokens=5)
+        complete["routed_experts"] = [[[0, 1]]]
+        complete["routed_expert_logits"] = [[[0.6, 0.4]]]
+        missing = _make_datum_dict(num_tokens=5)
+        indices_only = {**_make_datum_dict(num_tokens=5), "routed_experts": [[[0, 1]]]}
+
+        with pytest.raises(ValueError, match="present on every datum"):
+            client._chunked_datums([complete, missing])
+        with pytest.raises(ValueError, match="must be paired"):
+            client._chunked_datums([indices_only])
+
     def test_convert_datums_with_dicts(self):
         """Converting dict datums should pass through."""
         client = _make_training_client()

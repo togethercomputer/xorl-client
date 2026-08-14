@@ -39,7 +39,12 @@ Presets
 - `r3.yaml` streams routed indices and selected-router weights through shared
   binary spans. It requires XoRL `7f7c688e2bd80228d051d9a9e7962878b1c27890`
   (PR #57) and xorl-sglang `e46810ef5711456d1a7c5bb55b23a8d00d970aaa`
-  (PR #21), or later compatible commits preserving those public schemas.
+  (PR #21), or later compatible commits preserving those public schemas. Start
+  SGLang with `--enable-return-routed-experts`,
+  `--enable-return-expert-logits`, and
+  `--routed-experts-side-channel-dir <shared-root>`. The shared root must be
+  mounted at the same absolute path in SGLang and XoRL, and XoRL must include
+  it in `XORL_R3_SHARED_ROOTS`.
 
 When `/server_info` is available, its response is recorded and demonstrably
 incompatible capabilities fail before training. An unavailable capability

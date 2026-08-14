@@ -45,6 +45,7 @@ def test_r3_preset_enables_binary_side_channel_without_requiring_zero_k3():
     config = load_config(ROOT / "examples/wordle/configs/r3.yaml")
     assert config.r3.enabled and config.r3.required
     assert config.r3.binary_side_channel
+    assert config.trainer.loss_fn_params["compute_kl_stats"] is True
     assert config.correctness.max_k3 == 0.001
 
 

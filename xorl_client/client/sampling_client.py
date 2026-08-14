@@ -800,29 +800,60 @@ class SamplingClient:
         if not isinstance(text, str):
             text = str(text)
 
-        tokens: List[int] = []
-        output_logprobs: Optional[List[float]] = None
         raw_output_ids = choice.get("token_ids")
-        if isinstance(raw_output_ids, list) and all(
-            isinstance(tok, int) for tok in raw_output_ids
+        if not isinstance(raw_output_ids, list) or not all(
+            isinstance(tok, int) and not isinstance(tok, bool) for tok in raw_output_ids
         ):
-            tokens = list(raw_output_ids)
+            raise ValueError(
+                "Chat completions choice is missing integer list field 'token_ids'"
+            )
+        tokens = list(raw_output_ids)
+        output_logprobs: Optional[List[float]] = None
         if return_logprobs:
             output_logprobs = []
-            logprobs = choice.get("logprobs") or {}
-            content_logprobs = logprobs.get("content") or []
-            logprob_tokens: List[int] = []
-            for item in content_logprobs:
+            logprobs = choice.get("logprobs")
+            if not isinstance(logprobs, dict):
+                raise ValueError("Chat completions choice is missing 'logprobs'")
+            content_logprobs = logprobs.get("content")
+            if not isinstance(content_logprobs, list):
+                raise ValueError(
+                    "Chat completions choice is missing list field 'logprobs.content'"
+                )
+            if len(content_logprobs) != len(tokens):
+                raise ValueError(
+                    "Chat completions token/logprob alignment mismatch: "
+                    f"{len(tokens)} tokens != {len(content_logprobs)} logprobs"
+                )
+            for index, item in enumerate(content_logprobs):
                 if not isinstance(item, dict):
-                    continue
-                token_id = item.get("token_id")
-                if token_id is None:
-                    continue
-                logprob_tokens.append(int(token_id))
+                    raise ValueError(
+                        f"Chat completions logprobs.content[{index}] must be an object"
+                    )
                 value = item.get("logprob")
-                output_logprobs.append(float(value) if value is not None else 0.0)
-            if logprob_tokens:
-                tokens = logprob_tokens
+                if isinstance(value, bool):
+                    raise ValueError(
+                        f"Chat completions logprobs.content[{index}] has a non-numeric logprob"
+                    )
+                try:
+                    logprob = float(value)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Chat completions logprobs.content[{index}] has a non-numeric logprob"
+                    ) from exc
+                if not math.isfinite(logprob):
+                    raise ValueError(
+                        f"Chat completions logprobs.content[{index}] has a non-finite logprob"
+                    )
+                token_id = item.get("token_id")
+                if token_id is not None and (
+                    not isinstance(token_id, int)
+                    or isinstance(token_id, bool)
+                    or token_id != tokens[index]
+                ):
+                    raise ValueError(
+                        f"Chat completions logprobs.content[{index}] token ID does not match token_ids"
+                    )
+                output_logprobs.append(logprob)
 
         raw_prompt_tokens = choice.get("prompt_token_ids")
         prompt_tokens = None
@@ -881,11 +912,19 @@ class SamplingClient:
                     raise RuntimeError(
                         "Chat completions response missing list field 'choices'"
                     )
+                if len(choices) != num_samples:
+                    raise ValueError(
+                        "Chat completions response cardinality mismatch: "
+                        f"expected {num_samples}, got {len(choices)}"
+                    )
+                if not all(isinstance(choice, dict) for choice in choices):
+                    raise ValueError(
+                        "Chat completions response choices must all be objects"
+                    )
 
                 sequences = [
                     self._parse_chat_completion_choice(choice, return_logprobs)
                     for choice in choices
-                    if isinstance(choice, dict)
                 ]
                 return types.SampleResponse(
                     sequences=sequences,

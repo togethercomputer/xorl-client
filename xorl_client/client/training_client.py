@@ -232,6 +232,8 @@ class TrainingClient:
         Returns:
             List of (request_id, chunk) tuples where chunk is a list of datums
         """
+        self._validate_r3_routing(data)
+
         if not data:
             # Even empty data gets one chunk so a request is made
             return [(self._get_request_id(), [])]
@@ -266,6 +268,46 @@ class TrainingClient:
 
         # Allocate request_ids for all chunks
         return [(self._get_request_id(), chunk) for chunk in chunks]
+
+    @staticmethod
+    def _routing_field(datum: Any, field: str) -> Any:
+        if isinstance(datum, dict):
+            return datum.get(field)
+        value = getattr(datum, field, None)
+        if value is not None:
+            return value
+        if hasattr(datum, "model_dump"):
+            dumped = datum.model_dump()
+            if isinstance(dumped, dict):
+                return dumped.get(field)
+        if hasattr(datum, "to_dict"):
+            dumped = datum.to_dict()
+            if isinstance(dumped, dict):
+                return dumped.get(field)
+        return None
+
+    @classmethod
+    def _validate_r3_routing(cls, data: List[Any]) -> None:
+        """Require routing replay fields to be complete and paired across a request."""
+        if not data:
+            return
+        experts_present = [
+            cls._routing_field(datum, "routed_experts") is not None for datum in data
+        ]
+        logits_present = [
+            cls._routing_field(datum, "routed_expert_logits") is not None
+            for datum in data
+        ]
+        if not any(experts_present) and not any(logits_present):
+            return
+        if experts_present != logits_present:
+            raise ValueError(
+                "R3 routed_experts and routed_expert_logits must be paired on every datum"
+            )
+        if not all(experts_present):
+            raise ValueError(
+                "R3 routing fields must be present on every datum or absent from the request"
+            )
 
     def _convert_datums(self, data: List) -> tuple:
         """Convert a list of datums to dicts, extracting routed_experts.

@@ -136,13 +136,11 @@ class TestSamplingClientGeneratePayload(unittest.TestCase):
                                 "content": [
                                     {
                                         "token": "4",
-                                        "token_id": 40,
                                         "logprob": -0.1,
                                         "top_logprobs": [],
                                     },
                                     {
                                         "token": "2",
-                                        "token_id": 42,
                                         "logprob": -0.2,
                                         "top_logprobs": [],
                                     },
@@ -241,6 +239,7 @@ class TestSamplingClientGeneratePayload(unittest.TestCase):
                             "message": {"role": "assistant", "content": "hi"},
                             "logprobs": {"content": []},
                             "finish_reason": "length",
+                            "token_ids": [],
                         }
                     ]
                 },
@@ -273,21 +272,15 @@ class TestSamplingClientGeneratePayload(unittest.TestCase):
                     "choices": [
                         {
                             "message": {"role": "assistant", "content": "A"},
-                            "logprobs": {
-                                "content": [
-                                    {"token": "A", "token_id": 65, "logprob": -0.3}
-                                ]
-                            },
+                            "logprobs": {"content": [{"token": "A", "logprob": -0.3}]},
                             "finish_reason": "stop",
+                            "token_ids": [65],
                         },
                         {
                             "message": {"role": "assistant", "content": "B"},
-                            "logprobs": {
-                                "content": [
-                                    {"token": "B", "token_id": 66, "logprob": -0.4}
-                                ]
-                            },
+                            "logprobs": {"content": [{"token": "B", "logprob": -0.4}]},
                             "finish_reason": "stop",
+                            "token_ids": [66],
                         },
                     ]
                 },
@@ -307,6 +300,49 @@ class TestSamplingClientGeneratePayload(unittest.TestCase):
         self.assertEqual(payload["n"], 2)
         self.assertEqual([seq.text for seq in result.sequences], ["A", "B"])
         self.assertEqual([seq.tokens for seq in result.sequences], [[65], [66]])
+
+    def test_chat_completions_rejects_invalid_behavior_data(self) -> None:
+        client = SamplingClient(
+            base_url="http://dispatch:8080", api_format="chat_completions"
+        )
+
+        valid_choice = {
+            "message": {"role": "assistant", "content": "A"},
+            "logprobs": {"content": [{"token": "A", "logprob": -0.3}]},
+            "finish_reason": "stop",
+            "token_ids": [65],
+        }
+        cases = {
+            "missing logprob": {
+                **valid_choice,
+                "logprobs": {"content": [{"token": "A"}]},
+            },
+            "non-finite logprob": {
+                **valid_choice,
+                "logprobs": {"content": [{"token": "A", "logprob": "nan"}]},
+            },
+            "token ID mismatch": {
+                **valid_choice,
+                "logprobs": {
+                    "content": [{"token": "A", "token_id": 66, "logprob": -0.3}]
+                },
+            },
+            "wrong cardinality": None,
+        }
+
+        async def run_case(choice):
+            choices = [] if choice is None else [choice]
+            mock_response = _make_httpx_response(200, json={"choices": choices})
+            with patch("httpx.AsyncClient.post", return_value=mock_response):
+                await client.sample_async(
+                    prompt="pick A",
+                    sampling_params=SamplingParams(max_tokens=1),
+                    return_logprobs=True,
+                )
+
+        for name, choice in cases.items():
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                asyncio.run(run_case(choice))
 
     def test_chat_completions_can_be_selected_with_env_var(self) -> None:
         with patch.dict(
