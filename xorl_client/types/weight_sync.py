@@ -159,6 +159,8 @@ class SyncWeightsResponse:
     num_parameters: int = 0
     num_buckets: int = 0
     endpoints_synced: List[EndpointSyncResult] = field(default_factory=list)
+    timing_breakdown: Dict[str, float] = field(default_factory=dict)
+    p2p_rank_summaries: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def throughput_gbps(self) -> float:
@@ -181,6 +183,8 @@ class SyncWeightsResponse:
             num_parameters=data.get("num_parameters", 0),
             num_buckets=data.get("num_buckets", 0),
             endpoints_synced=endpoints_synced,
+            timing_breakdown=data.get("timing_breakdown", {}),
+            p2p_rank_summaries=data.get("p2p_rank_summaries", []),
         )
 
 

@@ -15,10 +15,12 @@ This prevents race conditions like optim_step executing before forward_backward.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import threading
 from contextlib import asynccontextmanager
-from typing import List, Dict, Any, Optional, Union
+from typing import TYPE_CHECKING, List, Dict, Any, Optional, Union
 
 from xorl_client import types
 from xorl_client.client.api_future import APIFuture, wrap_future
@@ -33,6 +35,42 @@ from xorl_client.client.client_holder import ClientHolder
 from xorl_client.exceptions import InternalServerError, BadRequestError
 
 logger = logging.getLogger(__name__)
+
+_R3_ROUTING_FIELDS = ("routed_experts", "routed_expert_logits")
+
+
+def _sync_quantization_from_env() -> Optional[Dict[str, Any]]:
+    raw = os.environ.get("XORL_WEIGHT_SYNC_QUANTIZATION") or os.environ.get(
+        "XORL_SYNC_QUANTIZATION"
+    )
+    if not raw:
+        return None
+    config = json.loads(raw)
+    if config is None:
+        return None
+    if not isinstance(config, dict):
+        raise ValueError("XORL_WEIGHT_SYNC_QUANTIZATION must be a JSON object or null")
+    return config
+
+
+if TYPE_CHECKING:
+    from xorl_client.client.sampling_client import SamplingClient
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r; using %s", name, raw_value, default)
+        return default
+    if value <= 0:
+        logger.warning(
+            "Ignoring non-positive %s=%r; using %s", name, raw_value, default
+        )
+        return default
+    return value
 
 
 class TrainingClient:
@@ -194,6 +232,8 @@ class TrainingClient:
         Returns:
             List of (request_id, chunk) tuples where chunk is a list of datums
         """
+        self._validate_r3_routing(data)
+
         if not data:
             # Even empty data gets one chunk so a request is made
             return [(self._get_request_id(), [])]
@@ -201,14 +241,19 @@ class TrainingClient:
         chunks = []
         current_chunk = []
         current_bytes = 0
+        max_chunk_len = _positive_int_env("XORL_CLIENT_MAX_CHUNK_LEN", MAX_CHUNK_LEN)
+        max_chunk_bytes = _positive_int_env(
+            "XORL_CLIENT_MAX_CHUNK_BYTES_COUNT",
+            _positive_int_env("XORL_CLIENT_MAX_CHUNK_BYTES", MAX_CHUNK_BYTES_COUNT),
+        )
 
         for datum in data:
             datum_bytes = estimate_datum_bytes(datum)
 
             # Start new chunk if adding this datum would exceed limits
             if current_chunk and (
-                len(current_chunk) >= MAX_CHUNK_LEN
-                or current_bytes + datum_bytes > MAX_CHUNK_BYTES_COUNT
+                len(current_chunk) >= max_chunk_len
+                or current_bytes + datum_bytes > max_chunk_bytes
             ):
                 chunks.append(current_chunk)
                 current_chunk = []
@@ -224,6 +269,46 @@ class TrainingClient:
         # Allocate request_ids for all chunks
         return [(self._get_request_id(), chunk) for chunk in chunks]
 
+    @staticmethod
+    def _routing_field(datum: Any, field: str) -> Any:
+        if isinstance(datum, dict):
+            return datum.get(field)
+        value = getattr(datum, field, None)
+        if value is not None:
+            return value
+        if hasattr(datum, "model_dump"):
+            dumped = datum.model_dump()
+            if isinstance(dumped, dict):
+                return dumped.get(field)
+        if hasattr(datum, "to_dict"):
+            dumped = datum.to_dict()
+            if isinstance(dumped, dict):
+                return dumped.get(field)
+        return None
+
+    @classmethod
+    def _validate_r3_routing(cls, data: List[Any]) -> None:
+        """Require complete expert indices and, when supplied, complete logits."""
+        if not data:
+            return
+        experts_present = [
+            cls._routing_field(datum, "routed_experts") is not None for datum in data
+        ]
+        logits_present = [
+            cls._routing_field(datum, "routed_expert_logits") is not None
+            for datum in data
+        ]
+        if not any(experts_present) and not any(logits_present):
+            return
+        if any(logits_present) and not all(logits_present):
+            raise ValueError(
+                "R3 routed_expert_logits must be present on every datum or absent from the request"
+            )
+        if not all(experts_present):
+            raise ValueError(
+                "R3 routed_experts must be present on every datum when routing replay is requested"
+            )
+
     def _convert_datums(self, data: List) -> tuple:
         """Convert a list of datums to dicts, extracting routed_experts.
 
@@ -231,42 +316,38 @@ class TrainingClient:
             data: List of Datum objects or dicts
 
         Returns:
-            Tuple of (datums_dicts, all_routed_experts)
+            Tuple of datum dicts, routed expert IDs, and selected router weights.
         """
         datums_dicts = []
         all_routed_experts = []
+        all_routed_expert_logits = []
 
         for datum in data:
             if isinstance(datum, types.Datum):
                 datum_dict = datum.to_dict()
-                datum_dict.pop("routed_experts", None)
                 datums_dicts.append(datum_dict)
-                if datum.routed_experts is not None:
-                    all_routed_experts.append(datum.routed_experts)
             elif hasattr(datum, "to_dict"):
                 datum_dict = datum.to_dict()
-                datum_dict.pop("routed_experts", None)
                 datums_dicts.append(datum_dict)
-                if (
-                    hasattr(datum, "routed_experts")
-                    and datum.routed_experts is not None
-                ):
-                    all_routed_experts.append(datum.routed_experts)
             elif hasattr(datum, "model_dump"):
                 datum_dict = datum.model_dump()
                 datums_dicts.append(self._convert_tinker_datum(datum_dict))
             elif isinstance(datum, dict):
                 datum_dict = dict(datum)
-                routed = datum_dict.pop("routed_experts", None)
                 datums_dicts.append(datum_dict)
-                if routed is not None:
-                    all_routed_experts.append(routed)
             else:
                 raise TypeError(
                     f"Expected Datum, dict, or Pydantic model, got {type(datum).__name__}"
                 )
 
-        return datums_dicts, all_routed_experts
+            routed = datum_dict.pop("routed_experts", None)
+            routed_logits = datum_dict.pop("routed_expert_logits", None)
+            if routed is not None:
+                all_routed_experts.append(routed)
+            if routed_logits is not None:
+                all_routed_expert_logits.append(routed_logits)
+
+        return datums_dicts, all_routed_experts, all_routed_expert_logits
 
     def _convert_datums_simple(self, data: List) -> List[Dict[str, Any]]:
         """Convert a list of datums to dicts (no routed_experts extraction).
@@ -365,7 +446,9 @@ class TrainingClient:
         # Single chunk: use simple path (no _CombinedAPIFuture overhead)
         if len(chunked) == 1:
             request_id, chunk_data = chunked[0]
-            datums_dicts, all_routed_experts = self._convert_datums(chunk_data)
+            datums_dicts, all_routed_experts, all_routed_expert_logits = (
+                self._convert_datums(chunk_data)
+            )
 
             request_data = {
                 "model_id": self.model_id,
@@ -383,6 +466,12 @@ class TrainingClient:
                 request_data["forward_backward_input"][
                     "routed_experts"
                 ] = all_routed_experts
+            if all_routed_expert_logits and len(all_routed_expert_logits) == len(
+                datums_dicts
+            ):
+                request_data["forward_backward_input"][
+                    "routed_expert_logits"
+                ] = all_routed_expert_logits
 
             async def _forward_backward_async():
                 start_time = time.time()
@@ -416,7 +505,9 @@ class TrainingClient:
         # Pre-convert all chunks and build request data
         chunk_requests = []
         for request_id, chunk_data in chunked:
-            datums_dicts, all_routed_experts = self._convert_datums(chunk_data)
+            datums_dicts, all_routed_experts, all_routed_expert_logits = (
+                self._convert_datums(chunk_data)
+            )
             rd = {
                 "model_id": self.model_id,
                 "seq_id": request_id + 1,
@@ -429,6 +520,12 @@ class TrainingClient:
                 rd["forward_backward_input"]["loss_fn_params"] = loss_fn_params
             if all_routed_experts and len(all_routed_experts) == len(datums_dicts):
                 rd["forward_backward_input"]["routed_experts"] = all_routed_experts
+            if all_routed_expert_logits and len(all_routed_expert_logits) == len(
+                datums_dicts
+            ):
+                rd["forward_backward_input"][
+                    "routed_expert_logits"
+                ] = all_routed_expert_logits
             chunk_requests.append((request_id, rd))
 
         async def _chunked_forward_backward_async():
@@ -502,7 +599,9 @@ class TrainingClient:
         # Single chunk: use simple path
         if len(chunked) == 1:
             request_id, chunk_data = chunked[0]
-            datums_dicts, all_routed_experts = self._convert_datums(chunk_data)
+            datums_dicts, all_routed_experts, all_routed_expert_logits = (
+                self._convert_datums(chunk_data)
+            )
 
             request_data = {
                 "model_id": self.model_id,
@@ -516,6 +615,12 @@ class TrainingClient:
                 request_data["forward_input"]["loss_fn_params"] = loss_fn_params
             if all_routed_experts and len(all_routed_experts) == len(datums_dicts):
                 request_data["forward_input"]["routed_experts"] = all_routed_experts
+            if all_routed_expert_logits and len(all_routed_expert_logits) == len(
+                datums_dicts
+            ):
+                request_data["forward_input"][
+                    "routed_expert_logits"
+                ] = all_routed_expert_logits
 
             async def _forward_async():
                 start_time = time.time()
@@ -544,7 +649,9 @@ class TrainingClient:
 
         chunk_requests = []
         for request_id, chunk_data in chunked:
-            datums_dicts, all_routed_experts = self._convert_datums(chunk_data)
+            datums_dicts, all_routed_experts, all_routed_expert_logits = (
+                self._convert_datums(chunk_data)
+            )
             rd = {
                 "model_id": self.model_id,
                 "seq_id": request_id + 1,
@@ -557,6 +664,12 @@ class TrainingClient:
                 rd["forward_input"]["loss_fn_params"] = loss_fn_params
             if all_routed_experts and len(all_routed_experts) == len(datums_dicts):
                 rd["forward_input"]["routed_experts"] = all_routed_experts
+            if all_routed_expert_logits and len(all_routed_expert_logits) == len(
+                datums_dicts
+            ):
+                rd["forward_input"][
+                    "routed_expert_logits"
+                ] = all_routed_expert_logits
             chunk_requests.append((request_id, rd))
 
         async def _chunked_forward_async():
@@ -775,6 +888,7 @@ class TrainingClient:
         self,
         name: Optional[str] = None,
         inference_base_url: str = "http://localhost:30000",
+        api_format: Optional[str] = None,
     ) -> "SamplingClient":
         """Atomic operation: save weights and create sampling client.
 
@@ -784,6 +898,8 @@ class TrainingClient:
         Args:
             name: Optional name for checkpoint (default: auto-generated)
             inference_base_url: Base URL for inference server (default: http://localhost:30000)
+            api_format: Inference API format passed to SamplingClient. Use
+                "chat_completions" when sampling through Dispatch.
 
         Returns:
             SamplingClient ready to use
@@ -844,12 +960,14 @@ class TrainingClient:
             model=self.holder._model,
             api_key=self.holder.api_key,
             timeout=self.holder.timeout,
+            api_format=api_format,
         )
 
     async def save_weights_and_get_sampling_client_async(
         self,
         name: Optional[str] = None,
         inference_base_url: str = "http://localhost:30000",
+        api_format: Optional[str] = None,
     ) -> "SamplingClient":
         """Async version of save_weights_and_get_sampling_client.
 
@@ -859,6 +977,8 @@ class TrainingClient:
         Args:
             name: Optional name for checkpoint (default: auto-generated)
             inference_base_url: Base URL for inference server (default: http://localhost:30000)
+            api_format: Inference API format passed to SamplingClient. Use
+                "chat_completions" when sampling through Dispatch.
 
         Returns:
             SamplingClient ready to use
@@ -920,6 +1040,7 @@ class TrainingClient:
             model=self.holder._model,
             api_key=self.holder.api_key,
             timeout=self.holder.timeout,
+            api_format=api_format,
         )
 
     def save_state(
@@ -1606,6 +1727,7 @@ class TrainingClient:
         master_port: int = 29600,
         group_name: str = "weight_sync_group",
         buffer_size_mb: int = 1024,
+        pool: str = "default",
     ) -> APIFuture[types.AddInferenceEndpointResponse]:
         """Register an SGLang inference endpoint for NCCL weight sync.
 
@@ -1624,6 +1746,10 @@ class TrainingClient:
             master_port: Port for NCCL rendezvous (default: 29600)
             group_name: NCCL process group name (default: weight_sync_group)
             buffer_size_mb: Transfer bucket size in MB (default: 1024)
+            pool: Endpoint pool tag (default: "default"). Syncs can be restricted
+                to pools via sync_weights_to_inference(pools=[...]) — e.g. register
+                dedicated eval endpoints with pool="eval" so the per-step training
+                sync leaves them on frozen weights.
 
         Returns:
             APIFuture[AddInferenceEndpointResponse] with endpoint info and sync status
@@ -1649,6 +1775,7 @@ class TrainingClient:
             "master_port": master_port,
             "group_name": group_name,
             "buffer_size_mb": buffer_size_mb,
+            "pool": pool,
         }
 
         future = self.holder.post_async("/add_inference_endpoint", request_data)
@@ -1687,6 +1814,7 @@ class TrainingClient:
         master_port: int = 29600,
         group_name: str = "weight_sync_group",
         buffer_size_mb: int = 1024,
+        quantization: Optional[Dict[str, Any]] = None,
     ) -> APIFuture[types.SyncWeightsResponse]:
         """Sync weights to all registered inference endpoints via NCCL.
 
@@ -1723,6 +1851,11 @@ class TrainingClient:
             "group_name": group_name,
             "buffer_size_mb": buffer_size_mb,
         }
+        quantization = (
+            quantization if quantization is not None else _sync_quantization_from_env()
+        )
+        if quantization is not None:
+            request_data["quantization"] = quantization
 
         # Use extended timeout for weight sync (can take minutes for large models)
         future = self.holder.post_async(
@@ -1972,6 +2105,11 @@ class TrainingClient:
     def sync_weights_to_inference(
         self,
         sync_method: str = "nccl_ep_scatter",
+        master_address: Optional[str] = None,
+        timeout: float = 1800.0,
+        quantization: Optional[Dict[str, Any]] = None,
+        pools: Optional[List[str]] = None,
+        group_name: Optional[str] = None,
     ) -> APIFuture[types.SyncWeightsResponse]:
         """Sync current model weights to connected inference endpoint.
 
@@ -1982,6 +2120,17 @@ class TrainingClient:
         Args:
             sync_method: Transfer method - "nccl_ep_scatter" (default, multi-rank parallel),
                         "nccl" (single-rank), or "rdma_direct" (RDMA push)
+            master_address: Optional trainer address for rendezvous. If omitted,
+                XORL_WEIGHT_SYNC_MASTER_ADDRESS is used when set.
+            timeout: HTTP request timeout in seconds.
+            pools: Restrict the sync to endpoints registered with a pool tag in
+                this list (None = all endpoints, backward compatible). E.g.
+                pools=["default"] for the per-step training-sampler sync,
+                pools=["eval"] to refresh a dedicated eval pool at eval steps.
+            group_name: Optional NCCL/P2P process-group name override. Use a
+                distinct name per pool (e.g. "weight_sync_group_eval") so pool
+                syncs don't collide on the cached transfer group.
+            quantization: Optional transport quantization configuration.
 
         Returns:
             APIFuture[SyncWeightsResponse] with transfer stats
@@ -1994,13 +2143,28 @@ class TrainingClient:
         """
         request_data = {
             "sync_method": sync_method,
+            "timeout_s": timeout,
         }
+        if pools is not None:
+            request_data["pools"] = pools
+        if group_name is not None:
+            request_data["group_name"] = group_name
+        master_address = master_address or os.environ.get(
+            "XORL_WEIGHT_SYNC_MASTER_ADDRESS"
+        )
+        if master_address:
+            request_data["master_address"] = master_address
+        quantization = (
+            quantization if quantization is not None else _sync_quantization_from_env()
+        )
+        if quantization is not None:
+            request_data["quantization"] = quantization
 
         # Use extended timeout for weight sync
         future = self.holder.post_async(
             "/sync_inference_weights",
             request_data,
-            timeout=1800.0,  # 30 minute timeout
+            timeout=timeout,
         )
 
         def parse_response(result: Dict[str, Any]) -> types.SyncWeightsResponse:

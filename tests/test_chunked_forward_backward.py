@@ -145,15 +145,16 @@ class TestChunkedDatums:
         assert len(chunk_data) == 100
 
     def test_count_limit_splits(self):
-        """2500 datums should split into 3 chunks: 1024, 1024, 452."""
+        """Two full datum chunks plus a remainder should split three ways."""
         client = _make_training_client()
-        data = [_make_datum(num_tokens=5) for _ in range(2500)]
+        total = 2 * MAX_CHUNK_LEN + 452
+        data = [_make_datum(num_tokens=5) for _ in range(total)]
         chunks = client._chunked_datums(data)
 
         assert len(chunks) == 3
-        assert len(chunks[0][1]) == MAX_CHUNK_LEN  # 1024
-        assert len(chunks[1][1]) == MAX_CHUNK_LEN  # 1024
-        assert len(chunks[2][1]) == 2500 - 2 * MAX_CHUNK_LEN  # 452
+        assert len(chunks[0][1]) == MAX_CHUNK_LEN
+        assert len(chunks[1][1]) == MAX_CHUNK_LEN
+        assert len(chunks[2][1]) == 452
 
     def test_exact_limit(self):
         """Exactly MAX_CHUNK_LEN datums should produce one chunk."""
@@ -172,8 +173,11 @@ class TestChunkedDatums:
         assert len(chunks[0][1]) == MAX_CHUNK_LEN
         assert len(chunks[1][1]) == 1
 
-    def test_byte_limit_splits(self):
+    def test_byte_limit_splits(self, monkeypatch):
         """Large datums should split based on byte limit."""
+        # Pin a small byte cap: the shipped default is 512 MiB, which these 200
+        # ~49KB datums (~9.8MB) would never split.
+        monkeypatch.setenv("XORL_CLIENT_MAX_CHUNK_BYTES_COUNT", "5000000")
         client = _make_training_client()
         # Each datum: ~4096 tokens * 4 * 3 fields ~= 49152 bytes
         # 5MB / 49152 ~= ~100 datums per chunk
@@ -188,7 +192,7 @@ class TestChunkedDatums:
     def test_request_id_sequencing(self):
         """Request IDs should be sequential across chunks."""
         client = _make_training_client()
-        data = [_make_datum(num_tokens=5) for _ in range(2500)]
+        data = [_make_datum(num_tokens=5) for _ in range(2 * MAX_CHUNK_LEN + 1)]
         chunks = client._chunked_datums(data)
 
         request_ids = [rid for rid, _ in chunks]
@@ -218,9 +222,10 @@ class TestConvertDatums:
         """Converting Datum objects should produce dicts."""
         client = _make_training_client()
         data = [_make_datum(num_tokens=5) for _ in range(3)]
-        dicts, routed = client._convert_datums(data)
+        dicts, routed, routed_logits = client._convert_datums(data)
         assert len(dicts) == 3
         assert len(routed) == 0
+        assert len(routed_logits) == 0
         for d in dicts:
             assert "model_input" in d
             assert "loss_fn_inputs" in d
@@ -233,20 +238,89 @@ class TestConvertDatums:
                 model_input=types.ModelInput.from_ints([1, 2, 3]),
                 loss_fn_inputs={"weights": [1.0, 1.0, 1.0]},
                 routed_experts=[[[0, 1]], [[1, 2]], [[0, 2]]],
+                routed_expert_logits=[[[0.6, 0.4]], [[0.7, 0.3]], [[0.8, 0.2]]],
             )
         ]
-        dicts, routed = client._convert_datums(data)
+        dicts, routed, routed_logits = client._convert_datums(data)
         assert len(dicts) == 1
         assert len(routed) == 1
+        assert len(routed_logits) == 1
         assert "routed_experts" not in dicts[0]  # Removed from dict
+        assert "routed_expert_logits" not in dicts[0]
+
+    def test_chunking_accepts_indices_only_and_rejects_partial_r3_routing(self):
+        client = _make_training_client()
+        complete = _make_datum_dict(num_tokens=5)
+        complete["routed_experts"] = [[[0, 1]]]
+        complete["routed_expert_logits"] = [[[0.6, 0.4]]]
+        missing = _make_datum_dict(num_tokens=5)
+        indices_only = {**_make_datum_dict(num_tokens=5), "routed_experts": [[[0, 1]]]}
+
+        with pytest.raises(ValueError, match="present on every datum"):
+            client._chunked_datums([complete, missing])
+        chunks = client._chunked_datums([indices_only])
+        assert len(chunks) == 1
+        assert chunks[0][1] == [indices_only]
+
+        logits_only = {
+            **_make_datum_dict(num_tokens=5),
+            "routed_expert_logits": [[[0.6, 0.4]]],
+        }
+        with pytest.raises(ValueError, match="routed_experts must be present"):
+            client._chunked_datums([logits_only])
+
+        indices_only_second = {
+            **_make_datum_dict(num_tokens=5),
+            "routed_experts": [[[1, 2]]],
+        }
+        with_logits = {
+            **_make_datum_dict(num_tokens=5),
+            "routed_experts": [[[0, 1]]],
+            "routed_expert_logits": [[[0.6, 0.4]]],
+        }
+        with pytest.raises(ValueError, match="logits must be present on every datum"):
+            client._chunked_datums([with_logits, indices_only_second])
+
+    @pytest.mark.parametrize("serializer", ["to_dict", "model_dump"])
+    def test_convert_datums_preserves_serialized_r3_routing(self, serializer):
+        client = _make_training_client()
+        routed = [[[0, 1]]]
+        routed_logits = [[[0.6, 0.4]]]
+        payload = {
+            **_make_datum_dict(num_tokens=2),
+            "routed_experts": routed,
+            "routed_expert_logits": routed_logits,
+        }
+
+        class SerializedDatum:
+            def to_dict(self):
+                if serializer != "to_dict":
+                    raise AttributeError
+                return dict(payload)
+
+            def model_dump(self):
+                return dict(payload)
+
+        datum = SerializedDatum()
+        if serializer == "model_dump":
+            del SerializedDatum.to_dict
+
+        client._validate_r3_routing([datum])
+        datums, all_routed, all_routed_logits = client._convert_datums([datum])
+
+        assert "routed_experts" not in datums[0]
+        assert "routed_expert_logits" not in datums[0]
+        assert all_routed == [routed]
+        assert all_routed_logits == [routed_logits]
 
     def test_convert_datums_with_dicts(self):
         """Converting dict datums should pass through."""
         client = _make_training_client()
         data = [_make_datum_dict(num_tokens=5)]
-        dicts, routed = client._convert_datums(data)
+        dicts, routed, routed_logits = client._convert_datums(data)
         assert len(dicts) == 1
         assert len(routed) == 0
+        assert len(routed_logits) == 0
 
     def test_convert_datums_simple(self):
         """Simple conversion should not extract routed_experts."""
@@ -360,8 +434,7 @@ class TestChunkedForwardBackwardIntegration:
             base_model="test-model",
         )
 
-        # Create 2048 datums (should split into 2 chunks of 1024)
-        data = [_make_datum(num_tokens=5) for _ in range(2048)]
+        data = [_make_datum(num_tokens=5) for _ in range(2 * MAX_CHUNK_LEN)]
 
         import threading
 
@@ -393,8 +466,8 @@ class TestChunkedForwardBackwardIntegration:
             assert seq_id_2 == seq_id_1 + 1
 
             # Verify chunk sizes
-            assert len(post_calls[0][1]["forward_backward_input"]["data"]) == 1024
-            assert len(post_calls[1][1]["forward_backward_input"]["data"]) == 1024
+            assert len(post_calls[0][1]["forward_backward_input"]["data"]) == MAX_CHUNK_LEN
+            assert len(post_calls[1][1]["forward_backward_input"]["data"]) == MAX_CHUNK_LEN
 
         finally:
             loop.call_soon_threadsafe(loop.stop)
@@ -502,7 +575,7 @@ class TestChunkedForwardBackwardIntegration:
             base_model="test-model",
         )
 
-        data = [_make_datum(num_tokens=5) for _ in range(2048)]
+        data = [_make_datum(num_tokens=5) for _ in range(2 * MAX_CHUNK_LEN)]
 
         import threading
 
@@ -526,8 +599,8 @@ class TestChunkedForwardBackwardIntegration:
             assert post_calls[1][0] == "/api/v1/forward"
 
             # Verify chunk sizes
-            assert len(post_calls[0][1]["forward_input"]["data"]) == 1024
-            assert len(post_calls[1][1]["forward_input"]["data"]) == 1024
+            assert len(post_calls[0][1]["forward_input"]["data"]) == MAX_CHUNK_LEN
+            assert len(post_calls[1][1]["forward_input"]["data"]) == MAX_CHUNK_LEN
 
         finally:
             loop.call_soon_threadsafe(loop.stop)
@@ -538,8 +611,7 @@ class TestChunkedForwardBackwardIntegration:
         """Verify optim_step gets a seq_id after all chunk seq_ids."""
         client = _make_training_client()
 
-        # Simulate chunking 2500 datums (3 chunks)
-        data = [_make_datum(num_tokens=5) for _ in range(2500)]
+        data = [_make_datum(num_tokens=5) for _ in range(2 * MAX_CHUNK_LEN + 1)]
         chunks = client._chunked_datums(data)
         assert len(chunks) == 3
 

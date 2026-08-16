@@ -6,14 +6,18 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
+import httpx
+
 from xorl_client import types
-from xorl_client.client.sampling_client import BatchSampleResult, SamplingClient
+from xorl_client.client.sampling_client import SamplingClient
 
 
 def make_sample_response(text: str) -> types.SampleResponse:
     """Create a mock SampleResponse."""
     return types.SampleResponse(
-        sequences=[types.SampledSequence(tokens=[1, 2, 3], logprobs=[0.1, 0.2, 0.3], text=text)],
+        sequences=[
+            types.SampledSequence(tokens=[1, 2, 3], logprobs=[0.1, 0.2, 0.3], text=text)
+        ],
         meta_info=None,
     )
 
@@ -136,6 +140,124 @@ class TestBatchSampling(unittest.TestCase):
 
         self.assertEqual(len(result.completed), 4)
         self.assertEqual(len(result.cancelled), 0)
+
+
+def _make_httpx_response(status_code, **kwargs):
+    """Create an httpx.Response with a request set, as required for raise_for_status."""
+    import httpx
+
+    resp = httpx.Response(status_code, **kwargs)
+    resp._request = httpx.Request("POST", "http://localhost:30000/test")
+    return resp
+
+
+class TestPauseContinueGeneration(unittest.TestCase):
+    """Tests for pause_generation_async / continue_generation_async."""
+
+    def setUp(self):
+        self.client = SamplingClient(base_url="http://localhost:30000")
+
+    def test_pause_generation_sends_correct_payload(self):
+        """pause_generation_async POSTs to /pause_generation with mode."""
+
+        async def run_test():
+            mock_response = _make_httpx_response(
+                200, json={"status": "paused", "paused_count": 5}
+            )
+            with patch(
+                "httpx.AsyncClient.post", return_value=mock_response
+            ) as mock_post:
+                result = await self.client.pause_generation_async(mode="in_place")
+                mock_post.assert_called_once_with(
+                    "/pause_generation",
+                    json={"mode": "in_place"},
+                    timeout=30.0,
+                )
+                self.assertEqual(result["status"], "paused")
+                self.assertEqual(result["paused_count"], 5)
+
+        asyncio.run(run_test())
+
+    def test_continue_generation_sends_correct_payload(self):
+        """continue_generation_async POSTs to /continue_generation."""
+
+        async def run_test():
+            mock_response = _make_httpx_response(
+                200, json={"status": "resumed", "resumed_count": 5}
+            )
+            with patch(
+                "httpx.AsyncClient.post", return_value=mock_response
+            ) as mock_post:
+                result = await self.client.continue_generation_async()
+                mock_post.assert_called_once_with(
+                    "/continue_generation",
+                    json={"torch_empty_cache": True},
+                    timeout=30.0,
+                )
+                self.assertEqual(result["status"], "resumed")
+
+        asyncio.run(run_test())
+
+    def test_lora_load_is_idempotent_only_for_same_path(self):
+        async def run_test():
+            same = _make_httpx_response(
+                400,
+                json={
+                    "success": False,
+                    "error_message": "adapter policy is already loaded",
+                    "loaded_adapters": {"policy": "/weights/step-1"},
+                },
+            )
+            with patch("httpx.AsyncClient.post", return_value=same):
+                result = await self.client.load_lora_adapter_async(
+                    lora_name="policy", lora_path="/weights/step-1"
+                )
+                self.assertTrue(result["already_loaded"])
+
+            collision = _make_httpx_response(
+                400,
+                json={
+                    "success": False,
+                    "error_message": "adapter policy is already loaded",
+                    "loaded_adapters": {"policy": "/weights/old"},
+                },
+            )
+            with patch("httpx.AsyncClient.post", return_value=collision):
+                with self.assertRaises(httpx.HTTPStatusError):
+                    await self.client.load_lora_adapter_async(
+                        lora_name="policy", lora_path="/weights/new"
+                    )
+
+        asyncio.run(run_test())
+
+    def test_pause_generation_retract_mode(self):
+        """pause_generation_async supports retract mode."""
+
+        async def run_test():
+            mock_response = _make_httpx_response(200, json={"status": "paused"})
+            with patch(
+                "httpx.AsyncClient.post", return_value=mock_response
+            ) as mock_post:
+                await self.client.pause_generation_async(mode="retract")
+                mock_post.assert_called_once_with(
+                    "/pause_generation",
+                    json={"mode": "retract"},
+                    timeout=30.0,
+                )
+
+        asyncio.run(run_test())
+
+    def test_pause_generation_raises_on_http_error(self):
+        """pause_generation_async raises on HTTP errors."""
+        import httpx
+
+        async def run_test():
+            mock_response = _make_httpx_response(500, text="Internal Server Error")
+            with patch("httpx.AsyncClient.post", return_value=mock_response):
+                with self.assertRaises(httpx.HTTPStatusError):
+                    await self.client.pause_generation_async()
+
+        asyncio.run(run_test())
 
 
 if __name__ == "__main__":

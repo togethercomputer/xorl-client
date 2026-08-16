@@ -7,12 +7,14 @@ This version uses asyncio and httpx for efficient async HTTP requests.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import math
 import os
 import random
-import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union
+from typing import Any, AsyncIterator, List, Optional, Tuple, Union
 
 import httpx
 
@@ -20,6 +22,41 @@ from xorl_client import types
 from xorl_client.client.api_future import AsyncAPIFuture, wrap_coroutine
 
 logger = logging.getLogger(__name__)
+
+PromptInput = Union[types.ModelInput, str, List[dict], List[object]]
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        logger.warning("Ignoring invalid integer env %s=%r", name, value)
+        return default
+    if parsed < minimum:
+        logger.warning("Ignoring env %s=%r below minimum %s", name, value, minimum)
+        return default
+    return parsed
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        logger.warning("Ignoring invalid float env %s=%r", name, value)
+        return default
 
 
 @dataclass
@@ -73,6 +110,12 @@ class SamplingClient:
         timeout: float = 1800.0,
         max_retries: int = 3,
         retry_delay: float = 1.0,
+        api_format: Optional[str] = None,
+        http_client_mode: Optional[str] = None,
+        http_max_connections: Optional[int] = None,
+        http_max_keepalive_connections: Optional[int] = None,
+        http_keepalive_expiry: Optional[float] = None,
+        http2: Optional[bool] = None,
     ):
         """Initialize SamplingClient.
 
@@ -84,9 +127,26 @@ class SamplingClient:
             timeout: Request timeout in seconds (default: 120.0)
             max_retries: Maximum number of retries for transient errors (default: 3)
             retry_delay: Initial delay between retries in seconds, doubles each retry (default: 1.0)
+            api_format: Inference API format: "generate" for native SGLang /generate,
+                or "chat_completions" for OpenAI-compatible /v1/chat/completions.
+                Defaults to XORL_INFERENCE_API_FORMAT or "generate".
+            http_client_mode: "request" creates a fresh HTTP client per request
+                (legacy behavior); "pooled" reuses one AsyncClient per event loop.
+                Defaults to XORL_SAMPLING_HTTP_CLIENT_MODE or "request".
+            http_max_connections: Maximum concurrent connections per HTTP client.
+                Defaults to XORL_SAMPLING_HTTP_MAX_CONNECTIONS or 1024.
+            http_max_keepalive_connections: Maximum idle keep-alive connections per
+                HTTP client. Set 0 for Dispatch runs that prefer no keep-alive reuse.
+                Defaults to XORL_SAMPLING_HTTP_MAX_KEEPALIVE_CONNECTIONS or 256.
+            http_keepalive_expiry: Keep-alive expiry in seconds. Defaults to
+                XORL_SAMPLING_HTTP_KEEPALIVE_EXPIRY or 5.0.
+            http2: Whether to enable HTTP/2 in httpx. Defaults to
+                XORL_SAMPLING_HTTP2 or False.
         """
         if api_key is None:
             api_key = os.environ.get("XORL_INFERENCE_API_KEY")
+        if api_format is None:
+            api_format = os.environ.get("XORL_INFERENCE_API_FORMAT", "generate")
 
         self.base_url = base_url.rstrip("/")
         self._model = model
@@ -95,6 +155,37 @@ class SamplingClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.api_format = self._normalize_api_format(api_format)
+        mode = http_client_mode or os.environ.get(
+            "XORL_SAMPLING_HTTP_CLIENT_MODE", "request"
+        )
+        self.http_client_mode = mode.strip().lower()
+        if self.http_client_mode not in {"request", "pooled"}:
+            raise ValueError(
+                "http_client_mode must be 'request' or 'pooled', "
+                f"got {http_client_mode!r}"
+            )
+        self.http_max_connections = (
+            http_max_connections
+            if http_max_connections is not None
+            else _env_int("XORL_SAMPLING_HTTP_MAX_CONNECTIONS", 1024, minimum=1)
+        )
+        self.http_max_keepalive_connections = (
+            http_max_keepalive_connections
+            if http_max_keepalive_connections is not None
+            else _env_int(
+                "XORL_SAMPLING_HTTP_MAX_KEEPALIVE_CONNECTIONS", 256, minimum=0
+            )
+        )
+        self.http_keepalive_expiry = (
+            http_keepalive_expiry
+            if http_keepalive_expiry is not None
+            else _env_float("XORL_SAMPLING_HTTP_KEEPALIVE_EXPIRY", 5.0)
+        )
+        self.http2 = (
+            http2 if http2 is not None else _env_bool("XORL_SAMPLING_HTTP2", False)
+        )
+        self._pooled_clients: dict[int, httpx.AsyncClient] = {}
 
         # Headers for authentication
         self._headers = {}
@@ -105,7 +196,58 @@ class SamplingClient:
         # xorl://model_id/sampler_weights/checkpoint_name -> checkpoint_name
         self._lora_name = self._extract_lora_name(model_path)
 
-        logger.info(f"SamplingClient initialized: base_url={self.base_url}, model={self._model}, model_path={self.model_path}, lora_name={self._lora_name}")
+        logger.info(
+            f"SamplingClient initialized: base_url={self.base_url}, model={self._model}, "
+            f"model_path={self.model_path}, lora_name={self._lora_name}, api_format={self.api_format}, "
+            f"http_client_mode={self.http_client_mode}, http_max_connections={self.http_max_connections}, "
+            f"http_max_keepalive_connections={self.http_max_keepalive_connections}"
+        )
+
+    @staticmethod
+    def _normalize_api_format(api_format: str) -> str:
+        """Normalize user-facing API format names."""
+        normalized = api_format.strip().lower().replace("-", "_")
+        aliases = {
+            "chat": "chat_completions",
+            "openai": "chat_completions",
+            "openai_chat": "chat_completions",
+            "chat_completion": "chat_completions",
+            "chat_completions": "chat_completions",
+            "generate": "generate",
+            "sglang": "generate",
+            "native": "generate",
+        }
+        if normalized not in aliases:
+            valid = ", ".join(sorted(set(aliases.values())))
+            raise ValueError(
+                f"Unsupported api_format {api_format!r}; expected one of: {valid}"
+            )
+        return aliases[normalized]
+
+    @staticmethod
+    def _looks_like_messages(prompt: Any) -> bool:
+        if not isinstance(prompt, list) or not prompt:
+            return False
+        return all(
+            isinstance(message, dict)
+            or (hasattr(message, "role") and hasattr(message, "content"))
+            for message in prompt
+        )
+
+    @staticmethod
+    def _normalize_messages(prompt: list[Any]) -> list[dict[str, str]]:
+        messages: list[dict[str, str]] = []
+        for message in prompt:
+            if isinstance(message, dict):
+                role = message.get("role")
+                content = message.get("content")
+            else:
+                role = getattr(message, "role", None)
+                content = getattr(message, "content", None)
+            if not isinstance(role, str) or not isinstance(content, str):
+                raise ValueError("chat messages must include string role and content")
+            messages.append({"role": role, "content": content})
+        return messages
 
     @staticmethod
     def _extract_lora_name(model_path: str) -> Optional[str]:
@@ -132,7 +274,7 @@ class SamplingClient:
             return None
         elif model_path.startswith("sampler_weights/"):
             # Format: sampler_weights/checkpoint_name
-            return model_path[len("sampler_weights/"):]
+            return model_path[len("sampler_weights/") :]
         else:
             # Assume it's already just the adapter name
             return model_path
@@ -149,7 +291,38 @@ class SamplingClient:
             base_url=self.base_url,
             headers=self._headers,
             timeout=httpx.Timeout(self.timeout),
+            limits=httpx.Limits(
+                max_connections=self.http_max_connections,
+                max_keepalive_connections=self.http_max_keepalive_connections,
+                keepalive_expiry=self.http_keepalive_expiry,
+            ),
+            http2=self.http2,
         )
+
+    def _pooled_client(self) -> httpx.AsyncClient:
+        """Return the AsyncClient for the current event loop.
+
+        httpx AsyncClient instances are tied to the event loop that uses them.
+        Pipeline RL can sample from both the main loop and a generation thread, so
+        pooled mode keeps one client per loop instead of sharing a single client
+        across threads.
+        """
+        loop = asyncio.get_running_loop()
+        loop_id = id(loop)
+        client = self._pooled_clients.get(loop_id)
+        if client is None or client.is_closed:
+            client = self._create_client()
+            self._pooled_clients[loop_id] = client
+        return client
+
+    @asynccontextmanager
+    async def _request_client(self) -> AsyncIterator[httpx.AsyncClient]:
+        if self.http_client_mode == "pooled":
+            yield self._pooled_client()
+            return
+
+        async with self._create_client() as client:
+            yield client
 
     def _get_retry_delay(self, attempt: int) -> float:
         """Calculate retry delay with exponential backoff and jitter.
@@ -161,25 +334,26 @@ class SamplingClient:
             Delay in seconds before the next retry
         """
         # Exponential backoff: delay * 2^attempt
-        base_delay = self.retry_delay * (2 ** attempt)
+        base_delay = self.retry_delay * (2**attempt)
         # Add jitter (±25%) to prevent thundering herd
         jitter = base_delay * 0.25 * (2 * random.random() - 1)
         return base_delay + jitter
 
     def sample(
         self,
-        prompt: Union[types.ModelInput, str],
+        prompt: PromptInput,
         sampling_params: Optional[types.SamplingParams] = None,
         num_samples: int = 1,
         return_logprobs: bool = True,
         lora_path: Optional[str] = None,
+        logprob_start_len: Optional[Union[int, List[int]]] = None,
     ) -> AsyncAPIFuture[types.SampleResponse]:
         """Sample from the model.
 
         Returns an AsyncAPIFuture that can be awaited or called with .result().
 
         Args:
-            prompt: Text prompt (ModelInput or string)
+            prompt: Text prompt, ModelInput, or chat messages
             sampling_params: Sampling parameters
             num_samples: Number of samples to generate (default: 1)
             return_logprobs: Whether to return logprobs
@@ -200,16 +374,24 @@ class SamplingClient:
             >>> responses = [f.result() for f in futures]
         """
         # Create the coroutine and wrap it
-        coro = self._sample_async(prompt, sampling_params, num_samples, return_logprobs, lora_path)
+        coro = self._sample_async(
+            prompt,
+            sampling_params,
+            num_samples,
+            return_logprobs,
+            lora_path,
+            logprob_start_len=logprob_start_len,
+        )
         return wrap_coroutine(coro)
 
     async def _sample_async(
         self,
-        prompt: Union[types.ModelInput, str],
+        prompt: PromptInput,
         sampling_params: Optional[types.SamplingParams],
         num_samples: int,
         return_logprobs: bool,
         lora_path: Optional[str] = None,
+        logprob_start_len: Optional[Union[int, List[int]]] = None,
     ) -> types.SampleResponse:
         """Internal async implementation of sample.
 
@@ -217,11 +399,14 @@ class SamplingClient:
         As a workaround, when num_samples > 1, we make multiple concurrent requests
         instead of using the native parallel sampling feature.
         """
-        # Convert prompt to the format expected by the inference engine (SGLang)
-        # SGLang expects either "text" (string) or "input_ids" (list of token IDs)
+        # Convert prompt to the format expected by the inference engine.
+        # Native SGLang /generate accepts token IDs. OpenAI chat-completions
+        # requires messages, so callers that already have structured chat turns
+        # should pass those instead of a rendered ModelInput.
         if isinstance(prompt, str):
-            # For string prompts, send as text directly
             prompt_data = {"text": prompt}
+        elif self._looks_like_messages(prompt):
+            prompt_data = {"messages": self._normalize_messages(prompt)}
         else:
             # For ModelInput, convert to token IDs
             # ModelInput uses chunks structure, but SGLang expects flat token IDs
@@ -240,24 +425,58 @@ class SamplingClient:
             sampling_params = types.SamplingParams()
         sampling_params_dict = sampling_params.to_dict()
         return_routed_experts = sampling_params.return_routed_experts
+        return_expert_logits = sampling_params.return_expert_logits
 
         logger.debug(f"Sampling from {self.base_url}, num_samples={num_samples}")
+
+        if self.api_format == "chat_completions":
+            return await self._chat_completions_sample_request(
+                prompt_data,
+                sampling_params,
+                return_logprobs,
+                num_samples,
+                return_routed_experts,
+                return_expert_logits,
+                lora_path,
+                logprob_start_len=logprob_start_len,
+            )
 
         # Workaround for SGLang bug: n > 1 crashes the server when using LoRA adapters.
         # Additionally, concurrent requests to LoRA endpoints can also crash the server.
         # As a workaround, we make multiple sequential requests instead.
-        #if num_samples > 1 and self._lora_name:
+        # if num_samples > 1 and self._lora_name:
         if False:
-            logger.debug(f"Using sequential requests workaround for num_samples={num_samples} with LoRA")
+            logger.debug(
+                f"Using sequential requests workaround for num_samples={num_samples} with LoRA"
+            )
             sequences: List[types.SampledSequence] = []
             for i in range(num_samples):
-                response = await self._single_sample_request(prompt_data, sampling_params_dict, return_logprobs, return_routed_experts, lora_path)
+                response = await self._single_sample_request(
+                    prompt_data,
+                    sampling_params_dict,
+                    return_logprobs,
+                    return_routed_experts,
+                    return_expert_logits,
+                    lora_path,
+                    logprob_start_len=logprob_start_len,
+                )
                 sequences.extend(response.sequences)
-            return types.SampleResponse(sequences=sequences, meta_info=response.meta_info if response else None)
+            return types.SampleResponse(
+                sequences=sequences, meta_info=response.meta_info if response else None
+            )
         else:
             # Single sample or no LoRA - can use native n parameter
             sampling_params_dict["n"] = num_samples
-            return await self._batch_sample_request(prompt_data, sampling_params_dict, return_logprobs, num_samples, return_routed_experts, lora_path)
+            return await self._batch_sample_request(
+                prompt_data,
+                sampling_params_dict,
+                return_logprobs,
+                num_samples,
+                return_routed_experts,
+                return_expert_logits,
+                lora_path,
+                logprob_start_len=logprob_start_len,
+            )
 
     async def _single_sample_request(
         self,
@@ -265,12 +484,23 @@ class SamplingClient:
         sampling_params_dict: dict,
         return_logprobs: bool,
         return_routed_experts: bool = False,
+        return_expert_logits: bool = False,
         lora_path: Optional[str] = None,
+        logprob_start_len: Optional[Union[int, List[int]]] = None,
     ) -> types.SampleResponse:
         """Make a single sample request to the inference server (n=1)."""
         # Make a copy and explicitly set n=1 for single sample requests
         params = {**sampling_params_dict, "n": 1}
-        return await self._batch_sample_request(prompt_data, params, return_logprobs, num_samples=1, return_routed_experts=return_routed_experts, lora_path=lora_path)
+        return await self._batch_sample_request(
+            prompt_data,
+            params,
+            return_logprobs,
+            num_samples=1,
+            return_routed_experts=return_routed_experts,
+            return_expert_logits=return_expert_logits,
+            lora_path=lora_path,
+            logprob_start_len=logprob_start_len,
+        )
 
     def _validate_generate_payload(self, payload: dict) -> None:
         """Validate the /generate request payload before sending to server.
@@ -300,31 +530,82 @@ class SamplingClient:
                 raise ValueError("'text' cannot be empty")
 
         # Validate input_ids format
+        input_ids_is_batch = False
         if has_input_ids:
             input_ids = payload["input_ids"]
             if not isinstance(input_ids, list):
-                raise ValueError(f"'input_ids' must be a list, got {type(input_ids).__name__}")
+                raise ValueError(
+                    f"'input_ids' must be a list, got {type(input_ids).__name__}"
+                )
             if not input_ids:
                 raise ValueError("'input_ids' cannot be empty")
-            if not all(isinstance(x, int) for x in input_ids):
-                raise ValueError("'input_ids' must be a list of integers")
+            if all(isinstance(x, int) for x in input_ids):
+                input_ids_is_batch = False
+            elif all(isinstance(x, list) for x in input_ids):
+                input_ids_is_batch = True
+                if not all(
+                    seq and all(isinstance(tok, int) for tok in seq)
+                    for seq in input_ids
+                ):
+                    raise ValueError(
+                        "'input_ids' batch must be a non-empty list of non-empty integer lists"
+                    )
+            else:
+                raise ValueError(
+                    "'input_ids' must be either a list of integers or a list of integer lists"
+                )
+
+        # Validate top-level logprob_start_len (used for prompt scoring)
+        if "logprob_start_len" in payload and payload["logprob_start_len"] is not None:
+            logprob_start_len = payload["logprob_start_len"]
+            if isinstance(logprob_start_len, int):
+                if logprob_start_len < 0:
+                    raise ValueError("'logprob_start_len' must be >= 0")
+            elif isinstance(logprob_start_len, list):
+                if not logprob_start_len:
+                    raise ValueError("'logprob_start_len' list cannot be empty")
+                if not all(isinstance(v, int) and v >= 0 for v in logprob_start_len):
+                    raise ValueError(
+                        "'logprob_start_len' list must contain non-negative integers"
+                    )
+                if has_input_ids and not input_ids_is_batch:
+                    raise ValueError(
+                        "'logprob_start_len' list requires batched 'input_ids'"
+                    )
+                if has_input_ids and input_ids_is_batch:
+                    input_ids_batch = payload["input_ids"]
+                    if len(logprob_start_len) != len(input_ids_batch):
+                        raise ValueError(
+                            f"'logprob_start_len' length ({len(logprob_start_len)}) must match "
+                            f"batched 'input_ids' length ({len(input_ids_batch)})"
+                        )
+            else:
+                raise ValueError(
+                    f"'logprob_start_len' must be an int or list of ints, got {type(logprob_start_len).__name__}"
+                )
 
         # Validate sampling_params
         if "sampling_params" in payload:
             params = payload["sampling_params"]
             if not isinstance(params, dict):
-                raise ValueError(f"'sampling_params' must be a dict, got {type(params).__name__}")
+                raise ValueError(
+                    f"'sampling_params' must be a dict, got {type(params).__name__}"
+                )
 
             # Validate specific sampling params
             if "max_new_tokens" in params:
                 max_tokens = params["max_new_tokens"]
-                if not isinstance(max_tokens, int) or max_tokens <= 0:
-                    raise ValueError(f"'max_new_tokens' must be a positive integer, got {max_tokens}")
+                if not isinstance(max_tokens, int) or max_tokens < 0:
+                    raise ValueError(
+                        f"'max_new_tokens' must be a non-negative integer, got {max_tokens}"
+                    )
 
             if "temperature" in params:
                 temp = params["temperature"]
                 if not isinstance(temp, (int, float)) or temp < 0:
-                    raise ValueError(f"'temperature' must be a non-negative number, got {temp}")
+                    raise ValueError(
+                        f"'temperature' must be a non-negative number, got {temp}"
+                    )
 
             if "n" in params:
                 n = params["n"]
@@ -334,7 +615,9 @@ class SamplingClient:
             if "stop" in params:
                 stop = params["stop"]
                 if not isinstance(stop, list):
-                    raise ValueError(f"'stop' must be a list of strings, got {type(stop).__name__}")
+                    raise ValueError(
+                        f"'stop' must be a list of strings, got {type(stop).__name__}"
+                    )
                 if not all(isinstance(s, str) for s in stop):
                     raise ValueError("'stop' must be a list of strings")
 
@@ -342,7 +625,427 @@ class SamplingClient:
         if "lora_path" in payload and payload["lora_path"] is not None:
             lora_path = payload["lora_path"]
             if not isinstance(lora_path, str):
-                raise ValueError(f"'lora_path' must be a string, got {type(lora_path).__name__}")
+                raise ValueError(
+                    f"'lora_path' must be a string, got {type(lora_path).__name__}"
+                )
+
+    def _build_chat_completions_payload(
+        self,
+        prompt_data: dict,
+        sampling_params: types.SamplingParams,
+        return_logprobs: bool,
+        num_samples: int,
+        return_routed_experts: bool = False,
+        return_expert_logits: bool = False,
+        lora_path: Optional[str] = None,
+        logprob_start_len: Optional[Union[int, List[int]]] = None,
+    ) -> dict:
+        """Build an OpenAI-compatible chat-completions payload for SGLang/Dispatch."""
+        if num_samples <= 0:
+            raise ValueError(
+                f"'num_samples' must be a positive integer, got {num_samples}"
+            )
+        if sampling_params.max_tokens <= 0:
+            raise ValueError(
+                "chat_completions api_format requires SamplingParams.max_tokens > 0; "
+                "use api_format='generate' for prompt scoring requests."
+            )
+        if isinstance(logprob_start_len, list):
+            raise ValueError(
+                "chat_completions api_format only supports an int logprob_start_len for a single prompt"
+            )
+
+        params = sampling_params.to_dict()
+        payload: dict[str, Any] = {
+            "model": self._model or "default",
+            "max_tokens": params["max_new_tokens"],
+            "temperature": params["temperature"],
+            "top_p": params["top_p"],
+            "top_k": params["top_k"],
+            "n": num_samples,
+            "logprobs": return_logprobs,
+            "return_token_ids": True,
+            "return_prompt_token_ids": True,
+        }
+
+        if "messages" in prompt_data:
+            payload["messages"] = prompt_data["messages"]
+        elif "input_ids" in prompt_data:
+            raise ValueError(
+                "chat_completions api_format requires a string prompt or a list of chat messages; "
+                "ModelInput/token-id prompts are not accepted by SGLang's /v1/chat/completions endpoint."
+            )
+        else:
+            payload["messages"] = [{"role": "user", "content": prompt_data["text"]}]
+
+        if "stop" in params:
+            payload["stop"] = params["stop"]
+        if "stop_token_ids" in params:
+            payload["stop_token_ids"] = params["stop_token_ids"]
+        if "custom_params" in params:
+            payload["custom_params"] = params["custom_params"]
+
+        seed = (
+            sampling_params.sampling_seed
+            if sampling_params.sampling_seed is not None
+            else sampling_params.seed
+        )
+        if seed is not None:
+            payload["seed"] = seed
+
+        if logprob_start_len is not None:
+            payload["logprob_start_len"] = logprob_start_len
+
+        effective_lora = lora_path if lora_path is not None else self._lora_name
+        if effective_lora:
+            payload["lora_path"] = effective_lora
+
+        if return_routed_experts:
+            payload["return_routed_experts"] = True
+        if return_expert_logits:
+            payload["return_expert_logits"] = True
+
+        self._validate_chat_completions_payload(payload)
+        return payload
+
+    def _validate_chat_completions_payload(self, payload: dict) -> None:
+        """Validate the chat-completions request payload before sending."""
+        model = payload.get("model")
+        if not isinstance(model, str) or not model:
+            raise ValueError("'model' must be a non-empty string")
+
+        messages = payload.get("messages")
+        if not isinstance(messages, list):
+            raise ValueError("'messages' must be a list")
+
+        if not messages:
+            raise ValueError(
+                "chat_completions payload must include at least one message"
+            )
+        for message in messages:
+            if not isinstance(message, dict):
+                raise ValueError("'messages' entries must be dictionaries")
+            if not isinstance(message.get("role"), str) or not isinstance(
+                message.get("content"), str
+            ):
+                raise ValueError(
+                    "'messages' entries must include string role and content"
+                )
+
+        max_tokens = payload.get("max_tokens")
+        if not isinstance(max_tokens, int) or max_tokens <= 0:
+            raise ValueError(
+                f"'max_tokens' must be a positive integer, got {max_tokens}"
+            )
+
+        n = payload.get("n")
+        if not isinstance(n, int) or n <= 0:
+            raise ValueError(f"'n' must be a positive integer, got {n}")
+
+        if "logprob_start_len" in payload and payload["logprob_start_len"] is not None:
+            logprob_start_len = payload["logprob_start_len"]
+            if not isinstance(logprob_start_len, int) or logprob_start_len < 0:
+                raise ValueError("'logprob_start_len' must be a non-negative integer")
+
+        if "stop" in payload:
+            stop = payload["stop"]
+            if not isinstance(stop, list) or not all(isinstance(s, str) for s in stop):
+                raise ValueError("'stop' must be a list of strings")
+
+        if "stop_token_ids" in payload:
+            stop_token_ids = payload["stop_token_ids"]
+            if not isinstance(stop_token_ids, list) or not all(
+                isinstance(tok, int) for tok in stop_token_ids
+            ):
+                raise ValueError("'stop_token_ids' must be a list of integers")
+
+        if "lora_path" in payload and payload["lora_path"] is not None:
+            lora_path = payload["lora_path"]
+            if not isinstance(lora_path, str):
+                raise ValueError(
+                    f"'lora_path' must be a string, got {type(lora_path).__name__}"
+                )
+
+    @staticmethod
+    def _decode_sglext_value(value: Any) -> Any:
+        """Decode SGLang extension values that are serialized as JSON strings."""
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                return value
+        return value
+
+    @classmethod
+    def _extract_chat_meta_info(cls, data: dict) -> Optional[dict[str, Any]]:
+        """Extract response-level metadata/extensions from chat-completions output."""
+        meta_info: dict[str, Any] = {}
+        metadata = data.get("metadata")
+        if isinstance(metadata, dict):
+            meta_info.update(metadata)
+
+        sglext = data.get("sglext")
+        if isinstance(sglext, dict):
+            for key, value in sglext.items():
+                meta_info[key] = cls._decode_sglext_value(value)
+
+        return meta_info or None
+
+    def _parse_chat_completion_choice(
+        self, choice: dict, return_logprobs: bool
+    ) -> types.SampledSequence:
+        """Parse one OpenAI-compatible chat-completions choice."""
+        message = choice.get("message") or {}
+        text = message.get("content") or ""
+        if not isinstance(text, str):
+            text = str(text)
+
+        raw_output_ids = choice.get("token_ids")
+        if not isinstance(raw_output_ids, list) or not all(
+            isinstance(tok, int) and not isinstance(tok, bool) for tok in raw_output_ids
+        ):
+            raise ValueError(
+                "Chat completions choice is missing integer list field 'token_ids'"
+            )
+        tokens = list(raw_output_ids)
+        output_logprobs: Optional[List[float]] = None
+        if return_logprobs:
+            output_logprobs = []
+            logprobs = choice.get("logprobs")
+            if not isinstance(logprobs, dict):
+                raise ValueError("Chat completions choice is missing 'logprobs'")
+            content_logprobs = logprobs.get("content")
+            if not isinstance(content_logprobs, list):
+                raise ValueError(
+                    "Chat completions choice is missing list field 'logprobs.content'"
+                )
+            if len(content_logprobs) != len(tokens):
+                raise ValueError(
+                    "Chat completions token/logprob alignment mismatch: "
+                    f"{len(tokens)} tokens != {len(content_logprobs)} logprobs"
+                )
+            for index, item in enumerate(content_logprobs):
+                if not isinstance(item, dict):
+                    raise ValueError(
+                        f"Chat completions logprobs.content[{index}] must be an object"
+                    )
+                value = item.get("logprob")
+                if isinstance(value, bool):
+                    raise ValueError(
+                        f"Chat completions logprobs.content[{index}] has a non-numeric logprob"
+                    )
+                try:
+                    logprob = float(value)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Chat completions logprobs.content[{index}] has a non-numeric logprob"
+                    ) from exc
+                if not math.isfinite(logprob):
+                    raise ValueError(
+                        f"Chat completions logprobs.content[{index}] has a non-finite logprob"
+                    )
+                token_id = item.get("token_id")
+                if token_id is not None and (
+                    not isinstance(token_id, int)
+                    or isinstance(token_id, bool)
+                    or token_id != tokens[index]
+                ):
+                    raise ValueError(
+                        f"Chat completions logprobs.content[{index}] token ID does not match token_ids"
+                    )
+                output_logprobs.append(logprob)
+
+        raw_prompt_tokens = choice.get("prompt_token_ids")
+        prompt_tokens = None
+        if isinstance(raw_prompt_tokens, list) and all(
+            isinstance(tok, int) for tok in raw_prompt_tokens
+        ):
+            prompt_tokens = list(raw_prompt_tokens)
+
+        finish_reason = choice.get("finish_reason")
+        stop_reason: types.StopReason = (
+            "length" if finish_reason == "length" else "stop"
+        )
+        return types.SampledSequence(
+            tokens=tokens,
+            logprobs=output_logprobs,
+            text=text,
+            stop_reason=stop_reason,
+            prompt_tokens=prompt_tokens,
+        )
+
+    async def _chat_completions_sample_request(
+        self,
+        prompt_data: dict,
+        sampling_params: types.SamplingParams,
+        return_logprobs: bool,
+        num_samples: int,
+        return_routed_experts: bool = False,
+        return_expert_logits: bool = False,
+        lora_path: Optional[str] = None,
+        logprob_start_len: Optional[Union[int, List[int]]] = None,
+    ) -> types.SampleResponse:
+        """Make a sample request through OpenAI-compatible /v1/chat/completions."""
+        payload = self._build_chat_completions_payload(
+            prompt_data,
+            sampling_params,
+            return_logprobs,
+            num_samples,
+            return_routed_experts=return_routed_experts,
+            return_expert_logits=return_expert_logits,
+            lora_path=lora_path,
+            logprob_start_len=logprob_start_len,
+        )
+
+        logger.debug(f"Chat completions request payload: {payload}")
+
+        last_error: Optional[Exception] = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                async with self._request_client() as client:
+                    response = await client.post("/v1/chat/completions", json=payload)
+                    response.raise_for_status()
+                    data = response.json()
+
+                choices = data.get("choices", [])
+                if not isinstance(choices, list):
+                    raise RuntimeError(
+                        "Chat completions response missing list field 'choices'"
+                    )
+                if len(choices) != num_samples:
+                    raise ValueError(
+                        "Chat completions response cardinality mismatch: "
+                        f"expected {num_samples}, got {len(choices)}"
+                    )
+                if not all(isinstance(choice, dict) for choice in choices):
+                    raise ValueError(
+                        "Chat completions response choices must all be objects"
+                    )
+
+                sequences = [
+                    self._parse_chat_completion_choice(choice, return_logprobs)
+                    for choice in choices
+                ]
+                return types.SampleResponse(
+                    sequences=sequences,
+                    meta_info=self._extract_chat_meta_info(data),
+                )
+
+            except httpx.HTTPStatusError as e:
+                error_text = e.response.text
+                status_code = e.response.status_code
+                # Gateways may briefly lose an upstream during pause or weight sync.
+                is_transient = status_code in (502, 503, 504) or any(
+                    err in error_text
+                    for err in ["ReadError", "ConnectError", "TimeoutError"]
+                )
+
+                if is_transient and attempt < self.max_retries:
+                    delay = self._get_retry_delay(attempt)
+                    logger.warning(
+                        f"Sampling failed with transient error from {self.base_url}: HTTP {status_code}. "
+                        f"Retrying in {delay:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                    )
+                    await asyncio.sleep(delay)
+                    last_error = e
+                    continue
+
+                logger.error(
+                    f"Sampling failed from {self.base_url}: HTTP {status_code} - {error_text}"
+                )
+                raise RuntimeError(
+                    f"Sampling failed: HTTP {status_code} - {error_text}"
+                ) from e
+
+            except httpx.TimeoutException as e:
+                if attempt < self.max_retries:
+                    delay = self._get_retry_delay(attempt)
+                    logger.warning(
+                        f"Sampling request timed out after {self.timeout}s from {self.base_url}. "
+                        f"Retrying in {delay:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                    )
+                    await asyncio.sleep(delay)
+                    last_error = e
+                    continue
+
+                logger.error(
+                    f"Sampling request timed out after {self.timeout}s from {self.base_url}: {e}"
+                )
+                raise RuntimeError(
+                    f"Sampling failed: Request timed out after {self.timeout} seconds. "
+                    f"Try increasing the timeout parameter when creating SamplingClient "
+                    f"(e.g., timeout=1800.0 for 30 minutes)."
+                ) from e
+
+            except httpx.RequestError as e:
+                error_msg = str(e)
+                is_disconnect = "disconnected" in error_msg.lower()
+
+                if attempt < self.max_retries:
+                    delay = self._get_retry_delay(attempt)
+                    logger.warning(
+                        f"Sampling request failed (connection error) from {self.base_url}: {e}. "
+                        f"Retrying in {delay:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                    )
+                    await asyncio.sleep(delay)
+                    last_error = e
+                    continue
+
+                if is_disconnect:
+                    logger.error(
+                        f"Inference server disconnected after {self.max_retries + 1} attempts. Error: {e}"
+                    )
+                    raise RuntimeError(
+                        f"Sampling failed: Server disconnected after {self.max_retries + 1} attempts. "
+                        f"The server may be overloaded or restarting. Original error: {e}"
+                    ) from e
+
+                logger.error(f"Sampling failed from {self.base_url}: {e}")
+                raise RuntimeError(f"Sampling failed: {e}") from e
+
+        raise RuntimeError(
+            f"Sampling failed after {self.max_retries + 1} attempts: {last_error}"
+        )
+
+    @staticmethod
+    def _normalize_generate_response(data: Any) -> List[dict]:
+        """Normalize /generate response into a list of response dicts."""
+        if isinstance(data, list):
+            return data
+
+        if isinstance(data, dict):
+            if "meta_info" in data or "output_ids" in data or "text" in data:
+                return [data]
+
+            numeric_items: List[Tuple[int, dict]] = []
+            for key, value in data.items():
+                if isinstance(key, str) and key.isdigit() and isinstance(value, dict):
+                    numeric_items.append((int(key), value))
+            if numeric_items:
+                numeric_items.sort(key=lambda x: x[0])
+                return [value for _, value in numeric_items]
+
+        return [data]
+
+    @staticmethod
+    def _extract_input_logprobs_from_item(item: dict) -> List[Optional[float]]:
+        """Extract prompt/input token logprobs from a /generate item."""
+        meta_info = item.get("meta_info", {})
+        raw_logprobs = meta_info.get("input_token_logprobs")
+        if raw_logprobs is None:
+            return []
+
+        parsed: List[Optional[float]] = []
+        for entry in raw_logprobs:
+            value: Optional[float]
+            if isinstance(entry, (list, tuple)) and entry:
+                value = entry[0]
+            elif isinstance(entry, dict):
+                value = entry.get("logprob", entry.get("value"))
+            else:
+                value = None
+            parsed.append(float(value) if value is not None else None)
+        return parsed
 
     async def _batch_sample_request(
         self,
@@ -351,7 +1054,9 @@ class SamplingClient:
         return_logprobs: bool,
         num_samples: int,
         return_routed_experts: bool = False,
+        return_expert_logits: bool = False,
         lora_path: Optional[str] = None,
+        logprob_start_len: Optional[Union[int, List[int]]] = None,
     ) -> types.SampleResponse:
         """Make a sample request to the inference server, handling both single and batch responses.
 
@@ -366,6 +1071,8 @@ class SamplingClient:
             "sampling_params": sampling_params_dict,
             "return_logprob": return_logprobs,
         }
+        if logprob_start_len is not None:
+            payload["logprob_start_len"] = logprob_start_len
 
         # Add model for API routing (if set)
         if self._model:
@@ -382,6 +1089,10 @@ class SamplingClient:
         if return_routed_experts:
             payload["return_routed_experts"] = True
 
+        # Add return_expert_logits for R3 expert logits replay.
+        if return_expert_logits:
+            payload["return_expert_logits"] = True
+
         # Validate payload before sending
         self._validate_generate_payload(payload)
 
@@ -391,27 +1102,12 @@ class SamplingClient:
         last_error: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
             try:
-                async with self._create_client() as client:
+                async with self._request_client() as client:
                     response = await client.post("/generate", json=payload)
                     response.raise_for_status()
                     data = response.json()
 
-                # SGLang returns different formats:
-                # - Single response (n=1): dict with 'text', 'output_ids', 'meta_info' keys
-                # - Batched response (n>1): dict with string keys '0', '1', etc., each containing a response dict
-                # - Or sometimes a list of response dicts
-                if isinstance(data, list):
-                    response_list = data
-                elif isinstance(data, dict):
-                    # Check if this is a batched response (keys are numeric strings) or single response
-                    if "meta_info" in data or "output_ids" in data or "text" in data:
-                        # Single response format
-                        response_list = [data]
-                    else:
-                        # Batched response format - dict with '0', '1', etc. keys
-                        response_list = [data[str(i)] for i in range(len(data))]
-                else:
-                    response_list = [data]
+                response_list = self._normalize_generate_response(data)
 
                 sequences: List[types.SampledSequence] = []
                 meta_info = None
@@ -428,9 +1124,10 @@ class SamplingClient:
                 # Check if this is a transient error
                 error_text = e.response.text
                 status_code = e.response.status_code
-                # 503 Service Unavailable is transient, as are errors mentioning connection issues
-                is_transient = status_code == 503 or any(
-                    err in error_text for err in ["ReadError", "ConnectError", "TimeoutError"]
+                # Gateways may briefly lose an upstream during pause or weight sync.
+                is_transient = status_code in (502, 503, 504) or any(
+                    err in error_text
+                    for err in ["ReadError", "ConnectError", "TimeoutError"]
                 )
 
                 if is_transient and attempt < self.max_retries:
@@ -443,8 +1140,12 @@ class SamplingClient:
                     last_error = e
                     continue
 
-                logger.error(f"Sampling failed from {self.base_url}: HTTP {e.response.status_code} - {error_text}")
-                raise RuntimeError(f"Sampling failed: HTTP {e.response.status_code} - {error_text}") from e
+                logger.error(
+                    f"Sampling failed from {self.base_url}: HTTP {e.response.status_code} - {error_text}"
+                )
+                raise RuntimeError(
+                    f"Sampling failed: HTTP {e.response.status_code} - {error_text}"
+                ) from e
 
             except httpx.TimeoutException as e:
                 # Request timed out - retry if we have attempts left
@@ -458,7 +1159,9 @@ class SamplingClient:
                     last_error = e
                     continue
 
-                logger.error(f"Sampling request timed out after {self.timeout}s from {self.base_url}: {e}")
+                logger.error(
+                    f"Sampling request timed out after {self.timeout}s from {self.base_url}: {e}"
+                )
                 raise RuntimeError(
                     f"Sampling failed: Request timed out after {self.timeout} seconds. "
                     f"Try increasing the timeout parameter when creating SamplingClient "
@@ -481,7 +1184,9 @@ class SamplingClient:
                     continue
 
                 if is_disconnect:
-                    logger.error(f"SGLang server disconnected after {self.max_retries + 1} attempts. Error: {e}")
+                    logger.error(
+                        f"SGLang server disconnected after {self.max_retries + 1} attempts. Error: {e}"
+                    )
                     raise RuntimeError(
                         f"Sampling failed: Server disconnected after {self.max_retries + 1} attempts. "
                         f"The server may be overloaded or restarting. Original error: {e}"
@@ -491,25 +1196,77 @@ class SamplingClient:
                 raise RuntimeError(f"Sampling failed: {e}") from e
 
         # Should not reach here, but just in case
-        raise RuntimeError(f"Sampling failed after {self.max_retries + 1} attempts: {last_error}")
+        raise RuntimeError(
+            f"Sampling failed after {self.max_retries + 1} attempts: {last_error}"
+        )
 
-    def _parse_sample_response(self, data: dict, return_logprobs: bool) -> types.SampledSequence:
-        """Parse a single sample response - just pass through the fields directly."""
+    def _parse_sample_response(
+        self, data: dict, return_logprobs: bool
+    ) -> types.SampledSequence:
+        """Parse one SGLang response without weakening behavior-policy evidence."""
+        output_ids = data.get("output_ids")
+        if not isinstance(output_ids, list) or any(
+            isinstance(token, bool) or not isinstance(token, int)
+            for token in output_ids
+        ):
+            raise ValueError("sample response output_ids must be a list of integers")
+
         meta_info = data.get("meta_info", {})
+        if not isinstance(meta_info, dict):
+            raise ValueError("sample response meta_info must be an object")
         raw_logprobs = meta_info.get("output_token_logprobs")
 
-        # output_token_logprobs is a list of [logprob, token_id, ???] tuples
-        # Extract just the logprob (first element) from each tuple
         output_logprobs = None
-        if raw_logprobs is not None:
-            output_logprobs = [item[0] if item[0] is not None else 0.0 for item in raw_logprobs]
+        if return_logprobs:
+            if not isinstance(raw_logprobs, list):
+                raise ValueError(
+                    "sample response is missing output_token_logprobs"
+                )
+            if len(raw_logprobs) != len(output_ids):
+                raise ValueError(
+                    "sample response token/logprob cardinality mismatch: "
+                    f"{len(output_ids)} tokens != {len(raw_logprobs)} logprobs"
+                )
+            output_logprobs = []
+            for index, (token_id, item) in enumerate(
+                zip(output_ids, raw_logprobs, strict=True)
+            ):
+                if not isinstance(item, (list, tuple)) or len(item) < 2:
+                    raise ValueError(
+                        f"output_token_logprobs[{index}] must contain logprob and token ID"
+                    )
+                value, recorded_token_id = item[0], item[1]
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError(
+                        f"output_token_logprobs[{index}] has a non-numeric logprob"
+                    )
+                logprob = float(value)
+                if not math.isfinite(logprob):
+                    raise ValueError(
+                        f"output_token_logprobs[{index}] has a non-finite logprob"
+                    )
+                if (
+                    isinstance(recorded_token_id, bool)
+                    or not isinstance(recorded_token_id, int)
+                    or recorded_token_id != token_id
+                ):
+                    raise ValueError(
+                        f"output_token_logprobs[{index}] token ID does not match output_ids"
+                    )
+                output_logprobs.append(logprob)
 
         # Extract stop reason from SGLang's meta_info
+        # SGLang may return finish_reason as a string ("length") or
+        # a dict ({"type": "length"} / {"type": "stop", "matched": ...}).
         finish_reason = meta_info.get("finish_reason", {})
-        stop_reason: types.StopReason = "length" if finish_reason == "length" else "stop"
+        if isinstance(finish_reason, dict):
+            is_length = finish_reason.get("type") == "length"
+        else:
+            is_length = finish_reason == "length"
+        stop_reason: types.StopReason = "length" if is_length else "stop"
 
         return types.SampledSequence(
-            tokens=data.get("output_ids", []),
+            tokens=output_ids,
             logprobs=output_logprobs,
             text=data.get("text", ""),
             stop_reason=stop_reason,
@@ -517,18 +1274,19 @@ class SamplingClient:
 
     async def sample_async(
         self,
-        prompt: Union[types.ModelInput, str],
+        prompt: PromptInput,
         sampling_params: Optional[types.SamplingParams] = None,
         num_samples: int = 1,
         return_logprobs: bool = True,
         lora_path: Optional[str] = None,
+        logprob_start_len: Optional[Union[int, List[int]]] = None,
     ) -> types.SampleResponse:
         """Async version of sample that directly returns the response.
 
         Use this when you're already in an async context and want the result directly.
 
         Args:
-            prompt: Text prompt (ModelInput or string)
+            prompt: Text prompt, ModelInput, or chat messages
             sampling_params: Sampling parameters
             num_samples: Number of samples to generate (default: 1)
             return_logprobs: Whether to return logprobs
@@ -541,11 +1299,329 @@ class SamplingClient:
             >>> response = await sampling_client.sample_async(prompt, params)
             >>> print(response.text)
         """
-        return await self._sample_async(prompt, sampling_params, num_samples, return_logprobs, lora_path)
+        return await self._sample_async(
+            prompt,
+            sampling_params,
+            num_samples,
+            return_logprobs,
+            lora_path,
+            logprob_start_len=logprob_start_len,
+        )
+
+    def score_prompt_logprobs_batch(
+        self,
+        input_ids_batch: List[List[int]],
+        logprob_start_lens: Optional[Union[int, List[int]]] = None,
+        lora_path: Optional[str] = None,
+    ) -> AsyncAPIFuture[List[List[Optional[float]]]]:
+        """Compute prompt/input token logprobs for batched tokenized prompts."""
+        coro = self.score_prompt_logprobs_batch_async(
+            input_ids_batch=input_ids_batch,
+            logprob_start_lens=logprob_start_lens,
+            lora_path=lora_path,
+        )
+        return wrap_coroutine(coro)
+
+    async def score_prompt_logprobs_batch_async(
+        self,
+        input_ids_batch: List[List[int]],
+        logprob_start_lens: Optional[Union[int, List[int]]] = None,
+        lora_path: Optional[str] = None,
+    ) -> List[List[Optional[float]]]:
+        """Async implementation for deterministic batched prompt scoring."""
+        if not input_ids_batch:
+            return []
+        if not all(
+            isinstance(seq, list) and seq and all(isinstance(tok, int) for tok in seq)
+            for seq in input_ids_batch
+        ):
+            raise ValueError(
+                "'input_ids_batch' must be a non-empty list of non-empty integer lists"
+            )
+
+        if logprob_start_lens is None:
+            starts = [0] * len(input_ids_batch)
+        elif isinstance(logprob_start_lens, int):
+            if logprob_start_lens < 0:
+                raise ValueError("'logprob_start_lens' must be >= 0")
+            starts = [logprob_start_lens] * len(input_ids_batch)
+        elif isinstance(logprob_start_lens, list):
+            if len(logprob_start_lens) != len(input_ids_batch):
+                raise ValueError(
+                    f"'logprob_start_lens' length ({len(logprob_start_lens)}) must match "
+                    f"batch length ({len(input_ids_batch)})"
+                )
+            if not all(isinstance(v, int) and v >= 0 for v in logprob_start_lens):
+                raise ValueError(
+                    "'logprob_start_lens' entries must be non-negative integers"
+                )
+            starts = logprob_start_lens
+        else:
+            raise ValueError("'logprob_start_lens' must be None, int, or list[int]")
+
+        payload: dict[str, Any] = {
+            "input_ids": input_ids_batch,
+            "sampling_params": {
+                "max_new_tokens": 0,
+                "temperature": 0,
+            },
+            "return_logprob": True,
+            "logprob_start_len": starts,
+        }
+
+        if self._model:
+            payload["model"] = self._model
+
+        effective_lora = lora_path if lora_path is not None else self._lora_name
+        if effective_lora:
+            payload["lora_path"] = effective_lora
+
+        self._validate_generate_payload(payload)
+
+        last_error: Optional[Exception] = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                async with self._request_client() as client:
+                    response = await client.post("/generate", json=payload)
+                    response.raise_for_status()
+                    data = response.json()
+
+                response_list = self._normalize_generate_response(data)
+                if len(response_list) != len(input_ids_batch):
+                    raise RuntimeError(
+                        "Prompt logprob batch response size mismatch: "
+                        f"requested {len(input_ids_batch)}, got {len(response_list)}"
+                    )
+
+                prompt_logprobs_batch: List[List[Optional[float]]] = []
+                for item in response_list:
+                    prompt_logprobs = self._extract_input_logprobs_from_item(item)
+                    if not prompt_logprobs:
+                        raise RuntimeError(
+                            "Inference response missing 'meta_info.input_token_logprobs'. "
+                            "Prompt logprob scoring requires SGLang support for return_logprob."
+                        )
+                    prompt_logprobs_batch.append(prompt_logprobs)
+                return prompt_logprobs_batch
+
+            except httpx.HTTPStatusError as e:
+                error_text = e.response.text
+                status_code = e.response.status_code
+                # Gateways may briefly lose an upstream during pause or weight sync.
+                is_transient = status_code in (502, 503, 504) or any(
+                    err in error_text
+                    for err in ["ReadError", "ConnectError", "TimeoutError"]
+                )
+
+                if is_transient and attempt < self.max_retries:
+                    delay = self._get_retry_delay(attempt)
+                    logger.warning(
+                        f"Prompt scoring transient HTTP error from {self.base_url}: HTTP {status_code}. "
+                        f"Retrying in {delay:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                    )
+                    await asyncio.sleep(delay)
+                    last_error = e
+                    continue
+
+                raise RuntimeError(
+                    f"Prompt scoring failed: HTTP {status_code} - {error_text}"
+                ) from e
+
+            except httpx.TimeoutException as e:
+                if attempt < self.max_retries:
+                    delay = self._get_retry_delay(attempt)
+                    logger.warning(
+                        f"Prompt scoring timeout after {self.timeout}s from {self.base_url}. "
+                        f"Retrying in {delay:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                    )
+                    await asyncio.sleep(delay)
+                    last_error = e
+                    continue
+                raise RuntimeError(
+                    f"Prompt scoring timed out after {self.timeout} seconds."
+                ) from e
+
+            except httpx.RequestError as e:
+                if attempt < self.max_retries:
+                    delay = self._get_retry_delay(attempt)
+                    logger.warning(
+                        f"Prompt scoring request error from {self.base_url}: {e}. "
+                        f"Retrying in {delay:.1f}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                    )
+                    await asyncio.sleep(delay)
+                    last_error = e
+                    continue
+                raise RuntimeError(f"Prompt scoring failed: {e}") from e
+
+        raise RuntimeError(
+            f"Prompt scoring failed after {self.max_retries + 1} attempts: {last_error}"
+        )
+
+    async def generate_batch_native_async(
+        self,
+        input_ids_batch: List[List[int]],
+        sampling_params: Union[types.SamplingParams, List[types.SamplingParams]],
+        *,
+        return_logprobs: bool = True,
+        lora_path: Optional[str] = None,
+    ) -> List[types.SampleResponse]:
+        """Generate one response per token-ID prompt in one SGLang request.
+
+        A list of sampling parameters enables a distinct ``sampling_seed`` for
+        each row. Cardinality and decision-time token/logprob alignment are
+        strict because either mismatch would corrupt grouped policy-loss data.
+        """
+
+        if not input_ids_batch or not all(
+            isinstance(row, list)
+            and row
+            and all(isinstance(token, int) for token in row)
+            for row in input_ids_batch
+        ):
+            raise ValueError("input_ids_batch must contain non-empty integer rows")
+        if isinstance(sampling_params, list):
+            if len(sampling_params) != len(input_ids_batch):
+                raise ValueError(
+                    "sampling parameter cardinality mismatch: "
+                    f"{len(sampling_params)} != {len(input_ids_batch)}"
+                )
+            params_payload: dict | list[dict] = [
+                params.to_dict() for params in sampling_params
+            ]
+            routed_flags = {
+                params.return_routed_experts for params in sampling_params
+            }
+            if len(routed_flags) != 1:
+                raise ValueError(
+                    "return_routed_experts must be shared across a native batch"
+                )
+            return_routed_experts = next(iter(routed_flags))
+            expert_logits_flags = {
+                params.return_expert_logits for params in sampling_params
+            }
+            file_flags = {
+                params.return_routed_experts_file for params in sampling_params
+            }
+            if len(expert_logits_flags) != 1 or len(file_flags) != 1:
+                raise ValueError(
+                    "R3 return flags must be shared across a native batch"
+                )
+            return_expert_logits = next(iter(expert_logits_flags))
+            return_routed_experts_file = next(iter(file_flags))
+            routed_experts_start_len: int | list[int] = [
+                int(params.routed_experts_start_len) for params in sampling_params
+            ]
+        elif isinstance(sampling_params, types.SamplingParams):
+            params_payload = sampling_params.to_dict()
+            return_routed_experts = sampling_params.return_routed_experts
+            return_expert_logits = sampling_params.return_expert_logits
+            return_routed_experts_file = (
+                sampling_params.return_routed_experts_file
+            )
+            routed_experts_start_len = int(
+                sampling_params.routed_experts_start_len
+            )
+        else:
+            raise TypeError("sampling_params must be SamplingParams or a list of them")
+
+        payload: dict[str, Any] = {
+            "input_ids": input_ids_batch,
+            "sampling_params": params_payload,
+            "return_logprob": return_logprobs,
+        }
+        if self._model:
+            payload["model"] = self._model
+        effective_lora = lora_path if lora_path is not None else self._lora_name
+        if effective_lora:
+            payload["lora_path"] = effective_lora
+        if return_routed_experts:
+            payload["return_routed_experts"] = True
+            payload["return_expert_logits"] = return_expert_logits
+            payload["return_routed_experts_file"] = return_routed_experts_file
+            payload["routed_experts_start_len"] = routed_experts_start_len
+
+        last_error: Optional[Exception] = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                async with self._request_client() as client:
+                    response = await client.post("/generate", json=payload)
+                    response.raise_for_status()
+                    data = response.json()
+                if isinstance(data, list):
+                    response_list = data
+                elif isinstance(data, dict) and any(
+                    key in data for key in ("meta_info", "output_ids", "text")
+                ):
+                    response_list = [data]
+                elif isinstance(data, dict) and all(
+                    str(index) in data for index in range(len(data))
+                ):
+                    response_list = [data[str(index)] for index in range(len(data))]
+                else:
+                    raise ValueError("native batch response must be a list of rows")
+                if len(response_list) != len(input_ids_batch):
+                    raise ValueError(
+                        "native batch response cardinality mismatch: "
+                        f"expected {len(input_ids_batch)}, got {len(response_list)}"
+                    )
+                rows: List[types.SampleResponse] = []
+                for item in response_list:
+                    if not isinstance(item, dict):
+                        raise ValueError("native batch response rows must be objects")
+                    sequence = self._parse_sample_response(item, return_logprobs)
+                    if return_logprobs and (
+                        sequence.logprobs is None
+                        or len(sequence.logprobs) != len(sequence.tokens)
+                    ):
+                        raise ValueError(
+                            "native batch output token/logprob alignment mismatch: "
+                            f"{len(sequence.tokens)} tokens vs "
+                            f"{0 if sequence.logprobs is None else len(sequence.logprobs)} logprobs"
+                        )
+                    rows.append(
+                        types.SampleResponse(
+                            sequences=[sequence],
+                            meta_info=dict(item.get("meta_info") or {}),
+                        )
+                    )
+                return rows
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in (502, 503, 504):
+                    raise RuntimeError(
+                        f"Sampling failed: HTTP {exc.response.status_code} - {exc.response.text}"
+                    ) from exc
+                last_error = exc
+            except (httpx.TimeoutException, httpx.RequestError) as exc:
+                last_error = exc
+            if attempt >= self.max_retries:
+                break
+            await asyncio.sleep(self._get_retry_delay(attempt))
+        raise RuntimeError(
+            f"Native batch generation failed after {self.max_retries + 1} attempts: {last_error}"
+        ) from last_error
+
+    def generate_batch_native(
+        self,
+        input_ids_batch: List[List[int]],
+        sampling_params: Union[types.SamplingParams, List[types.SamplingParams]],
+        *,
+        return_logprobs: bool = True,
+        lora_path: Optional[str] = None,
+    ) -> AsyncAPIFuture[List[types.SampleResponse]]:
+        """Future wrapper for :meth:`generate_batch_native_async`."""
+
+        return wrap_coroutine(
+            self.generate_batch_native_async(
+                input_ids_batch,
+                sampling_params,
+                return_logprobs=return_logprobs,
+                lora_path=lora_path,
+            )
+        )
 
     async def sample_batch_async(
         self,
-        prompts: List[Union[types.ModelInput, str]],
+        prompts: List[PromptInput],
         sampling_params: Optional[types.SamplingParams] = None,
         num_samples: int = 1,
         return_logprobs: bool = True,
@@ -584,7 +1660,9 @@ class SamplingClient:
         task_to_idx = {}
         for idx, prompt in enumerate(prompts):
             task = asyncio.create_task(
-                self._sample_async(prompt, sampling_params, num_samples, return_logprobs)
+                self._sample_async(
+                    prompt, sampling_params, num_samples, return_logprobs
+                )
             )
             tasks.append(task)
             task_to_idx[task] = idx
@@ -614,14 +1692,12 @@ class SamplingClient:
                 failed.append((idx, e))
 
         return BatchSampleResult(
-            completed=completed,
-            failed=failed,
-            cancelled=cancelled_indices
+            completed=completed, failed=failed, cancelled=cancelled_indices
         )
 
     def sample_batch(
         self,
-        prompts: List[Union[types.ModelInput, str]],
+        prompts: List[PromptInput],
         sampling_params: Optional[types.SamplingParams] = None,
         num_samples: int = 1,
         return_logprobs: bool = True,
@@ -645,13 +1721,183 @@ class SamplingClient:
         )
         return wrap_coroutine(coro)
 
+    async def pause_generation_async(self, mode: str = "in_place") -> dict:
+        """Pause all in-flight generation on this SGLang server."""
+        if mode not in {"abort", "retract", "in_place"}:
+            raise ValueError("mode must be 'abort', 'retract', or 'in_place'")
+        async with self._request_client() as client:
+            response = await client.post(
+                "/pause_generation",
+                json={"mode": mode},
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            return response.json()
+
+    def pause_generation(self, mode: str = "in_place") -> AsyncAPIFuture[dict]:
+        return wrap_coroutine(self.pause_generation_async(mode))
+
+    async def continue_generation_async(
+        self, *, torch_empty_cache: bool = True
+    ) -> dict:
+        """Resume paused generation on this SGLang server."""
+        async with self._request_client() as client:
+            response = await client.post(
+                "/continue_generation",
+                json={"torch_empty_cache": torch_empty_cache},
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            return response.json()
+
+    def continue_generation(
+        self, *, torch_empty_cache: bool = True
+    ) -> AsyncAPIFuture[dict]:
+        return wrap_coroutine(
+            self.continue_generation_async(torch_empty_cache=torch_empty_cache)
+        )
+
+    async def flush_cache_async(self, *, timeout: float = 0.0) -> dict:
+        """Flush SGLang's radix/KV cache before a policy swap."""
+        async with self._request_client() as client:
+            response = await client.post(
+                "/flush_cache", params={"timeout": timeout}, timeout=max(30.0, timeout)
+            )
+            response.raise_for_status()
+            try:
+                return response.json()
+            except ValueError:
+                return {"success": True, "message": response.text}
+
+    def flush_cache(self, *, timeout: float = 0.0) -> AsyncAPIFuture[dict]:
+        return wrap_coroutine(self.flush_cache_async(timeout=timeout))
+
+    async def load_lora_adapter_async(
+        self,
+        *,
+        lora_name: str,
+        lora_path: str,
+        pinned: bool = False,
+        timeout: float = 300.0,
+    ) -> dict:
+        """Load a LoRA adapter, accepting repeat loads only for the same path."""
+        payload = {
+            "lora_name": lora_name,
+            "lora_path": lora_path,
+            "pinned": pinned,
+        }
+        async with self._request_client() as client:
+            response = await client.post(
+                "/load_lora_adapter", json=payload, timeout=timeout
+            )
+            try:
+                body = response.json()
+            except ValueError:
+                body = {"error_message": response.text}
+            if response.is_error or body.get("success") is False:
+                error = str(body.get("error_message") or body)
+                loaded_adapters = body.get("loaded_adapters")
+                loaded = (
+                    loaded_adapters.get(lora_name)
+                    if isinstance(loaded_adapters, dict)
+                    else None
+                )
+                loaded_path = (
+                    loaded.get("lora_path") if isinstance(loaded, dict) else loaded
+                )
+                if "already loaded" in error.lower() and loaded_path == lora_path:
+                    self._lora_name = lora_name
+                    return {**body, "success": True, "already_loaded": True}
+                response.raise_for_status()
+                raise RuntimeError(f"load_lora_adapter({lora_name}) failed: {error}")
+            self._lora_name = lora_name
+            return body
+
+    def load_lora_adapter(self, **kwargs: Any) -> AsyncAPIFuture[dict]:
+        return wrap_coroutine(self.load_lora_adapter_async(**kwargs))
+
+    async def unload_lora_adapter_async(
+        self,
+        *,
+        lora_name: str,
+        flush_before: bool = True,
+        timeout: float = 60.0,
+    ) -> dict:
+        """Unload an adapter after flushing cache references to the old policy."""
+        if flush_before:
+            await self.flush_cache_async()
+        async with self._request_client() as client:
+            response = await client.post(
+                "/unload_lora_adapter",
+                json={"lora_name": lora_name},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+        if self._lora_name == lora_name:
+            self._lora_name = None
+        return body
+
+    def unload_lora_adapter(self, **kwargs: Any) -> AsyncAPIFuture[dict]:
+        return wrap_coroutine(self.unload_lora_adapter_async(**kwargs))
+
+    async def swap_lora_adapter_async(
+        self,
+        *,
+        current_lora_name: Optional[str],
+        lora_name: str,
+        lora_path: str,
+        pinned: bool = False,
+    ) -> dict:
+        """Safely pause, flush, swap adapters, and resume pipelined generation."""
+        await self.pause_generation_async(mode="retract")
+        swap_error: BaseException | None = None
+        try:
+            await self.flush_cache_async()
+            if current_lora_name:
+                await self.unload_lora_adapter_async(
+                    lora_name=current_lora_name, flush_before=False
+                )
+            return await self.load_lora_adapter_async(
+                lora_name=lora_name, lora_path=lora_path, pinned=pinned
+            )
+        except BaseException as exc:
+            swap_error = exc
+            raise
+        finally:
+            try:
+                await self.continue_generation_async()
+            except Exception:
+                if swap_error is None:
+                    raise
+                logger.exception("Failed to resume generation after LoRA swap failure")
+
+    def swap_lora_adapter(self, **kwargs: Any) -> AsyncAPIFuture[dict]:
+        return wrap_coroutine(self.swap_lora_adapter_async(**kwargs))
+
     def close(self):
-        """Close the client (no-op since we create fresh clients per request)."""
-        pass
+        """Close any pooled clients.
+
+        In request mode there are no retained clients. In pooled mode, prefer
+        `await close_async()` when already inside async code so the close is
+        awaited on the current loop.
+        """
+        if not self._pooled_clients:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self.close_async())
+            return
+        loop.create_task(self.close_async())
 
     async def close_async(self):
-        """Close the client (no-op since we create fresh clients per request)."""
-        pass
+        """Close any pooled clients owned by this SamplingClient."""
+        clients = list(self._pooled_clients.values())
+        self._pooled_clients.clear()
+        for client in clients:
+            if not client.is_closed:
+                await client.aclose()
 
     def __enter__(self):
         """Context manager entry."""
@@ -659,7 +1905,7 @@ class SamplingClient:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
-        pass
+        self.close()
 
     async def __aenter__(self):
         """Async context manager entry."""
@@ -667,4 +1913,4 @@ class SamplingClient:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
-        pass
+        await self.close_async()

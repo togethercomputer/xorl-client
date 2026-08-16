@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Union
 
 import numpy as np
 
@@ -53,7 +53,8 @@ class Datum:
         self,
         model_input: ModelInput,
         loss_fn_inputs: Dict[str, Union[TensorData, List, Any]],
-        routed_experts: Optional[List[List[List[int]]]] = None,
+        routed_experts: Any = None,
+        routed_expert_logits: Any = None,
     ):
         """Initialize Datum with automatic conversion of lists to TensorData.
 
@@ -68,6 +69,7 @@ class Datum:
         self.model_input = model_input
         self.loss_fn_inputs = self._convert_loss_fn_inputs(loss_fn_inputs)
         self.routed_experts = routed_experts
+        self.routed_expert_logits = routed_expert_logits
 
     @staticmethod
     def _convert_loss_fn_inputs(
@@ -119,6 +121,8 @@ class Datum:
         # Include routed_experts for R3 (Rollout Routing Replay) if provided
         if self.routed_experts is not None:
             result["routed_experts"] = self.routed_experts
+        if self.routed_expert_logits is not None:
+            result["routed_expert_logits"] = self.routed_expert_logits
 
         return result
 

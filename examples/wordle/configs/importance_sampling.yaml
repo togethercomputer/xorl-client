@@ -1,0 +1,58 @@
+preset: importance_sampling
+model:
+  model: Qwen/Qwen3-4B-Instruct-2507
+  tokenizer: Qwen/Qwen3-4B-Instruct-2507
+  mode: lora
+  model_id: wordle-is
+  lora_rank: 32
+trainer:
+  loss_fn: importance_sampling
+  loss_fn_params: {}
+  steps: 2
+  learning_rate: 0.00001
+  checkpoint_every: 1
+wordle:
+  targets_path: data/targets.txt
+  legal_guesses_path: data/legal_guesses.txt
+  train_targets: 64
+  eval_targets: 16
+  targets_per_step: 2
+  target_selection: shuffled_epochs_without_replacement
+  group_size: 4
+  max_turns: 6
+  reward: shaped
+  target_seed: 17
+generation:
+  max_new_tokens: 24
+  temperature: 1.0
+  top_p: 1.0
+  top_k: -1
+  ignore_eos: true
+  no_stop_trim: true
+  stop: ["</guess>"]
+  batch_size: 16
+  concurrency: 4
+  sampling_seed: 1000
+endpoints:
+  generation_url: ""
+  sync_urls: []
+  sync_world_size: 1
+  sync_method: nccl_ep_scatter
+  sync_buffer_mb: 1024
+streaming:
+  min_datums_per_submission: 8
+  max_groups_per_submission: 8
+  queue_max_groups: 32
+correctness:
+  require_finite_loss: true
+  require_finite_gradient: true
+  max_k3: null
+  max_ratio_error: null
+artifacts:
+  output_dir: artifacts/wordle/importance-sampling
+  resume_from: null
+  source_root: .
+r3:
+  enabled: false
+  required: false
+  max_payload_bytes: 268435456
