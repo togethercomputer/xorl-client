@@ -24,6 +24,10 @@ ordering for every step: complete grouped rollouts, forward/backward, durable
 pre-optimizer correctness gate, optimizer step, sampler sync, checkpoint, and
 step artifacts. It also performs a final sync after the last optimizer step.
 
+`model.model` identifies the sampler model and remains the tokenizer fallback.
+Set `model.train_base_model` only when the trainer endpoint expects a different
+base-model identifier or checkpoint path; otherwise it defaults to `model.model`.
+
 Presets
 
 - `importance_sampling.yaml` expects ordinary native SGLang `/generate`,

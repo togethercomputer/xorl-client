@@ -424,15 +424,16 @@ async def _run_cli(args: argparse.Namespace) -> dict:
     service = ServiceClient(
         base_url=args.trainer_url, timeout=config.generation.timeout
     )
+    train_base_model = config.model.resolved_train_base_model()
     if config.model.mode == "lora":
         training_client = service.create_lora_training_client(
-            base_model=config.model.model,
+            base_model=train_base_model,
             rank=config.model.lora_rank,
             model_id=config.model.model_id,
         )
     else:
         training_client = service.create_training_client(
-            base_model=config.model.model, model_id=config.model.model_id
+            base_model=train_base_model, model_id=config.model.model_id
         )
     for url in config.endpoints.sync_urls:
         host, port = _endpoint_host_port(url)

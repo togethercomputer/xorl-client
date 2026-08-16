@@ -15,11 +15,22 @@ def test_shipped_presets_load_and_resolve_data(name):
     config = load_config(ROOT / f"examples/wordle/configs/{name}.yaml")
     assert Path(config.wordle.targets_path).is_file()
     assert config.preset == name
+    assert config.model.resolved_train_base_model() == config.model.model
     assert config.generation.no_stop_trim
     if name == "zero_k3":
         assert config.trainer.loss_fn_params["compute_kl_stats"] is True
         assert config.correctness.max_k3 == 0.0
         assert config.correctness.max_ratio_error == 0.0
+
+
+def test_trainer_base_model_can_differ_from_sampler_model():
+    config = load_config(ROOT / "examples/wordle/configs/importance_sampling.yaml")
+    config.model = config.model.model_copy(
+        update={"train_base_model": "/checkpoints/trainer-base"}
+    )
+
+    assert config.model.resolved_train_base_model() == "/checkpoints/trainer-base"
+    assert config.model.model == "Qwen/Qwen3-4B-Instruct-2507"
 
 
 def test_unknown_fields_and_invalid_preset_combinations_rejected():

@@ -15,10 +15,14 @@ class StrictModel(BaseModel):
 
 class ModelConfig(StrictModel):
     model: str
+    train_base_model: str | None = None
     tokenizer: str | None = None
     mode: Literal["lora", "full"] = "lora"
     model_id: str = "wordle"
     lora_rank: int = Field(default=32, gt=0)
+
+    def resolved_train_base_model(self) -> str:
+        return self.train_base_model or self.model
 
 
 class TrainerConfig(StrictModel):
