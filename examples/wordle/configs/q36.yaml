@@ -1,0 +1,94 @@
+# Shared Qwen3.6 contract. The shipped compact vocabulary keeps this file
+# locally loadable; production should point the two data paths at the frozen
+# 4,000-train/170-held-out corpus and set train_targets/eval_targets accordingly.
+model:
+  model: Qwen/Qwen3.6-35B-A3B
+  tokenizer: Qwen/Qwen3.6-35B-A3B
+  mode: lora
+  model_id: wordle-q36-lora16
+  lora_rank: 16
+  lora_seed: 9234
+  train_mlp: true
+  train_attn: true
+  train_unembed: false
+trainer:
+  loss_fn: importance_sampling
+  loss_fn_params:
+    compute_kl_stats: true
+  steps: 128
+  learning_rate: 0.0001
+  learning_rate_schedule: cosine
+  learning_rate_warmup_steps: 8
+  min_learning_rate: 0.00001
+  beta1: 0.9
+  beta2: 0.999
+  eps: 0.00000001
+  weight_decay: 0.0
+  grad_clip_norm: 0.0
+  checkpoint_every: 8
+wordle:
+  targets_path: data/targets.txt
+  legal_guesses_path: data/legal_guesses.txt
+  train_targets: 200
+  eval_targets: 16
+  targets_per_step: 64
+  target_selection: shuffled_epochs_without_replacement
+  group_size: 16
+  max_turns: 6
+  reward: shaped
+  target_seed: 9234
+generation:
+  max_new_tokens: 4096
+  max_length: 6144
+  temperature: 1.0
+  top_p: 1.0
+  top_k: -1
+  ignore_eos: true
+  stop: ["</guess>"]
+  batch_size: 128
+  concurrency: 8
+  sampling_seed: 9234
+  timeout: 3600
+  max_retries: 3
+artifacts:
+  output_dir: outputs/wordle/q36
+  resume_from: null
+  source_root: .
+wandb:
+  project: ""
+  entity: ""
+  name: ""
+  group: ""
+  tags: []
+  log_samples: 0
+router_replay:
+  enabled: false
+  max_payload_bytes: 268435456
+backends:
+  xorl:
+    trainer_url: ""
+    generation_url: ""
+    sync_urls: []
+    sync_world_size: 1
+    sync_method: p2p
+    sync_buffer_mb: 1024
+    streaming:
+      pipeline_rl: true
+      min_datums_per_submission: 8
+      max_groups_per_submission: 4
+      queue_max_groups: 8
+  river:
+    endpoint: api.river.ai
+    base_model: Qwen/Qwen3.6-35B-A3B-FP8
+    project: wordle-grpo-river
+    run_name: wordle-q36-lora16
+    sample_batch_size: 128
+    sample_timeout: 3600
+    operation_timeout: 3600
+    logprob_temperature: 1.0
+  tinker:
+    base_model: Qwen/Qwen3.6-35B-A3B
+    run_name: wordle-q36-lora16
+    sample_inflight: 256
+    sample_timeout: 3600
+    operation_timeout: 3600

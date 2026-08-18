@@ -9,6 +9,7 @@ Install the example dependencies from a checkout or installed distribution and r
 ```bash
 pip install -e '.[examples]'
 python -m examples.wordle.train \
+  --backend xorl \
   --config examples/wordle/configs/importance_sampling.yaml \
   --trainer-url http://trainer:8000 \
   --generation-url http://sampler-router:30000 \
@@ -74,6 +75,7 @@ validates model, model ID, session, and completed step before advancing:
 
 ```bash
 python -m examples.wordle.train \
+  --backend xorl \
   --config examples/wordle/configs/importance_sampling.yaml \
   --trainer-url http://trainer:8000 \
   --generation-url http://sampler-router:30000 \
