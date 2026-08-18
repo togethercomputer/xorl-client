@@ -28,6 +28,7 @@ from .base import (
     SampledTurn,
     SamplingRequest,
     generation_budget,
+    rendered_prompt,
 )
 
 _MAX_FORWARD_BACKWARD_DATUMS = 8192
@@ -53,6 +54,10 @@ def _resolved(value: Any, timeout: float) -> Any:
 
 class RiverBackend:
     name = "river"
+
+    @property
+    def preserve_full_replay_sequence(self) -> bool:
+        return self.config.router_replay.enabled
 
     def __init__(
         self,
@@ -86,7 +91,11 @@ class RiverBackend:
             kwargs.pop("enable_thinking")
             kwargs.pop("return_dict")
             tokens = self.tokenizer.apply_chat_template(messages, **kwargs)
-        return RenderedPrompt(tokens=[int(value) for value in tokens])
+        return rendered_prompt(
+            self.tokenizer,
+            tokens,
+            assume_private_think_open=True,
+        )
 
     def decode_tokens(self, tokens: Sequence[int]) -> str:
         return str(self.tokenizer.decode(tokens, skip_special_tokens=False))
@@ -112,23 +121,10 @@ class RiverBackend:
             "return_expert_routing": self.config.router_replay.enabled,
             "timeout": self.backend_config.sample_timeout,
         }
-        # The production thinking prompt can quote ``</guess>`` while planning.
-        # For ordinary River sampling, generate through EOS/the token budget and
-        # let the shared retention code co-trim tokens and logprobs at the first
-        # playable action. Opaque replay metadata cannot be shortened, so replay
-        # must instead stop server-side at its completed-action delimiter.
-        if self.config.router_replay.enabled:
-            kwargs["stop"] = self.config.generation.stop
-        try:
-            pending = self.model.submit_sample(**kwargs)
-        except TypeError as exc:
-            # Older River clients do not expose a stop argument. Retention is
-            # still safe without replay; with replay, any actual truncation is
-            # rejected by retain_backend_metadata below.
-            if "stop" not in kwargs or "stop" not in str(exc):
-                raise
-            kwargs.pop("stop")
-            pending = self.model.submit_sample(**kwargs)
+        # A raw ``</guess>`` stop is unsafe while the prompt's private thinking
+        # block is open. Generate through River's EOS/budget boundary, then let
+        # the shared state-aware retention code select the public action.
+        pending = self.model.submit_sample(**kwargs)
         groups = _resolved(pending, self.backend_config.sample_timeout)
         if len(groups) != len(requests):
             raise RuntimeError(
@@ -178,11 +174,8 @@ class RiverBackend:
             raise ValueError(
                 "River Router Replay requires a routing handle on every datum"
             )
-        if retained_output_tokens != original_output_tokens:
-            raise ValueError(
-                "River Router Replay cannot trim a sequence associated with an "
-                "opaque full-sequence routing handle"
-            )
+        if retained_output_tokens > original_output_tokens:
+            raise ValueError("River Router Replay retention exceeds its routing handle")
         return {"expert_routing_handle": handle}
 
     async def begin_step(self, step_number: int) -> BackendStep:
@@ -267,7 +260,7 @@ class RiverBackend:
                 mismatched_datums=abs(len(samples) - returned_rows),
                 trainer_returned_tokens=0,
                 prompt_lengths=[len(sample.prompt_tokens) for sample in samples],
-                response_lengths=[len(sample.output_tokens) for sample in samples],
+                response_lengths=[sample.response_tokens for sample in samples],
             )
             require_complete_alignment(alignment)
 
@@ -311,7 +304,7 @@ class RiverBackend:
             mismatched_datums=0,
             trainer_returned_tokens=returned_tokens,
             prompt_lengths=[len(sample.prompt_tokens) for sample in samples],
-            response_lengths=[len(sample.output_tokens) for sample in samples],
+            response_lengths=[sample.response_tokens for sample in samples],
         )
         require_complete_alignment(alignment)
         metrics = numeric_metrics(getattr(result, "metrics", {}))

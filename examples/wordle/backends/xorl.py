@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from xorl_client import SamplingClient, SamplingParams, ServiceClient, types
 from xorl_client.client.chunked_helpers import combine_fwd_bwd_output_results
 
+from ..artifacts import redact_url
 from ..config import ExperimentConfig
 from ..metrics import (
     LogprobPair,
@@ -29,6 +30,7 @@ from .base import (
     SampledTurn,
     SamplingRequest,
     generation_budget,
+    rendered_prompt,
 )
 
 _ROUTING_SPANS_SCHEMA = "xorl.r3.spans.v1"
@@ -193,7 +195,11 @@ class XorlBackend:
             kwargs.pop("enable_thinking")
             kwargs.pop("return_dict")
             tokens = self.tokenizer.apply_chat_template(messages, **kwargs)
-        return RenderedPrompt(tokens=[int(value) for value in tokens])
+        return rendered_prompt(
+            self.tokenizer,
+            tokens,
+            assume_private_think_open=True,
+        )
 
     def decode_tokens(self, tokens: Sequence[int]) -> str:
         return str(self.tokenizer.decode(tokens, skip_special_tokens=False))
@@ -223,8 +229,6 @@ class XorlBackend:
                     temperature=self.config.generation.temperature,
                     top_p=self.config.generation.top_p,
                     top_k=self.config.generation.top_k,
-                    stop=self.config.generation.stop,
-                    stop_token_ids=self.config.generation.stop_token_ids or None,
                     ignore_eos=self.config.generation.ignore_eos,
                     no_stop_trim=True,
                     sampling_seed=request.seed,
@@ -424,7 +428,7 @@ class XorlBackend:
                 row = tensor_values(getattr(output, "logprobs", None))
                 returned_tokens += len(row)
                 prompt_lengths.append(len(sample.prompt_tokens))
-                response_lengths.append(len(sample.output_tokens))
+                response_lengths.append(sample.response_tokens)
                 if len(row) != sample.shifted_length:
                     alignment = compute_k3_metrics(
                         pairs,
@@ -437,7 +441,9 @@ class XorlBackend:
                         response_lengths=response_lengths,
                     )
                     require_complete_alignment(alignment)
-                trainer = row[sample.shifted_response_start : sample.shifted_length]
+                trainer = row[
+                    sample.shifted_response_start : sample.shifted_response_end
+                ]
                 pairs.append(
                     LogprobPair(sampled=sample.sampled_logprobs, trainer=trainer)
                 )
@@ -524,7 +530,7 @@ class XorlBackend:
 def _endpoint_host_port(url: str) -> tuple[str, int]:
     parsed = urlsplit(url)
     if not parsed.hostname or not parsed.port:
-        raise ValueError(f"sync URL must include host and port: {url!r}")
+        raise ValueError(f"sync URL must include host and port: {redact_url(url)!r}")
     return parsed.hostname, parsed.port
 
 
@@ -553,6 +559,10 @@ async def create_xorl_backend(
             base_model=config.model.resolved_train_base_model(),
             rank=config.model.lora_rank,
             model_id=config.model.model_id,
+            lora_seed=config.model.lora_seed,
+            train_mlp=config.model.train_mlp,
+            train_attn=config.model.train_attn,
+            train_unembed=config.model.train_unembed,
         )
     else:
         training_client = service.create_training_client(
@@ -572,7 +582,8 @@ async def create_xorl_backend(
         ).result()
         if not registered.success:
             raise RuntimeError(
-                f"failed to register XoRL sync endpoint {url!r}: {registered.message}"
+                "failed to register XoRL sync endpoint "
+                f"{redact_url(url)!r}: {registered.message}"
             )
     sampler = SamplingClient(
         base_url=backend.generation_url,

@@ -24,6 +24,31 @@ def generation_budget(config: ExperimentConfig, prompt_tokens: int) -> int:
 class RenderedPrompt:
     tokens: list[int]
     text: str | None = None
+    private_think_open: bool = False
+
+
+def rendered_prompt(
+    tokenizer: Any,
+    tokens: Sequence[int],
+    *,
+    assume_private_think_open: bool,
+) -> RenderedPrompt:
+    values = [int(value) for value in tokens]
+    try:
+        text = str(tokenizer.decode(values, skip_special_tokens=False))
+    except (AttributeError, KeyError, TypeError, ValueError):
+        text = None
+    private_think_open = assume_private_think_open
+    if text is not None:
+        lower = text.lower()
+        private_think_open = private_think_open or (
+            lower.rfind("<think>") > lower.rfind("</think>")
+        )
+    return RenderedPrompt(
+        tokens=values,
+        text=text,
+        private_think_open=private_think_open,
+    )
 
 
 @dataclass
@@ -40,6 +65,7 @@ class SampledTurn:
     logprobs: list[float]
     text: str
     backend_metadata: Any = None
+    trainable_output_tokens: int | None = None
 
 
 @dataclass(frozen=True)

@@ -17,14 +17,113 @@ from .backends.base import (
     ForwardBackwardResult,
     OptimizerResult,
     PublishResult,
+    SampledTurn,
 )
 from .config import ExperimentConfig
 from .metrics import StructuralAlignmentError, finite_metric_present
-from .rollout import rollout_complete_groups
+from .rollout import Trajectory, TurnRecord, rollout_complete_groups
 from .task import WordleTask
 from .training import GroupTrainingBatch, merge_metrics, retain_training_tokens
 
 _PIPELINE_END = object()
+_PIPELINE_ROLLOUT_SCHEMA = "wordle.pipeline-rollout.v1"
+
+
+def _serialize_trajectory(trajectory: Trajectory) -> dict[str, Any]:
+    turns: list[dict[str, Any]] = []
+    for turn in trajectory.turns:
+        if turn.sample.backend_metadata is not None:
+            raise ValueError(
+                "pipeline rollout persistence does not support backend side-channel metadata"
+            )
+        turns.append(
+            {
+                "turn": turn.turn,
+                "sample": {
+                    "prompt_tokens": [int(item) for item in turn.sample.prompt_tokens],
+                    "output_tokens": [int(item) for item in turn.sample.output_tokens],
+                    "logprobs": [float(item) for item in turn.sample.logprobs],
+                    "text": turn.sample.text,
+                    "trainable_output_tokens": turn.sample.trainable_output_tokens,
+                },
+                "raw_text": turn.raw_text,
+                "truncated_after_action": turn.truncated_after_action,
+                "guess": turn.guess,
+                "single_guess_tag": turn.single_guess_tag,
+                "format_ok": turn.format_ok,
+                "strict_format_ok": turn.strict_format_ok,
+                "valid_guess": turn.valid_guess,
+                "public_constraint_valid": turn.public_constraint_valid,
+                "target_leak": turn.target_leak,
+                "extra_text": turn.extra_text,
+                "feedback": turn.feedback,
+                "solved": turn.solved,
+                "error": turn.error,
+            }
+        )
+    return {
+        "group_id": trajectory.group_id,
+        "rollout_id": trajectory.rollout_id,
+        "target": trajectory.target,
+        "history": [list(value) for value in trajectory.history],
+        "turns": turns,
+        "terminal": trajectory.terminal,
+        "solved": trajectory.solved,
+        "stopped_reason": trajectory.stopped_reason,
+        "reward": trajectory.reward,
+        "advantage": trajectory.advantage,
+    }
+
+
+def _deserialize_trajectory(value: dict[str, Any]) -> Trajectory:
+    turns: list[TurnRecord] = []
+    for turn_value in value.get("turns", []):
+        sample_value = turn_value["sample"]
+        turns.append(
+            TurnRecord(
+                turn=int(turn_value["turn"]),
+                sample=SampledTurn(
+                    prompt_tokens=[int(item) for item in sample_value["prompt_tokens"]],
+                    output_tokens=[int(item) for item in sample_value["output_tokens"]],
+                    logprobs=[float(item) for item in sample_value["logprobs"]],
+                    text=str(sample_value["text"]),
+                    trainable_output_tokens=(
+                        int(sample_value["trainable_output_tokens"])
+                        if sample_value.get("trainable_output_tokens") is not None
+                        else None
+                    ),
+                ),
+                raw_text=str(turn_value["raw_text"]),
+                truncated_after_action=bool(turn_value["truncated_after_action"]),
+                guess=(
+                    str(turn_value["guess"])
+                    if turn_value.get("guess") is not None
+                    else None
+                ),
+                single_guess_tag=bool(turn_value["single_guess_tag"]),
+                format_ok=bool(turn_value["format_ok"]),
+                strict_format_ok=bool(turn_value["strict_format_ok"]),
+                valid_guess=bool(turn_value["valid_guess"]),
+                public_constraint_valid=bool(turn_value["public_constraint_valid"]),
+                target_leak=bool(turn_value["target_leak"]),
+                extra_text=bool(turn_value["extra_text"]),
+                feedback=str(turn_value["feedback"]),
+                solved=bool(turn_value["solved"]),
+                error=str(turn_value.get("error", "")),
+            )
+        )
+    return Trajectory(
+        group_id=str(value["group_id"]),
+        rollout_id=int(value["rollout_id"]),
+        target=str(value["target"]),
+        history=[(str(item[0]), str(item[1])) for item in value.get("history", [])],
+        turns=turns,
+        terminal=bool(value["terminal"]),
+        solved=bool(value["solved"]),
+        stopped_reason=str(value["stopped_reason"]),
+        reward={str(key): float(item) for key, item in value["reward"].items()},
+        advantage=float(value["advantage"]),
+    )
 
 
 def _group_metrics(totals: dict[str, float]) -> dict[str, float]:
@@ -56,9 +155,11 @@ class _PreparedStep:
     backend_step: BackendStep
     targets: list[str]
     trajectories: list[Any]
+    group_order: list[str]
     totals: dict[str, float]
     started_at: float
     rollout_wall_s: float
+    generated_policy_step: int
 
 
 @dataclass
@@ -125,7 +226,7 @@ class ExperimentRunner:
                         "target_leak": turn.target_leak,
                         "extra_text": turn.extra_text,
                         "prompt_tokens": len(turn.prompt_tokens),
-                        "retained_response_tokens": len(turn.output_tokens),
+                        "retained_response_tokens": turn.trainable_output_tokens,
                         "truncated_after_action": turn.truncated_after_action,
                         "reward": trajectory.reward,
                         "text": turn.text,
@@ -148,6 +249,7 @@ class ExperimentRunner:
         *,
         backend_step: BackendStep | None = None,
         batch_queue: asyncio.Queue[Any] | None = None,
+        generated_policy_step: int | None = None,
     ) -> _PreparedStep:
         started_at = time.monotonic()
         targets = self.task.select_train_targets(
@@ -157,10 +259,12 @@ class ExperimentRunner:
         )
         step = backend_step or await self.backend.begin_step(step_number)
         totals: dict[str, float] = {}
+        group_order: list[str] = []
 
         async def completed(group: list[Any]) -> None:
             batch = retain_training_tokens(group, config=self.config)
             merge_metrics(totals, batch.metrics)
+            group_order.append(str(group[0].group_id))
             if batch_queue is None:
                 await self.backend.add_group(step, batch)
             else:
@@ -180,9 +284,117 @@ class ExperimentRunner:
             backend_step=step,
             targets=targets,
             trajectories=trajectories,
+            group_order=group_order,
             totals=totals,
             started_at=started_at,
             rollout_wall_s=time.monotonic() - rollout_started,
+            generated_policy_step=(
+                step_number - 1
+                if generated_policy_step is None
+                else generated_policy_step
+            ),
+        )
+
+    def _persist_pipeline_rollout(self, prepared: _PreparedStep) -> None:
+        self.store.write_pipeline_rollout(
+            prepared.number,
+            {
+                "schema": _PIPELINE_ROLLOUT_SCHEMA,
+                "backend": self.backend.name,
+                "step": prepared.number,
+                "generated_policy_step": prepared.generated_policy_step,
+                "targets": prepared.targets,
+                "group_order": prepared.group_order,
+                "totals": prepared.totals,
+                "rollout_wall_s": prepared.rollout_wall_s,
+                "trajectories": [
+                    _serialize_trajectory(trajectory)
+                    for trajectory in prepared.trajectories
+                ],
+            },
+        )
+
+    async def _restore_pipeline_rollout(
+        self, step_number: int, records: list[dict[str, Any]]
+    ) -> _PreparedStep:
+        value = self.store.load_pipeline_rollout(step_number)
+        if value is None:
+            raise RuntimeError(
+                "pipeline resume requires the queued rollout generated before "
+                f"the restored optimizer update: step={step_number}"
+            )
+        expected_policy_step = step_number - 2
+        if (
+            value.get("schema") != _PIPELINE_ROLLOUT_SCHEMA
+            or value.get("backend") != self.backend.name
+            or int(value.get("step", -1)) != step_number
+            or int(value.get("generated_policy_step", -1)) != expected_policy_step
+        ):
+            raise RuntimeError(
+                f"queued pipeline rollout identity is invalid: step={step_number}"
+            )
+        if not records or int(records[-1].get("step", -1)) != step_number - 1:
+            raise RuntimeError(
+                f"pipeline resume has no committed predecessor for step {step_number}"
+            )
+        predecessor_hybrid = records[-1].get("hybrid") or {}
+        if (
+            int(predecessor_hybrid.get("generated_step", -1)) != step_number
+            or int(predecessor_hybrid.get("generated_policy_step", -1))
+            != expected_policy_step
+        ):
+            raise RuntimeError(
+                "queued pipeline rollout disagrees with its predecessor policy identity"
+            )
+        targets = [str(item) for item in value.get("targets", [])]
+        expected_targets = self.task.select_train_targets(
+            step=step_number,
+            count=self.config.wordle.targets_per_step,
+            seed=self.config.wordle.target_seed,
+        )
+        if targets != expected_targets:
+            raise RuntimeError(
+                f"queued pipeline rollout target cursor changed: step={step_number}"
+            )
+        trajectories = [
+            _deserialize_trajectory(item) for item in value.get("trajectories", [])
+        ]
+        groups: dict[str, list[Trajectory]] = {}
+        for trajectory in trajectories:
+            groups.setdefault(trajectory.group_id, []).append(trajectory)
+        group_order = [str(item) for item in value.get("group_order", [])]
+        if len(group_order) != len(groups) or set(group_order) != set(groups):
+            raise RuntimeError(
+                f"queued pipeline rollout group order is incomplete: step={step_number}"
+            )
+        backend_step = await self.backend.begin_step(step_number)
+        totals: dict[str, float] = {}
+        for group_id in group_order:
+            group = groups[group_id]
+            if len(group) != self.config.wordle.group_size:
+                raise RuntimeError(
+                    f"queued pipeline rollout group cardinality changed: {group_id}"
+                )
+            batch = retain_training_tokens(group, config=self.config)
+            merge_metrics(totals, batch.metrics)
+            await self.backend.add_group(backend_step, batch)
+        stored_totals = {
+            str(key): float(item) for key, item in value.get("totals", {}).items()
+        }
+        if totals != stored_totals:
+            raise RuntimeError(
+                f"queued pipeline rollout metrics changed on restore: step={step_number}"
+            )
+        return _PreparedStep(
+            number=step_number,
+            backend_step=backend_step,
+            targets=targets,
+            trajectories=trajectories,
+            group_order=group_order,
+            totals=totals,
+            started_at=time.monotonic(),
+            rollout_wall_s=float(value.get("rollout_wall_s", 0.0)),
+            generated_policy_step=expected_policy_step,
         )
 
     async def _train(self, prepared: _PreparedStep) -> _TrainOutcome:
@@ -363,6 +575,10 @@ class ExperimentRunner:
             "target_cursor": (prepared.number - 1)
             * self.config.wordle.targets_per_step,
             "targets": prepared.targets,
+            "generated_policy_step": prepared.generated_policy_step,
+            "rollout_staleness_updates_when_consumed": (
+                prepared.number - 1 - prepared.generated_policy_step
+            ),
             **_group_metrics(prepared.totals),
             **outcome.forward.alignment,
             "forward_backward_calls": outcome.forward.call_count,
@@ -444,6 +660,7 @@ class ExperimentRunner:
                     step_number,
                     backend_step=backend_step,
                     batch_queue=queue,
+                    generated_policy_step=step_number - 2,
                 )
             finally:
                 queue.put_nowait(_PIPELINE_END)
@@ -491,7 +708,11 @@ class ExperimentRunner:
     async def _run_pipeline(
         self, *, start_step: int, records: list[dict[str, Any]]
     ) -> None:
-        current = await self._prepare_step(start_step)
+        current = (
+            await self._prepare_step(start_step, generated_policy_step=0)
+            if start_step == 1
+            else await self._restore_pipeline_rollout(start_step, records)
+        )
         for step_number in range(start_step, self.config.trainer.steps + 1):
             if current.number != step_number:
                 raise RuntimeError("XoRL pipeline lost logical step ordering")
@@ -518,6 +739,12 @@ class ExperimentRunner:
             if next_pipeline is not None:
                 next_prepared, next_error = await self._drain_pipeline(next_pipeline)
             rollout_wait_wall = time.monotonic() - rollout_wait_started
+            if next_error is not None:
+                # Do not commit the predecessor without the queued rollout that
+                # makes its one-update-stale successor resumable.
+                raise next_error
+            if next_prepared is not None:
+                self._persist_pipeline_rollout(next_prepared)
             publish, publish_wall = await self._publish(outcome)
             hybrid = {
                 "enabled": 1.0,
@@ -531,9 +758,7 @@ class ExperimentRunner:
                 "generated_staleness_updates_when_consumed": (
                     1 if next_pipeline is not None else None
                 ),
-                "next_rollout_success": (
-                    next_error is None if next_pipeline is not None else None
-                ),
+                "next_rollout_success": (True if next_pipeline is not None else None),
                 "hybrid_train_tail_wall_s": (
                     outcome.forward_wall_s + outcome.optimizer_wall_s
                 ),
@@ -551,8 +776,7 @@ class ExperimentRunner:
                     hybrid=hybrid,
                 )
             )
-            if next_error is not None:
-                raise next_error
+            self.store.discard_pipeline_rollout(step_number)
             if next_pipeline is not None:
                 assert next_prepared is not None
                 current = next_prepared

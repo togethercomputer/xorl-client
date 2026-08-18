@@ -27,6 +27,7 @@ from .base import (
     SampledTurn,
     SamplingRequest,
     generation_budget,
+    rendered_prompt,
 )
 
 
@@ -81,7 +82,11 @@ class TinkerBackend:
             kwargs.pop("enable_thinking")
             kwargs.pop("return_dict")
             tokens = self.tokenizer.apply_chat_template(messages, **kwargs)
-        return RenderedPrompt(tokens=[int(value) for value in tokens])
+        return rendered_prompt(
+            self.tokenizer,
+            tokens,
+            assume_private_think_open=True,
+        )
 
     def decode_tokens(self, tokens: Sequence[int]) -> str:
         return str(self.tokenizer.decode(tokens, skip_special_tokens=False))
@@ -211,7 +216,7 @@ class TinkerBackend:
                 mismatched_datums=abs(len(samples) - returned_rows),
                 trainer_returned_tokens=0,
                 prompt_lengths=[len(sample.prompt_tokens) for sample in samples],
-                response_lengths=[len(sample.output_tokens) for sample in samples],
+                response_lengths=[sample.response_tokens for sample in samples],
             )
             require_complete_alignment(alignment)
 
@@ -233,7 +238,9 @@ class TinkerBackend:
             pairs.append(
                 LogprobPair(
                     sampled=sample.sampled_logprobs,
-                    trainer=row[sample.shifted_response_start : sample.shifted_length],
+                    trainer=row[
+                        sample.shifted_response_start : sample.shifted_response_end
+                    ],
                 )
             )
         alignment = compute_k3_metrics(
@@ -244,7 +251,7 @@ class TinkerBackend:
             mismatched_datums=0,
             trainer_returned_tokens=returned_tokens,
             prompt_lengths=[len(sample.prompt_tokens) for sample in samples],
-            response_lengths=[len(sample.output_tokens) for sample in samples],
+            response_lengths=[sample.response_tokens for sample in samples],
         )
         require_complete_alignment(alignment)
         metrics = numeric_metrics(getattr(result, "metrics", {}))

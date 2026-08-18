@@ -85,9 +85,15 @@ class TrainerConfig(StrictModel):
                 )
                 if self.ppo_dual_clip is not None:
                     params["eps_clip_c"] = self.ppo_dual_clip
+            elif backend == "river":
+                # River names the asymmetric epsilon distances directly;
+                # these are not Tinker's absolute ratio thresholds.
+                params.update(
+                    clip_low=self.ppo_clip_low,
+                    clip_high=self.ppo_clip_high,
+                )
             else:
-                # Tinker and River use absolute ratio thresholds while XoRL's
-                # policy_loss API uses epsilon distances around one.
+                # Tinker uses absolute ratio thresholds around one.
                 params.update(
                     clip_low_threshold=1.0 - self.ppo_clip_low,
                     clip_high_threshold=1.0 + self.ppo_clip_high,
@@ -331,8 +337,17 @@ class ExperimentConfig(StrictModel):
         return self
 
     def validate_backend(self, backend: BackendName) -> None:
-        if getattr(self.backends, backend) is None:
+        backend_config = getattr(self.backends, backend)
+        if backend_config is None:
             raise ValueError(f"configuration has no backends.{backend} section")
+        if (
+            backend == "xorl"
+            and self.router_replay.enabled
+            and backend_config.streaming.pipeline_rl
+        ):
+            raise ValueError(
+                "XoRL pipeline mode cannot durably resume Router Replay side-channel files"
+            )
         if backend == "tinker" and self.router_replay.enabled:
             raise ValueError("Tinker does not support Router Replay")
         if backend in {"river", "tinker"} and self.model.mode != "lora":

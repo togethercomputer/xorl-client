@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Sequence
 
@@ -10,7 +11,7 @@ from xorl_client import SamplingParams, types
 from xorl_client.rl import compute_grpo_advantages
 
 from .backends.base import Backend, RenderedPrompt, SampledTurn, SamplingRequest
-from .backends.base import generation_budget
+from .backends.base import generation_budget, rendered_prompt
 from .config import ExperimentConfig
 from .reward import score_trajectory
 from .task import WordleTask, compute_feedback, extract_action_text, extract_guesses
@@ -43,6 +44,11 @@ class TurnRecord:
     @property
     def output_tokens(self) -> list[int]:
         return self.sample.output_tokens
+
+    @property
+    def trainable_output_tokens(self) -> int:
+        value = self.sample.trainable_output_tokens
+        return len(self.sample.output_tokens) if value is None else int(value)
 
     @property
     def old_logprobs(self) -> list[float]:
@@ -102,10 +108,13 @@ def retain_first_completed_action(
         return decoded[count]
 
     def has_completed_action(text: str) -> bool:
-        lower = text.lower()
-        # A private think block routinely mentions the literal output tags.
-        # Until that block closes, those mentions are not playable actions.
-        if lower.rfind("<think>") > lower.rfind("</think>"):
+        private_think_open = request.prompt.private_think_open
+        for match in re.finditer(r"</?think>", text, flags=re.IGNORECASE):
+            private_think_open = not match.group(0).startswith("</")
+        # The chat template opens the private block in the prompt, outside the
+        # generated suffix inspected here. No guess is playable until that
+        # inherited block has closed.
+        if private_think_open:
             return False
         return bool(extract_guesses(extract_action_text(text)))
 
@@ -161,13 +170,18 @@ def retain_first_completed_action(
         original_output_tokens=len(output),
         retained_output_tokens=keep,
     )
+    preserve_full_output = bool(
+        getattr(backend, "preserve_full_replay_sequence", False)
+    )
+    submitted_output_tokens = len(output) if preserve_full_output else keep
     return (
         replace(
             sampled,
-            output_tokens=output[:keep],
-            logprobs=logprobs[:keep],
+            output_tokens=output[:submitted_output_tokens],
+            logprobs=logprobs[:submitted_output_tokens],
             text=retained_text,
             backend_metadata=metadata,
+            trainable_output_tokens=keep,
         ),
         raw_text,
         keep < len(output),
@@ -203,6 +217,12 @@ async def rollout_complete_groups(
         for target_index, target in enumerate(targets)
     ]
     trajectories = [trajectory for group in groups for trajectory in group]
+    trajectory_seed_index = {
+        (trajectory.group_id, trajectory.rollout_id): index
+        for index, trajectory in enumerate(trajectories)
+    }
+    seed_turn_stride = len(trajectories)
+    seed_step_stride = seed_turn_stride * config.wordle.max_turns
     emitted: set[str] = set()
     semaphore = asyncio.Semaphore(config.generation.concurrency)
     legacy_seed_counter = 0
@@ -240,7 +260,7 @@ async def rollout_complete_groups(
         if not active:
             break
         work: list[tuple[Trajectory, SamplingRequest]] = []
-        for index, row in enumerate(active):
+        for row in active:
             prompt = backend.render_prompt(
                 task=task, target=row.target, history=row.history
             )
@@ -254,9 +274,9 @@ async def rollout_complete_groups(
             else:
                 seed = (
                     int(config.generation.sampling_seed) * 1_000_003
-                    + int(step) * 10_007
-                    + int(turn) * 101
-                    + index
+                    + int(step) * seed_step_stride
+                    + (int(turn) - 1) * seed_turn_stride
+                    + trajectory_seed_index[(row.group_id, row.rollout_id)]
                 )
             previous = row.turns[-1].sample if row.turns else None
             work.append(
@@ -495,7 +515,11 @@ class _LegacyXorlSamplerBackend:
         self.config = config
 
     def render_prompt(self, *, task, target, history) -> RenderedPrompt:
-        return RenderedPrompt(tokens=task.prompt_tokens(self.tokenizer, history))
+        return rendered_prompt(
+            self.tokenizer,
+            task.prompt_tokens(self.tokenizer, history),
+            assume_private_think_open=False,
+        )
 
     def decode_tokens(self, tokens: Sequence[int]) -> str:
         if not hasattr(self.tokenizer, "decode"):
@@ -530,8 +554,6 @@ class _LegacyXorlSamplerBackend:
                 temperature=self.config.generation.temperature,
                 top_p=self.config.generation.top_p,
                 top_k=self.config.generation.top_k,
-                stop=self.config.generation.stop,
-                stop_token_ids=self.config.generation.stop_token_ids or None,
                 ignore_eos=self.config.generation.ignore_eos,
                 no_stop_trim=True,
                 sampling_seed=request.seed,

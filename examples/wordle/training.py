@@ -22,6 +22,7 @@ class TrainingSample:
     advantage: float
     reward: float
     backend_metadata: Any = None
+    trainable_output_tokens: int | None = None
 
     @property
     def tokens(self) -> list[int]:
@@ -35,6 +36,16 @@ class TrainingSample:
     def shifted_length(self) -> int:
         return len(self.tokens) - 1
 
+    @property
+    def response_tokens(self) -> int:
+        if self.trainable_output_tokens is None:
+            return len(self.output_tokens)
+        return int(self.trainable_output_tokens)
+
+    @property
+    def shifted_response_end(self) -> int:
+        return self.shifted_response_start + self.response_tokens
+
     def validate(self) -> None:
         if not self.prompt_tokens:
             raise ValueError("training samples require at least one prompt token")
@@ -44,6 +55,11 @@ class TrainingSample:
             raise ValueError(
                 "retained response token/logprob mismatch: "
                 f"{len(self.output_tokens)} != {len(self.sampled_logprobs)}"
+            )
+        if self.response_tokens < 1 or self.response_tokens > len(self.output_tokens):
+            raise ValueError(
+                "trainable response boundary is outside the sampled output: "
+                f"{self.response_tokens} not in [1, {len(self.output_tokens)}]"
             )
         if not all(math.isfinite(float(value)) for value in self.sampled_logprobs):
             raise ValueError("sampled response logprobs must be finite")
@@ -121,6 +137,7 @@ def retain_training_tokens(
                 advantage=float(advantage),
                 reward=float(trajectory_reward),
                 backend_metadata=sampled.backend_metadata,
+                trainable_output_tokens=sampled.trainable_output_tokens,
             )
             item.validate()
             samples.append(item)
@@ -140,7 +157,8 @@ def retain_training_tokens(
         "retained_zero_advantage_replay_turns": float(retained_zero_replay),
         "skipped_empty_turns": float(skipped_empty),
         "truncated_after_action_turns": float(truncated),
-        "sampled_response_tokens": float(
+        "sampled_response_tokens": float(sum(item.response_tokens for item in samples)),
+        "submitted_response_tokens": float(
             sum(len(item.output_tokens) for item in samples)
         ),
         "prompt_tokens": float(sum(len(item.prompt_tokens) for item in samples)),
@@ -167,7 +185,7 @@ def xorl_loss_inputs(sample: TrainingSample) -> dict[str, list[int] | list[float
     logprobs = [0.0] * sample.shifted_length
     advantages = [0.0] * sample.shifted_length
     for offset, position in enumerate(
-        range(sample.shifted_response_start, sample.shifted_length)
+        range(sample.shifted_response_start, sample.shifted_response_end)
     ):
         targets[position] = sample.tokens[position + 1]
         logprobs[position] = sample.sampled_logprobs[offset]
@@ -192,11 +210,19 @@ def river_loss_inputs(sample: TrainingSample) -> dict[str, list[Any]]:
 
     sample.validate()
     prompt_prefix = len(sample.prompt_tokens) - 1
-    response = len(sample.output_tokens)
+    response = sample.response_tokens
+    trailing = len(sample.output_tokens) - response
     return {
         "old_logprobs": [0.0] * prompt_prefix + list(sample.sampled_logprobs) + [0.0],
-        "advantages": [0.0] * prompt_prefix + [sample.advantage] * response + [0.0],
-        "response_mask": [False] * prompt_prefix + [True] * response + [False],
+        "advantages": (
+            [0.0] * prompt_prefix
+            + [sample.advantage] * response
+            + [0.0] * trailing
+            + [0.0]
+        ),
+        "response_mask": (
+            [False] * prompt_prefix + [True] * response + [False] * trailing + [False]
+        ),
     }
 
 

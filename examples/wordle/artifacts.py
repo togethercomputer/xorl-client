@@ -97,6 +97,7 @@ class ArtifactStore:
     def __init__(self, output_dir: str | Path):
         self.root = Path(output_dir).resolve()
         self.steps = self.root / "steps"
+        self.pipeline = self.root / "pipeline"
 
     def initialize(self, *, run_config: dict, source_info: dict, resume: bool) -> None:
         if resume:
@@ -142,6 +143,37 @@ class ArtifactStore:
     def write_step(self, step: int, record: dict) -> None:
         self.steps.mkdir(parents=True, exist_ok=True)
         _json(self.steps / f"step-{step:08d}.json", record, exclusive=True)
+
+    def write_pipeline_rollout(self, step: int, record: dict) -> None:
+        """Durably preserve a queued rollout before its predecessor commits."""
+
+        path = self.pipeline / f"step-{step:08d}.json"
+        if path.is_file():
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if existing != record:
+                raise ValueError(
+                    f"queued pipeline rollout differs from its durable copy: step={step}"
+                )
+            return
+        _json(path, record, exclusive=True)
+
+    def load_pipeline_rollout(self, step: int) -> dict | None:
+        path = self.pipeline / f"step-{step:08d}.json"
+        if not path.is_file():
+            return None
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError(f"queued pipeline rollout is not an object: step={step}")
+        return value
+
+    def discard_pipeline_rollout(self, step: int) -> None:
+        """Remove a queued rollout only after that step's commit marker is durable."""
+
+        path = self.pipeline / f"step-{step:08d}.json"
+        if not path.exists():
+            return
+        path.unlink()
+        _fsync_directory(self.pipeline)
 
     def write_preoptimizer_gate(self, step: int, record: dict) -> Path:
         """Write an immutable, attempt-specific pre-optimizer receipt."""
