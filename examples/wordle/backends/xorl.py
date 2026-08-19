@@ -549,7 +549,7 @@ async def create_xorl_backend(
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError("the Wordle example requires xorl-client[examples]") from exc
     tokenizer = AutoTokenizer.from_pretrained(
-        config.model.tokenizer or config.model.model, trust_remote_code=True
+        config.model.tokenizer or config.model.model
     )
     service = ServiceClient(
         base_url=backend.trainer_url, timeout=config.generation.timeout

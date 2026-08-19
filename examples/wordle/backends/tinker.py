@@ -334,7 +334,7 @@ async def create_tinker_backend(
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError("install xorl-client[examples] to use Tinker") from exc
     tokenizer = AutoTokenizer.from_pretrained(
-        config.model.tokenizer or config.model.model, trust_remote_code=True
+        config.model.tokenizer or config.model.model
     )
     service = tinker.ServiceClient()
     metadata = {"run_name": backend.run_name, "task": "wordle"}

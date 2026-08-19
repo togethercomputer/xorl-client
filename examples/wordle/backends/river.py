@@ -399,14 +399,14 @@ async def create_river_backend(
         raise RuntimeError("RIVER_API_KEY is required for the River backend")
     try:
         import river_client as river
-    except ImportError as exc:  # pragma: no cover - optional private dependency
+    except ImportError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError("install river-client to use --backend river") from exc
     try:
         from transformers import AutoTokenizer
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError("the Wordle example requires xorl-client[examples]") from exc
     tokenizer = AutoTokenizer.from_pretrained(
-        config.model.tokenizer or config.model.model, trust_remote_code=True
+        config.model.tokenizer or config.model.model
     )
     client = river.Client(api_key=api_key, endpoint=backend.endpoint)
     context = client.session(project=backend.project, run=backend.run_name)

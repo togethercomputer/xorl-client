@@ -152,9 +152,7 @@ def score_trajectory(
     reward = (
         float(solved)
         if mode == "exact_match"
-        else components["wordle_reward"]
-        if mode == "wordle"
-        else shaped
+        else components["wordle_reward"] if mode == "wordle" else shaped
     )
     return {
         "reward": float(reward),
