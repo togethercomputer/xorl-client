@@ -457,7 +457,10 @@ class TestLoraConfig:
 
         assert d["rank"] == 16
         assert d["alpha"] == 32
-        assert d["dropout"] == 0.0
+        assert "dropout" not in d
+
+        custom = types.LoraConfig(dropout=0.1).to_dict()
+        assert custom["dropout"] == 0.1
 
 
 class TestResponseTypes:

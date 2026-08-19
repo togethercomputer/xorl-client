@@ -229,6 +229,10 @@ def _ratio_error_max(metrics: list[dict[str, float]]) -> float | None:
             if not math.isfinite(parsed):
                 return None
             leaf = _metric_leaf(key)
+            # ``abs_logratio_*`` is centered at zero and must not be treated
+            # as an importance-ratio metric centered at one.
+            if "logratio" in leaf:
+                continue
             if leaf.endswith("ratio_error"):
                 errors.append(abs(parsed))
             elif leaf.endswith(("ratio_mean", "ratio_min", "ratio_max")):

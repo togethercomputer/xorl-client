@@ -56,7 +56,12 @@ class Trainer:
 
     async def forward_backward(self, datums):
         self.events.append(("forward_backward", len(datums)))
-        return {"loss": 0.5, "k3": 0.0, "ratio_error": 0.0}
+        return {
+            "loss": 0.5,
+            "k3": 0.0,
+            "ratio_error": 0.0,
+            "abs_logratio_max": 0.0,
+        }
 
     async def optimizer_step(self, step):
         self.events.append(("optimizer", None))
@@ -192,6 +197,20 @@ def test_zero_k3_metrics_use_k3_and_ratio_distance_from_one():
     ]
     assert _k3_max(metrics) == pytest.approx(8e-7)
     assert _ratio_error_max(metrics) == pytest.approx(3e-6)
+
+
+def test_zero_k3_ratio_gate_ignores_logratio_metrics():
+    metrics = [
+        {
+            "ratio_mean": 1.0,
+            "ratio_min": 1.0,
+            "ratio_max": 1.0,
+            "logratio_mean": 0.0,
+            "abs_logratio_mean": 0.0,
+            "abs_logratio_max": 0.0,
+        }
+    ]
+    assert _ratio_error_max(metrics) == 0.0
 
 
 def test_zero_k3_gate_runs_before_optimizer(tmp_path):

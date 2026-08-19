@@ -440,6 +440,10 @@ class ExperimentRunner:
             for key, value in forward.metrics.items():
                 leaf = key.lower().replace(":", "/").rsplit("/", 1)[-1]
                 parsed = float(value)
+                # ``abs_logratio_*`` also ends in ``ratio_*``.  Those metrics
+                # are distances from zero, not importance ratios around one.
+                if "logratio" in leaf:
+                    continue
                 if leaf.endswith("ratio_error"):
                     ratio_values.append(abs(parsed))
                 elif leaf.endswith(("ratio_mean", "ratio_min", "ratio_max")):

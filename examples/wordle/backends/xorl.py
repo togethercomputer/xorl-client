@@ -559,10 +559,14 @@ async def create_xorl_backend(
             base_model=config.model.resolved_train_base_model(),
             rank=config.model.lora_rank,
             model_id=config.model.model_id,
-            lora_seed=config.model.lora_seed,
-            train_mlp=config.model.train_mlp,
-            train_attn=config.model.train_attn,
-            train_unembed=config.model.train_unembed,
+            # XoRL owns LoRA initialization server-wide.  The Wordle seed is
+            # meaningful for River/Tinker model construction, but forwarding it
+            # here turns it into an unsupported per-session structure override.
+            lora_seed=None,
+            # The strict server manifest owns module selection as well.
+            train_mlp=None,
+            train_attn=None,
+            train_unembed=None,
         )
     else:
         training_client = service.create_training_client(
@@ -587,7 +591,10 @@ async def create_xorl_backend(
             )
     sampler = SamplingClient(
         base_url=backend.generation_url,
-        model_path=(config.model.model_id if config.model.mode == "lora" else ""),
+        # XoRL publishes merged weights into serving engines.  The training
+        # session ID is not an SGLang LoRA adapter name and must not become
+        # lora_path on generation requests.
+        model_path="",
         model=config.model.model,
         timeout=config.generation.timeout,
     )

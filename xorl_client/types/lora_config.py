@@ -23,9 +23,14 @@ class LoraConfig:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
-        result = {"rank": self.rank, "dropout": self.dropout}
+        result = {"rank": self.rank}
         if self.alpha is not None:
             result["alpha"] = self.alpha
+        # The XoRL session API treats omitted structure fields as assertions of
+        # the server-wide configuration.  Sending the default 0.0 here turns a
+        # no-op default into an unsupported per-session override.
+        if self.dropout != 0.0:
+            result["dropout"] = self.dropout
         if self.target_modules is not None:
             result["target_modules"] = self.target_modules
         if self.lora_seed is not None:
