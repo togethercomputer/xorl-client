@@ -19,6 +19,10 @@ _KEY_TO_DTYPE = {
     "logprobs": "float32",
     "clip_low_threshold": "float32",
     "clip_high_threshold": "float32",
+    # Value-model (critic) training fields: per-token value targets and
+    # pre-update value predictions (PPO-style value clipping).
+    "returns": "float32",
+    "old_values": "float32",
 }
 
 

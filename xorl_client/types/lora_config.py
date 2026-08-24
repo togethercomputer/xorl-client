@@ -16,6 +16,7 @@ class LoraConfig:
     alpha: Optional[int] = None
     dropout: float = 0.0
     target_modules: Optional[List[str]] = None
+    frozen_module_patterns: Optional[List[str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -24,4 +25,6 @@ class LoraConfig:
             result["alpha"] = self.alpha
         if self.target_modules is not None:
             result["target_modules"] = self.target_modules
+        if self.frozen_module_patterns is not None:
+            result["frozen_module_patterns"] = self.frozen_module_patterns
         return result

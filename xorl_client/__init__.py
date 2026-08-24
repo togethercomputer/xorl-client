@@ -9,6 +9,7 @@ __version__ = "0.1.0"
 
 # Import types module
 from . import types
+from .rl import compute_skip_observation_gae, explained_variance
 
 # Import clients
 from .client.service_client import ServiceClient
@@ -62,6 +63,9 @@ from .types import (
 )
 
 __all__ = [
+    # RL / value-model helpers
+    "compute_skip_observation_gae",
+    "explained_variance",
     # Core clients
     "ServiceClient",
     "TrainingClient",

@@ -102,6 +102,7 @@ class ServiceClient:
         dropout: float = 0.0,
         target_modules: Optional[list[str]] = None,
         model_id: Optional[str] = None,
+        frozen_module_patterns: Optional[list[str]] = None,
     ) -> Future["TrainingClient"]:
         """Helper function that submits the create_lora_training_client request (two-phase pattern)."""
         import time
@@ -126,6 +127,7 @@ class ServiceClient:
             alpha=alpha,
             dropout=dropout,
             target_modules=target_modules,
+            frozen_module_patterns=frozen_module_patterns,
         )
 
         # Send create model request to server
@@ -291,6 +293,7 @@ class ServiceClient:
         dropout: float = 0.0,
         target_modules: Optional[list[str]] = None,
         model_id: Optional[str] = None,
+        frozen_module_patterns: Optional[list[str]] = None,
     ) -> "TrainingClient":
         """Create a LoRA training client.
 
@@ -323,7 +326,7 @@ class ServiceClient:
             ... )
         """
         return self._create_lora_training_client_submit(
-            base_model, rank, alpha, dropout, target_modules, model_id
+            base_model, rank, alpha, dropout, target_modules, model_id, frozen_module_patterns
         ).result()
 
     async def create_lora_training_client_async(
@@ -334,10 +337,11 @@ class ServiceClient:
         dropout: float = 0.0,
         target_modules: Optional[list[str]] = None,
         model_id: Optional[str] = None,
+        frozen_module_patterns: Optional[list[str]] = None,
     ) -> "TrainingClient":
         """Async version of create_lora_training_client."""
         future = self._create_lora_training_client_submit(
-            base_model, rank, alpha, dropout, target_modules, model_id
+            base_model, rank, alpha, dropout, target_modules, model_id, frozen_module_patterns
         )
         return await asyncio.wrap_future(future)
 
