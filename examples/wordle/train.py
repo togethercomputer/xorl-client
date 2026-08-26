@@ -90,14 +90,32 @@ class XorlTrainerBackend:
         return {str(key): float(value) for key, value in result.metrics.items()}
 
     async def sync(self) -> dict[str, Any]:
-        result = await self.client.sync_weights_to_inference(
-            sync_method=self.config.endpoints.sync_method,
-        )
+        # Sync each replica pool as its own pairwise NCCL group (ephemeral
+        # rendezvous ports): the single all-endpoints group hangs with a
+        # multi-replica fleet, while world-2 syncs are the proven path.
+        pool_count = max(len(self.config.endpoints.sync_urls), 1)
+        total_time = 0.0
+        total_bytes = 0
+        for index in range(pool_count):
+            result = await self.client.sync_weights_to_inference(
+                sync_method=self.config.endpoints.sync_method,
+                pools=[f"r{index}"],
+                group_name=f"weight_sync_group_r{index}",
+            )
+            if not result.success:
+                return {
+                    "success": False,
+                    "message": f"pool r{index}: {result.message}",
+                    "transfer_time": total_time,
+                    "total_bytes": total_bytes,
+                }
+            total_time += float(result.transfer_time)
+            total_bytes += int(result.total_bytes)
         return {
-            "success": bool(result.success),
-            "message": result.message,
-            "transfer_time": float(result.transfer_time),
-            "total_bytes": int(result.total_bytes),
+            "success": True,
+            "message": f"synced {pool_count} replica pools",
+            "transfer_time": total_time,
+            "total_bytes": total_bytes,
         }
 
     async def checkpoint(self, name: str) -> str:
@@ -157,7 +175,12 @@ def _finite_metric(metrics: list[dict[str, float]], names: tuple[str, ...]) -> b
 
 
 def _metric_leaf(key: str) -> str:
-    return key.lower().replace(":", "/").rsplit("/", 1)[-1]
+    # XoRL emits tinker-style "name:reduction" keys with an "is_" namespace
+    # prefix (e.g. "is_kl_sample_train_k3:mean"); strip both so the leaf is
+    # the metric name rather than the reduction word.
+    base = key.lower().split(":", 1)[0]
+    leaf = base.replace(":", "/").rsplit("/", 1)[-1]
+    return leaf[3:] if leaf.startswith("is_") else leaf
 
 
 def _k3_max(metrics: list[dict[str, float]]) -> float | None:
@@ -238,13 +261,13 @@ class ExperimentRunner:
 
             async def submit_batch(batch) -> None:
                 datums, group_metrics = batch
-                if not datums:
-                    raise RuntimeError(
-                        "complete groups produced no trainable assistant turns"
-                    )
-                forward_metrics.append(await self.trainer.forward_backward(datums))
                 for key, value in group_metrics.items():
                     totals[key] = totals.get(key, 0.0) + value
+                if not datums:
+                    # Zero-variance groups contribute metrics but no trainable
+                    # tokens; skip the forward_backward instead of erroring.
+                    return
+                forward_metrics.append(await self.trainer.forward_backward(datums))
 
             async def completed(group) -> None:
                 await submit(
@@ -263,6 +286,38 @@ class ExperimentRunner:
             tail = coalescer.flush()
             if tail is not None:
                 await submit_batch(tail)
+            if not forward_metrics:
+                # Every group this step was zero-variance: no trainable tokens
+                # and no forward_backward was submitted. Skip the optimizer and
+                # move on instead of failing the run.
+                trajectory_count = max(int(totals.get("trajectories", 0)), 1)
+                metrics = {
+                    "step": step,
+                    "targets": targets,
+                    "trajectory_count": len(trajectories),
+                    "datum_count": 0,
+                    "reward_mean": totals.get("reward_sum", 0.0) / trajectory_count,
+                    "exact_match_rate": totals.get("exact_sum", 0.0) / trajectory_count,
+                    "format_rate": totals.get("format_sum", 0.0) / trajectory_count,
+                    "valid_guess_rate": totals.get("valid_sum", 0.0) / trajectory_count,
+                    "forward_backward": [],
+                    "optimizer": None,
+                    "optimizer_complete": False,
+                    "skipped_no_signal": True,
+                    "zero_variance_groups": totals.get("zero_variance_groups", 0.0),
+                    "finite_loss": None,
+                    "finite_gradient": None,
+                    "k3": None,
+                    "ratio_error": None,
+                    "correctness_gates_passed": None,
+                    "sync": None,
+                    "final_sync": False,
+                    "checkpoint": None,
+                }
+                self.store.append_metrics(metrics)
+                self.store.write_step(step, metrics)
+                records.append(metrics)
+                continue
             finite_loss = _finite_metric(forward_metrics, ("loss",))
             if not self.config.correctness.require_finite_loss:
                 finite_loss = True
@@ -435,22 +490,36 @@ async def _run_cli(args: argparse.Namespace) -> dict:
         training_client = service.create_training_client(
             base_model=train_base_model, model_id=config.model.model_id
         )
-    for url in config.endpoints.sync_urls:
+    for index, url in enumerate(config.endpoints.sync_urls):
         host, port = _endpoint_host_port(url)
         response = training_client.add_inference_endpoint(
             host=host,
             port=port,
             world_size=config.endpoints.sync_world_size,
             sync_weights=not resume,
+            # Distinct rendezvous port per endpoint: back-to-back
+            # registrations on the default 29600 hit EADDRINUSE because the
+            # previous registration's TCPStore has not released it yet.
+            master_port=29600 + index,
+            group_name=f"weight_sync_group_{index}",
+            # One pool per replica so the per-step sync can address each
+            # endpoint as its own pairwise (world-2) NCCL group — the
+            # all-endpoints single group hangs at fleet scale.
+            pool=f"r{index}",
             buffer_size_mb=config.endpoints.sync_buffer_mb,
         ).result()
         if not response.success:
+            if "already registered" in str(response.message):
+                continue  # rerun against a live trainer: endpoint is in place
             raise RuntimeError(
                 f"failed to register sync endpoint {redact_url(url)}: {response.message}"
             )
     sampler = SamplingClient(
         base_url=config.endpoints.generation_url,
-        model_path=(config.model.model_id if config.model.mode == "lora" else ""),
+        # This server's LoRA sync merges the adapter into the sampler's BASE
+        # weights (merged nccl broadcast), so generation must target the base
+        # model rather than request a sampler-side adapter that never exists.
+        model_path="",
         model=config.model.model,
         timeout=config.generation.timeout,
     )

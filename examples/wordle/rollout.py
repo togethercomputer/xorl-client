@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import random
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Sequence
 
@@ -214,6 +216,17 @@ def _truncate_after_first_action(
     raise RuntimeError("decoded Wordle action has no token-aligned completion boundary")
 
 
+def _curriculum_hint_count(step: int) -> int:
+    """Annealed hint schedule, enabled via WORDLE_CURRICULUM=1."""
+    if os.environ.get("WORDLE_CURRICULUM") != "1":
+        return 0
+    if step <= 16:
+        return 2
+    if step <= 40:
+        return 1
+    return 0
+
+
 async def rollout_complete_groups(
     *,
     task: WordleTask,
@@ -233,6 +246,24 @@ async def rollout_complete_groups(
         ]
         for target in targets
     ]
+    hint_count = _curriculum_hint_count(step)
+    if hint_count:
+        # Solve-bootstrapping curriculum: seed every trajectory with synthetic
+        # (guess, feedback) turns derived from the target, so early policies
+        # see informative feedback and solves occur often enough to reinforce.
+        # Hints are identical across a group (variance stays policy-driven),
+        # excluded from the reward (only generated turns are scored), and
+        # annealed to zero so late training matches the real task.
+        legal = sorted(task.legal_guesses)
+        for group in groups:
+            target = group[0].target
+            hint_rng = random.Random(f"hints:{group[0].group_id}")
+            hints = [w for w in hint_rng.sample(legal, hint_count + 2) if w != target][
+                :hint_count
+            ]
+            seeded = [(w, compute_feedback(w, target)) for w in hints]
+            for row in group:
+                row.history.extend(seeded)
     trajectories = [trajectory for group in groups for trajectory in group]
     emitted: set[str] = set()
     semaphore = asyncio.Semaphore(config.generation.concurrency)
@@ -399,6 +430,25 @@ def build_group_datums(
     datums: list[types.Datum] = []
     generated_tokens = 0
     truncated_turns = 0
+    if all(a == 0.0 for a in advantages):
+        # Zero-variance group: every trajectory got the same reward, so all
+        # advantages are zero and every target token would be weight-0. The
+        # server rejects a batch whose labels are entirely masked, and the
+        # group carries no learning signal anyway — drop it.
+        return [], {
+            "groups": 1.0,
+            "trajectories": float(len(group)),
+            "datums": 0.0,
+            "generated_tokens": 0.0,
+            "truncated_after_action_turns": 0.0,
+            "zero_variance_groups": 1.0,
+            "reward_sum": float(sum(rewards)),
+            "exact_sum": float(sum(row.reward["exact_match"] for row in group)),
+            "format_sum": float(sum(row.reward["format_rate"] for row in group)),
+            "valid_sum": float(
+                sum(row.reward["valid_guess_rate"] for row in group)
+            ),
+        }
     for trajectory, advantage in zip(group, advantages, strict=True):
         for turn in trajectory.turns:
             if not turn.output_tokens:

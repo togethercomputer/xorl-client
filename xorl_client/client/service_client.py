@@ -257,8 +257,6 @@ class ServiceClient:
                 {
                     "model_id": model_id,
                     "base_model": base_model,
-                    # lora_config is ignored when server has enable_lora=False
-                    "lora_config": {"rank": 32},
                 },
             )
 

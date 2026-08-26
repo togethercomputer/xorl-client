@@ -97,7 +97,7 @@ class EndpointConfig(StrictModel):
     generation_url: str = ""
     sync_urls: list[str] = Field(default_factory=list)
     sync_world_size: int = Field(default=1, gt=0)
-    sync_method: Literal["nccl_ep_scatter", "nccl", "rdma_direct", "p2p"] = (
+    sync_method: Literal["nccl_ep_scatter", "nccl", "rdma_direct", "p2p", "nccl_broadcast", "nccl_simple"] = (
         "nccl_ep_scatter"
     )
     sync_buffer_mb: int = Field(default=1024, gt=0)

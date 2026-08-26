@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import random
 import re
 from dataclasses import dataclass
@@ -161,11 +162,18 @@ class WordleTask:
     def prompt_tokens(self, tokenizer, history: Sequence[tuple[str, str]]) -> list[int]:
         messages = self.prompt_messages(history)
         if hasattr(tokenizer, "apply_chat_template"):
-            return list(
-                tokenizer.apply_chat_template(
-                    messages, tokenize=True, add_generation_prompt=True
+            try:
+                text = tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True,
+                    # Thinking off by default (24-token budgets); opt in via
+                    # env for large-budget runs that want reasoning turns.
+                    enable_thinking=os.environ.get("WORDLE_ENABLE_THINKING") == "1",
                 )
-            )
+            except TypeError:
+                text = tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
+                )
+            return list(tokenizer(text, add_special_tokens=False)["input_ids"])
         text = "\n".join(f"{row['role']}: {row['content']}" for row in messages)
         encoded = tokenizer.encode(text)
         return list(encoded)
