@@ -26,7 +26,7 @@ class ModelConfig(StrictModel):
 
 
 class TrainerConfig(StrictModel):
-    loss_fn: Literal["importance_sampling", "cispo"] = "importance_sampling"
+    loss_fn: Literal["importance_sampling", "cispo", "policy_loss"] = "importance_sampling"
     loss_fn_params: dict[str, Any] = Field(default_factory=dict)
     cispo_clip_low_threshold: float = Field(default=0.0, ge=0.0)
     cispo_clip_high_threshold: float = Field(default=4.0, ge=0.0)
