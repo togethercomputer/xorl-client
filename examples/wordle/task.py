@@ -12,6 +12,7 @@ from typing import Sequence
 
 MAX_TURNS = 6
 _GUESS_RE = re.compile(r"<guess>\s*\[?\s*([A-Za-z]{5})\s*\]?\s*</guess>", re.I)
+_THINK_RE = re.compile(r"<think\b.*?</think>", re.I | re.S)
 
 SYSTEM_PROMPT = """You are playing Wordle. The hidden target is a five-letter English word.
 G means correct letter and position, Y means present in another position, and X means absent.
@@ -70,7 +71,12 @@ def parse_action(text: str) -> tuple[str | None, bool]:
 
     stripped = (text or "").strip()
     matches = _GUESS_RE.findall(stripped)
-    exact = bool(len(matches) == 1 and _GUESS_RE.fullmatch(stripped))
+    # Format is graded on the post-thinking content: a thinking model's
+    # response is `<think>...</think>` followed by the action, and the strict
+    # exactly-one-tag contract applies to the action part. (A fullmatch on the
+    # raw text silently zeroes format_ok for every thinking turn.)
+    action_text = _THINK_RE.sub("", stripped).strip()
+    exact = bool(len(matches) == 1 and _GUESS_RE.fullmatch(action_text))
     return (matches[0].lower() if matches else None), exact
 
 
