@@ -8,7 +8,6 @@ from examples.wordle.rollout import GroupCoalescer, rollout_complete_groups
 from examples.wordle.task import WordleTask
 from xorl_client import types
 
-
 ROOT = Path(__file__).parents[3]
 
 
@@ -43,8 +42,6 @@ def test_fast_complete_group_emits_before_straggler_group():
     config = load_config(ROOT / "examples/wordle/configs/importance_sampling.yaml")
     config.wordle = config.wordle.model_copy(
         update={
-            "train_targets": 4,
-            "eval_targets": 2,
             "group_size": 2,
         }
     )
@@ -52,11 +49,11 @@ def test_fast_complete_group_emits_before_straggler_group():
         update={"batch_size": 2, "concurrency": 2}
     )
     task = WordleTask(
-        targets_path=config.wordle.targets_path,
+        train_targets_path=config.wordle.train_targets_path,
+        eval_targets_path=config.wordle.eval_targets_path,
         legal_guesses_path=config.wordle.legal_guesses_path,
-        train_targets=4,
-        eval_targets=2,
-        seed=config.wordle.target_seed,
+        train_targets=config.wordle.train_targets,
+        eval_targets=config.wordle.eval_targets,
     )
     order = []
 

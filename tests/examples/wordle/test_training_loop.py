@@ -15,7 +15,6 @@ from examples.wordle.train import (
 )
 from xorl_client import types
 
-
 ROOT = Path(__file__).parents[3]
 
 
@@ -87,8 +86,6 @@ def _config(output):
     )
     config.wordle = config.wordle.model_copy(
         update={
-            "train_targets": 4,
-            "eval_targets": 2,
             "targets_per_step": 1,
             "group_size": 2,
         }
@@ -99,11 +96,11 @@ def _config(output):
 
 def _task(config):
     return WordleTask(
-        targets_path=config.wordle.targets_path,
+        train_targets_path=config.wordle.train_targets_path,
+        eval_targets_path=config.wordle.eval_targets_path,
         legal_guesses_path=config.wordle.legal_guesses_path,
         train_targets=config.wordle.train_targets,
         eval_targets=config.wordle.eval_targets,
-        seed=config.wordle.target_seed,
     )
 
 
@@ -218,15 +215,11 @@ def test_zero_k3_gate_runs_before_optimizer(tmp_path):
     config.trainer = config.trainer.model_copy(update={"steps": 1})
     config.wordle = config.wordle.model_copy(
         update={
-            "train_targets": 2,
-            "eval_targets": 1,
             "targets_per_step": 1,
             "group_size": 2,
         }
     )
-    config.artifacts = config.artifacts.model_copy(
-        update={"output_dir": str(tmp_path)}
-    )
+    config.artifacts = config.artifacts.model_copy(update={"output_dir": str(tmp_path)})
     store = ArtifactStore(tmp_path)
     store.initialize(run_config={}, source_info={}, resume=False)
     trainer = Trainer()

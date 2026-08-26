@@ -306,11 +306,11 @@ async def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
                 "XoRL requires trainer_url, generation_url, and at least one sync_url"
             )
     task = WordleTask(
-        targets_path=config.wordle.targets_path,
+        train_targets_path=config.wordle.train_targets_path,
+        eval_targets_path=config.wordle.eval_targets_path,
         legal_guesses_path=config.wordle.legal_guesses_path,
         train_targets=config.wordle.train_targets,
         eval_targets=config.wordle.eval_targets,
-        seed=config.wordle.target_seed,
         max_turns=config.wordle.max_turns,
     )
     store = ArtifactStore(config.artifacts.output_dir)
@@ -346,10 +346,7 @@ async def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
         {
             "selected_backend": backend_name,
             "endpoint_capabilities": endpoint_capabilities,
-            "dataset_hashes": {
-                "targets": file_sha256(config.wordle.targets_path),
-                "legal_guesses": file_sha256(config.wordle.legal_guesses_path),
-            },
+            "dataset_hashes": dict(task.dataset_hashes),
             "seeds": {
                 "target": config.wordle.target_seed,
                 "sampling": config.generation.sampling_seed,

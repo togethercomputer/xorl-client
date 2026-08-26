@@ -43,16 +43,19 @@ _PRIVATE_REASONING_PATTERNS = tuple(
 
 def _read_words(path: str | Path) -> tuple[str, ...]:
     values = []
+    seen: set[str] = set()
     for line in Path(path).read_text(encoding="utf-8").splitlines():
         word = line.strip().lower()
         if word and not word.startswith("#"):
             if len(word) != 5 or not word.isascii() or not word.isalpha():
                 raise ValueError(f"invalid five-letter word {word!r} in {path}")
+            if word in seen:
+                raise ValueError(f"duplicate word {word!r} in {path}")
+            seen.add(word)
             values.append(word)
-    unique = tuple(dict.fromkeys(values))
-    if not unique:
+    if not values:
         raise ValueError(f"word file is empty: {path}")
-    return unique
+    return tuple(values)
 
 
 def file_sha256(path: str | Path) -> str:
@@ -221,31 +224,47 @@ class WordleTask:
     def __init__(
         self,
         *,
-        targets_path: str | Path,
+        train_targets_path: str | Path,
+        eval_targets_path: str | Path,
         legal_guesses_path: str | Path,
         train_targets: int,
         eval_targets: int,
-        seed: int,
         max_turns: int = MAX_TURNS,
     ) -> None:
-        targets = list(_read_words(targets_path))
+        train_words = _read_words(train_targets_path)
+        held_out_words = _read_words(eval_targets_path)
         legal_words = _read_words(legal_guesses_path)
-        self.legal_guesses = frozenset(legal_words)
-        if not set(targets).issubset(self.legal_guesses):
-            raise ValueError("every target must also be a legal guess")
-        if train_targets + eval_targets > len(targets):
+        if len(train_words) != train_targets:
             raise ValueError(
-                f"requested {train_targets + eval_targets} targets from {len(targets)}"
+                f"configured train_targets={train_targets}, "
+                f"but train_targets_path provides {len(train_words)}"
             )
-        random.Random(seed).shuffle(targets)
-        self.answer_words = tuple(targets)
+        if len(held_out_words) != eval_targets:
+            raise ValueError(
+                f"configured eval_targets={eval_targets}, "
+                f"but eval_targets_path provides {len(held_out_words)}"
+            )
+        dictionary = set(legal_words)
+        if not set(train_words).issubset(dictionary):
+            raise ValueError("every training target must be in the dictionary")
+        if not set(held_out_words).issubset(dictionary):
+            raise ValueError("every evaluation target must be in the dictionary")
+        if set(train_words) & set(held_out_words):
+            raise ValueError("training and evaluation targets must be disjoint")
+        self.legal_guesses = frozenset(legal_words)
+        self.answer_words = tuple(legal_words)
         self.pools = TargetPools(
-            train=tuple(targets[:train_targets]),
-            held_out=tuple(targets[train_targets : train_targets + eval_targets]),
+            train=tuple(train_words), held_out=tuple(held_out_words)
         )
         self.max_turns = max_turns
-        self.targets_path = str(Path(targets_path).resolve())
+        self.train_targets_path = str(Path(train_targets_path).resolve())
+        self.eval_targets_path = str(Path(eval_targets_path).resolve())
         self.legal_guesses_path = str(Path(legal_guesses_path).resolve())
+        self.dataset_hashes = {
+            "train_targets": file_sha256(self.train_targets_path),
+            "eval_targets": file_sha256(self.eval_targets_path),
+            "legal_guesses": file_sha256(self.legal_guesses_path),
+        }
 
     def select_train_targets(self, *, step: int, count: int, seed: int) -> list[str]:
         """Select from one continuous cursor through shuffled target epochs."""

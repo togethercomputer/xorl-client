@@ -119,7 +119,8 @@ class TrainerConfig(StrictModel):
 
 
 class WordleConfig(StrictModel):
-    targets_path: str = "data/targets.txt"
+    train_targets_path: str = "data/train_targets.txt"
+    eval_targets_path: str = "data/eval_targets.txt"
     legal_guesses_path: str = "data/legal_guesses.txt"
     train_targets: int = Field(default=4000, gt=0)
     eval_targets: int = Field(default=170, ge=0)
@@ -388,7 +389,11 @@ def load_config(path: str | Path) -> ExperimentConfig:
     config = ExperimentConfig.model_validate(raw)
     base = config_path.parent.parent
     updates: dict[str, str] = {}
-    for name in ("targets_path", "legal_guesses_path"):
+    for name in (
+        "train_targets_path",
+        "eval_targets_path",
+        "legal_guesses_path",
+    ):
         value = Path(getattr(config.wordle, name))
         if not value.is_absolute():
             updates[name] = str((base / value).resolve())

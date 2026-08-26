@@ -8,7 +8,6 @@ from examples.wordle.rollout import build_group_datums, rollout_complete_groups
 from examples.wordle.task import WordleTask
 from xorl_client import types
 
-
 ROOT = Path(__file__).parents[3]
 
 
@@ -177,11 +176,11 @@ class R3Sampler(Sampler):
 
 def _task(config):
     return WordleTask(
-        targets_path=config.wordle.targets_path,
+        train_targets_path=config.wordle.train_targets_path,
+        eval_targets_path=config.wordle.eval_targets_path,
         legal_guesses_path=config.wordle.legal_guesses_path,
         train_targets=config.wordle.train_targets,
         eval_targets=config.wordle.eval_targets,
-        seed=config.wordle.target_seed,
     )
 
 
@@ -191,8 +190,6 @@ def test_groups_emit_only_complete_and_every_turn_becomes_a_datum():
         update={
             "targets_per_step": 1,
             "group_size": 3,
-            "train_targets": 4,
-            "eval_targets": 2,
         }
     )
     task = _task(config)
@@ -226,8 +223,6 @@ def test_unsolved_valid_game_reaches_all_six_turns():
     config = load_config(ROOT / "examples/wordle/configs/importance_sampling.yaml")
     config.wordle = config.wordle.model_copy(
         update={
-            "train_targets": 4,
-            "eval_targets": 2,
             "group_size": 2,
         }
     )
@@ -249,9 +244,7 @@ def test_unsolved_valid_game_reaches_all_six_turns():
 
 def test_multi_guess_reward_and_gradient_use_the_same_first_action():
     config = load_config(ROOT / "examples/wordle/configs/importance_sampling.yaml")
-    config.wordle = config.wordle.model_copy(
-        update={"train_targets": 4, "eval_targets": 2, "group_size": 2}
-    )
+    config.wordle = config.wordle.model_copy(update={"group_size": 2})
     emitted = []
     trajectories = asyncio.run(
         rollout_complete_groups(
@@ -288,9 +281,7 @@ def test_multi_guess_reward_and_gradient_use_the_same_first_action():
 
 def test_r3_reuses_overlapping_prefix_as_append_only_spans():
     config = load_config(ROOT / "examples/wordle/configs/r3.yaml")
-    config.wordle = config.wordle.model_copy(
-        update={"train_targets": 4, "eval_targets": 2, "group_size": 2}
-    )
+    config.wordle = config.wordle.model_copy(update={"group_size": 2})
     emitted = []
     sampler = R3Sampler()
     trajectories = asyncio.run(
@@ -324,9 +315,7 @@ def test_r3_reuses_overlapping_prefix_as_append_only_spans():
 
 def test_r3_payload_cap_is_enforced_before_training():
     config = load_config(ROOT / "examples/wordle/configs/r3.yaml")
-    config.wordle = config.wordle.model_copy(
-        update={"train_targets": 4, "eval_targets": 2, "group_size": 2}
-    )
+    config.wordle = config.wordle.model_copy(update={"group_size": 2})
     config.r3 = config.r3.model_copy(update={"max_payload_bytes": 1})
     with pytest.raises(ValueError, match="exceeds max_payload_bytes"):
         asyncio.run(

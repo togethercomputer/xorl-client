@@ -1,6 +1,5 @@
-# Shared Qwen3.6 contract. The shipped compact vocabulary keeps this file
-# locally loadable; production should point the two data paths at the frozen
-# 4,000-train/170-held-out corpus and set train_targets/eval_targets accordingly.
+# Shared Qwen3.6 contract with the exact production Wordle dictionary and
+# ordered 4,000-train/170-held-out split.
 model:
   model: Qwen/Qwen3.6-35B-A3B
   tokenizer: Qwen/Qwen3.6-35B-A3B
@@ -27,10 +26,11 @@ trainer:
   grad_clip_norm: 0.0
   checkpoint_every: 8
 wordle:
-  targets_path: data/targets.txt
+  train_targets_path: data/train_targets.txt
+  eval_targets_path: data/eval_targets.txt
   legal_guesses_path: data/legal_guesses.txt
-  train_targets: 200
-  eval_targets: 16
+  train_targets: 4000
+  eval_targets: 170
   targets_per_step: 64
   target_selection: shuffled_epochs_without_replacement
   group_size: 16

@@ -51,6 +51,12 @@ Presets
   mounted at the same absolute path in SGLang and XoRL, and XoRL must include
   it in `XORL_R3_SHARED_ROOTS`.
 
+`q36.yaml` is the shared Qwen3.6 configuration for all three backends. Every
+shipped preset uses the exact production dictionary and ordered
+`data/train_targets.txt` and `data/eval_targets.txt` split. The smaller presets
+shorten the run geometry only; they do not substitute a different train/eval
+split.
+
 When `/server_info` is available, its response is recorded and demonstrably
 incompatible capabilities fail before training. An unavailable capability
 endpoint is recorded as unavailable, not silently treated as proof of support.
@@ -58,11 +64,11 @@ No client-side stale-weight-version filter is part of this example.
 
 Data and held-out safety
 
-The shipped compact vocabulary and its provenance are documented in
-`data/README.md`. Both input files are hashed into `source_info.json`. The task
-creates deterministic disjoint training and held-out pools, and training target
-selection uses shuffled epochs without replacement. Replace the file paths in a
-preset to use a larger appropriately licensed vocabulary. Held-out hooks expose
+The exact production files are documented in `data/README.md`. The loader
+preserves the ordered 4,000-target training pool and ordered 170-target held-out
+panel, rejects count mismatches, overlap, duplicates, or non-dictionary targets,
+and records every dataset hash in `source_info.json`. Training target selection
+then uses continuous shuffled epochs without replacement. Held-out hooks expose
 only `task.pools.held_out`; training selection cannot draw from that tuple.
 
 Artifacts and resume
