@@ -36,7 +36,12 @@ def score_trajectory(
         # 0 or 1, so the train objective coincides with the eval metric and the
         # obo rescue keeps uniform groups trainable. (Shaped rewards pre-solve
         # the credit-assignment problem the estimators should demonstrate.)
-        reward = float(solved) + (1.0 if count > 0 and format_rate == 1.0 else 0.0)
+        # The format bit requires every turn VALID as well as well-formed:
+        # wordle ends the game on an invalid guess, so a format-only bit is
+        # reward-hackable with a single well-formed illegal word (observed
+        # live: reward 0.99, validity 0.00, zero solves).
+        clean = count > 0 and format_rate == 1.0 and valid_rate == 1.0
+        reward = float(solved) + (1.0 if clean else 0.0)
     else:
         reward = shaped
     return {
