@@ -1,0 +1,50 @@
+# Codebreaker at wordle-hard difficulty (k=10, L=4: 10,000 codes, 13.3 bits).
+# Rollout shape follows the measured wordle production profile
+# (together-shaping genbench): 512-token turns, 256 trajectories/step.
+preset: cispo
+model:
+  model: Qwen/Qwen3-8B
+  mode: lora
+  model_id: codebreaker-cispo
+  lora_rank: 64
+trainer:
+  loss_fn: cispo
+  cispo_clip_low_threshold: 0.0
+  cispo_clip_high_threshold: 4.0
+  steps: 64
+  learning_rate: 0.0001
+  learning_rate_schedule: cosine
+  learning_rate_warmup_steps: 8
+  min_learning_rate: 0.00001
+  checkpoint_every: 16
+codebreaker:
+  k: 10
+  code_length: 4
+  allow_repeats: true
+  train_size: 4096
+  eval_size: 256
+  instance_seed: 0
+  targets_per_step: 32
+  target_seed: 17
+  group_size: 8
+  max_turns: 10
+  prompt_style: multiturn_transcript
+  reward_key: binary_reward
+  feedback_noise_eps: 0.0
+generation:
+  max_new_tokens: 512
+  temperature: 1.0
+  top_p: 1.0
+  batch_size: 32
+  concurrency: 16
+  sampling_seed: 4000
+endpoints:
+  sync_method: nccl_broadcast
+streaming:
+  min_datums_per_submission: 64
+  max_groups_per_submission: 8
+correctness:
+  max_k3: null
+  max_ratio_error: null
+artifacts:
+  output_dir: artifacts/codebreaker/cispo
