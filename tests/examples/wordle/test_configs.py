@@ -6,14 +6,19 @@ from pydantic import ValidationError
 from examples.wordle.config import ExperimentConfig, load_config
 from examples.wordle.train import _validate_capabilities
 
-
 ROOT = Path(__file__).parents[3]
 
 
 @pytest.mark.parametrize("name", ["importance_sampling", "cispo", "zero_k3", "r3"])
 def test_shipped_presets_load_and_resolve_data(name):
     config = load_config(ROOT / f"examples/wordle/configs/{name}.yaml")
-    assert Path(config.wordle.targets_path).is_file()
+    assert Path(config.wordle.train_targets_path).is_file()
+    assert Path(config.wordle.eval_targets_path).is_file()
+    assert Path(config.wordle.legal_guesses_path).is_file()
+    assert Path(config.wordle.train_targets_path).parent.name == "data"
+    assert Path(config.wordle.eval_targets_path).parent.name == "data"
+    assert config.wordle.train_targets == 4000
+    assert config.wordle.eval_targets == 170
     assert config.preset == name
     assert config.model.resolved_train_base_model() == config.model.model
     assert config.generation.no_stop_trim
@@ -21,6 +26,15 @@ def test_shipped_presets_load_and_resolve_data(name):
         assert config.trainer.loss_fn_params["compute_kl_stats"] is True
         assert config.correctness.max_k3 == 0.0
         assert config.correctness.max_ratio_error == 0.0
+
+
+def test_q36_uses_exact_dataset_files():
+    config = load_config(ROOT / "examples/wordle/configs/q36.yaml")
+    assert Path(config.wordle.train_targets_path).name == "train_targets.txt"
+    assert Path(config.wordle.eval_targets_path).name == "eval_targets.txt"
+    assert Path(config.wordle.legal_guesses_path).name == "legal_guesses.txt"
+    assert config.wordle.train_targets == 4000
+    assert config.wordle.eval_targets == 170
 
 
 def test_trainer_base_model_can_differ_from_sampler_model():

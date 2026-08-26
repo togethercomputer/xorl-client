@@ -109,6 +109,10 @@ class ServiceClient:
         dropout: float = 0.0,
         target_modules: Optional[list[str]] = None,
         model_id: Optional[str] = None,
+        lora_seed: Optional[int] = None,
+        train_mlp: Optional[bool] = None,
+        train_attn: Optional[bool] = None,
+        train_unembed: Optional[bool] = None,
     ) -> Future["TrainingClient"]:
         """Helper function that submits the create_lora_training_client request (two-phase pattern)."""
         import time
@@ -120,12 +124,15 @@ class ServiceClient:
             or alpha is not None
             or dropout != 0.0
             or target_modules is not None
+            or lora_seed is not None
+            or train_mlp is not None
+            or train_attn is not None
+            or train_unembed is not None
         ):
             logger.warning(
-                "Note: LoRA parameters (rank, alpha, dropout, target_modules) are currently "
-                "configured on the server side and cannot be adjusted from the client. "
-                "The values provided here will be sent to the server but may be ignored "
-                "if the server is already configured with different LoRA settings."
+                "LoRA structure and initialization options are server-wide. "
+                "The create_model request asserts these values; the server must "
+                "reject any mismatch instead of silently changing the run contract."
             )
 
         # Use provided model_id or default to "default"
@@ -138,6 +145,10 @@ class ServiceClient:
             alpha=alpha,
             dropout=dropout,
             target_modules=target_modules,
+            lora_seed=lora_seed,
+            train_mlp=train_mlp,
+            train_attn=train_attn,
+            train_unembed=train_unembed,
         )
 
         # Send create model request to server
@@ -319,6 +330,10 @@ class ServiceClient:
         dropout: float = 0.0,
         target_modules: Optional[list[str]] = None,
         model_id: Optional[str] = None,
+        lora_seed: Optional[int] = None,
+        train_mlp: Optional[bool] = None,
+        train_attn: Optional[bool] = None,
+        train_unembed: Optional[bool] = None,
     ) -> "TrainingClient":
         """Create a LoRA training client.
 
@@ -335,6 +350,10 @@ class ServiceClient:
             target_modules: Which modules to apply LoRA to (default: None, uses model default)
             model_id: Optional model ID (default: "default"). Use different IDs for multiple tests
                      to avoid "adapter already loaded" errors without restarting inference worker
+            lora_seed: Required server-wide LoRA initialization seed.
+            train_mlp: Required server-wide MLP adapter selection.
+            train_attn: Required server-wide attention adapter selection.
+            train_unembed: Required server-wide unembedding adapter selection.
 
         Returns:
             TrainingClient instance
@@ -351,7 +370,16 @@ class ServiceClient:
             ... )
         """
         return self._create_lora_training_client_submit(
-            base_model, rank, alpha, dropout, target_modules, model_id
+            base_model=base_model,
+            rank=rank,
+            alpha=alpha,
+            dropout=dropout,
+            target_modules=target_modules,
+            model_id=model_id,
+            lora_seed=lora_seed,
+            train_mlp=train_mlp,
+            train_attn=train_attn,
+            train_unembed=train_unembed,
         ).result()
 
     async def create_lora_training_client_async(
@@ -362,10 +390,23 @@ class ServiceClient:
         dropout: float = 0.0,
         target_modules: Optional[list[str]] = None,
         model_id: Optional[str] = None,
+        lora_seed: Optional[int] = None,
+        train_mlp: Optional[bool] = None,
+        train_attn: Optional[bool] = None,
+        train_unembed: Optional[bool] = None,
     ) -> "TrainingClient":
         """Async version of create_lora_training_client."""
         future = self._create_lora_training_client_submit(
-            base_model, rank, alpha, dropout, target_modules, model_id
+            base_model=base_model,
+            rank=rank,
+            alpha=alpha,
+            dropout=dropout,
+            target_modules=target_modules,
+            model_id=model_id,
+            lora_seed=lora_seed,
+            train_mlp=train_mlp,
+            train_attn=train_attn,
+            train_unembed=train_unembed,
         )
         return await asyncio.wrap_future(future)
 

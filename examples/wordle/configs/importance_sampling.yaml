@@ -12,10 +12,11 @@ trainer:
   learning_rate: 0.00001
   checkpoint_every: 1
 wordle:
-  targets_path: data/targets.txt
+  train_targets_path: data/train_targets.txt
+  eval_targets_path: data/eval_targets.txt
   legal_guesses_path: data/legal_guesses.txt
-  train_targets: 64
-  eval_targets: 16
+  train_targets: 4000
+  eval_targets: 170
   targets_per_step: 2
   target_selection: shuffled_epochs_without_replacement
   group_size: 4
