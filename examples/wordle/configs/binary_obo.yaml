@@ -1,0 +1,50 @@
+# The research program's recipe adapted to this example: the full 4,266-word
+# wordle-python corpus (targets and legal guesses are the same list), binary
+# reward (solved + all-turns-format, each exactly 0/1), the obo zero-variance
+# rescue, and the temperature-0.7 sampled-AND-scored contract
+# (loss_fn_params.logprob_temperature must match generation.temperature).
+preset: cispo
+model:
+  model: Qwen/Qwen3-8B
+  mode: lora
+  model_id: wordle-binary-obo
+  lora_rank: 64
+trainer:
+  loss_fn: cispo
+  loss_fn_params:
+    logprob_temperature: 0.7
+  cispo_clip_low_threshold: 0.0
+  cispo_clip_high_threshold: 4.0
+  steps: 64
+  learning_rate: 0.0001
+  learning_rate_schedule: cosine
+  learning_rate_warmup_steps: 8
+  min_learning_rate: 0.00001
+  checkpoint_every: 16
+wordle:
+  targets_path: data/wordle_python_words.txt
+  legal_guesses_path: data/wordle_python_words.txt
+  train_targets: 4000
+  eval_targets: 266
+  targets_per_step: 32
+  group_size: 8
+  max_turns: 6
+  reward: binary
+  target_seed: 17
+generation:
+  max_new_tokens: 512
+  temperature: 0.7
+  top_p: 1.0
+  batch_size: 32
+  concurrency: 16
+  sampling_seed: 4000
+endpoints:
+  sync_method: nccl_broadcast
+streaming:
+  min_datums_per_submission: 64
+  max_groups_per_submission: 8
+correctness:
+  max_k3: null
+  max_ratio_error: null
+artifacts:
+  output_dir: artifacts/wordle/binary_obo

@@ -29,7 +29,16 @@ def score_trajectory(
         + 0.10 * info_gain
         + 0.05 * turn_bonus
     )
-    reward = float(solved) if mode == "exact_match" else shaped
+    if mode == "exact_match":
+        reward = float(solved)
+    elif mode == "binary":
+        # The research program's binary phase: accuracy + format, each exactly
+        # 0 or 1, so the train objective coincides with the eval metric and the
+        # obo rescue keeps uniform groups trainable. (Shaped rewards pre-solve
+        # the credit-assignment problem the estimators should demonstrate.)
+        reward = float(solved) + (1.0 if count > 0 and format_rate == 1.0 else 0.0)
+    else:
+        reward = shaped
     return {
         "reward": reward,
         "exact_match": float(solved),

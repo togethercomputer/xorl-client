@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import math
+import statistics
 import os
 import random
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Sequence
 
 from xorl_client import SamplingParams, types
-from xorl_client.rl import build_policy_datum, compute_grpo_advantages
+from xorl_client.rl import build_policy_datum
 
 from .config import ExperimentConfig
 from .reward import score_trajectory
@@ -418,23 +420,61 @@ async def rollout_complete_groups(
     return trajectories
 
 
+def grpo_with_obo_rescue(
+    rewards: Sequence[float],
+    exact_flags: Sequence[float],
+    group_ids: Sequence[Any],
+) -> list[float]:
+    """Group-normalized advantages with the obo zero-variance rescue.
+
+    Non-uniform groups: (r - mean) / (pstdev + 1e-6), matching
+    compute_grpo_advantages. Uniform-reward groups: all-failed -> -1/sqrt(n)
+    each, all-solved -> +1/sqrt(n) each (unanimous successes still reinforce),
+    mixed solve flags -> all zeros (the drop-equivalent).
+    """
+    by_group: dict[Any, list[int]] = {}
+    for index, gid in enumerate(group_ids):
+        by_group.setdefault(gid, []).append(index)
+    advantages = [0.0] * len(rewards)
+    for indices in by_group.values():
+        rs = [rewards[i] for i in indices]
+        mean_r = sum(rs) / len(rs)
+        std_r = statistics.pstdev(rs) if len(rs) > 1 else 0.0
+        if std_r > 0.0:
+            for i in indices:
+                advantages[i] = (rewards[i] - mean_r) / (std_r + 1e-6)
+            continue
+        flags = {exact_flags[i] for i in indices}
+        if flags == {0.0}:
+            value = -1.0 / math.sqrt(len(indices))
+        elif flags == {1.0}:
+            value = 1.0 / math.sqrt(len(indices))
+        else:
+            value = 0.0
+        for i in indices:
+            advantages[i] = value
+    return advantages
+
+
 def build_group_datums(
     group: Sequence[Trajectory], *, r3_enabled: bool
 ) -> tuple[list[types.Datum], dict[str, float]]:
     """Build all generated assistant turns for one complete GRPO group."""
 
     rewards = [row.reward["reward"] for row in group]
-    advantages = compute_grpo_advantages(
-        rewards, group_ids=[row.group_id for row in group]
+    exact = [row.reward["exact_match"] for row in group]
+    advantages = grpo_with_obo_rescue(
+        rewards, exact, [row.group_id for row in group]
     )
     datums: list[types.Datum] = []
     generated_tokens = 0
     truncated_turns = 0
     if all(a == 0.0 for a in advantages):
-        # Zero-variance group: every trajectory got the same reward, so all
-        # advantages are zero and every target token would be weight-0. The
-        # server rejects a batch whose labels are entirely masked, and the
-        # group carries no learning signal anyway — drop it.
+        # Mixed zero-variance group (the obo rescue's drop-equivalent): equal
+        # rewards but disagreeing solve flags carry no coherent signal, and
+        # all-zero advantages would produce a fully-masked batch the server
+        # rejects — drop it. Uniform all-failed/all-solved groups never land
+        # here: the rescue gives them -/+1/sqrt(n) advantages so they train.
         return [], {
             "groups": 1.0,
             "trajectories": float(len(group)),

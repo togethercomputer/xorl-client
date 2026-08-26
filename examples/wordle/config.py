@@ -73,7 +73,7 @@ class WordleConfig(StrictModel):
     )
     group_size: int = Field(default=4, ge=2)
     max_turns: int = Field(default=6, ge=1, le=6)
-    reward: Literal["shaped", "exact_match"] = "shaped"
+    reward: Literal["shaped", "exact_match", "binary"] = "shaped"
     target_seed: int = 17
 
 
