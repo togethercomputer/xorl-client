@@ -457,15 +457,26 @@ def grpo_with_obo_rescue(
 
 
 def build_group_datums(
-    group: Sequence[Trajectory], *, r3_enabled: bool
+    group: Sequence[Trajectory], *, r3_enabled: bool, obo_rescue: bool = True
 ) -> tuple[list[types.Datum], dict[str, float]]:
     """Build all generated assistant turns for one complete GRPO group."""
 
     rewards = [row.reward["reward"] for row in group]
     exact = [row.reward["exact_match"] for row in group]
-    advantages = grpo_with_obo_rescue(
-        rewards, exact, [row.group_id for row in group]
-    )
+    if obo_rescue:
+        advantages = grpo_with_obo_rescue(
+            rewards, exact, [row.group_id for row in group]
+        )
+    else:
+        # remove_constant_reward_groups semantics: uniform-reward groups are
+        # dropped (all-zero advantages take the drop path below).
+        import statistics as _st
+
+        std_r = _st.pstdev(rewards) if len(rewards) > 1 else 0.0
+        mean_r = sum(rewards) / len(rewards)
+        advantages = (
+            [(r - mean_r) / (std_r + 1e-6) for r in rewards] if std_r > 0.0 else [0.0] * len(rewards)
+        )
     datums: list[types.Datum] = []
     generated_tokens = 0
     truncated_turns = 0

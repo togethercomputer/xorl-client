@@ -271,7 +271,11 @@ class ExperimentRunner:
 
             async def completed(group) -> None:
                 await submit(
-                    build_group_datums(group, r3_enabled=self.config.r3.enabled)
+                    build_group_datums(
+                        group,
+                        r3_enabled=self.config.r3.enabled,
+                        obo_rescue=self.config.wordle.obo_rescue,
+                    )
                 )
 
             trajectories = await rollout_complete_groups(
