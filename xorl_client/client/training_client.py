@@ -2145,6 +2145,11 @@ class TrainingClient:
             "sync_method": sync_method,
             "timeout_s": timeout,
         }
+        model_id = getattr(self, "model_id", None)
+        if model_id:
+            # Adapter-sync contract: name the session so the engine exports
+            # THIS session's adapter rather than the current/default one.
+            request_data["model_id"] = model_id
         if pools is not None:
             request_data["pools"] = pools
         if group_name is not None:

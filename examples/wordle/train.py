@@ -127,6 +127,20 @@ class XorlTrainerBackend:
         return str(result.path)
 
 
+async def trainer_backend_initial_sync(training_client, config) -> dict:
+    """One pre-training adapter publication per replica pool (see sync())."""
+    pool_count = max(len(config.endpoints.sync_urls), 1)
+    for index in range(pool_count):
+        result = await training_client.sync_weights_to_inference(
+            sync_method=config.endpoints.sync_method,
+            pools=[f"r{index}"],
+            group_name=f"weight_sync_group_r{index}",
+        )
+        if not result.success:
+            return {"success": False, "message": f"pool r{index}: {result.message}"}
+    return {"success": True}
+
+
 async def _server_info(url: str, timeout: float) -> dict[str, Any]:
     last_error: Exception | None = None
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -518,6 +532,15 @@ async def _run_cli(args: argparse.Namespace) -> dict:
             raise RuntimeError(
                 f"failed to register sync endpoint {redact_url(url)}: {response.message}"
             )
+    if config.model.mode == "lora" and not resume:
+        # Adapter-sync contract: publish the fresh (zero) session adapter to
+        # the endpoints before the first rollouts so generation can select it
+        # by name. A zero adapter is exactly the base model, so step-1 play is
+        # unchanged; without this, the sampler rejects the never-loaded name.
+        initial_sync = await trainer_backend_initial_sync(training_client, config)
+        if not initial_sync.get("success"):
+            raise RuntimeError(f"initial adapter publication failed: {initial_sync}")
+
     sampler = SamplingClient(
         base_url=config.endpoints.generation_url,
         # Adapter-sync contract: LoRA sessions publish adapters to the sampler
