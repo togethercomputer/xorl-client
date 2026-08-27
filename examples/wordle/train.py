@@ -520,10 +520,10 @@ async def _run_cli(args: argparse.Namespace) -> dict:
             )
     sampler = SamplingClient(
         base_url=config.endpoints.generation_url,
-        # This server's LoRA sync merges the adapter into the sampler's BASE
-        # weights (merged nccl broadcast), so generation must target the base
-        # model rather than request a sampler-side adapter that never exists.
-        model_path="",
+        # Adapter-sync contract: LoRA sessions publish adapters to the sampler
+        # via /load_lora_adapter, so generation targets the adapter by its
+        # model_id. Full-weight sessions sample the (synced) base model.
+        model_path=(config.model.model_id if config.model.mode == "lora" else ""),
         model=config.model.model,
         timeout=config.generation.timeout,
     )
