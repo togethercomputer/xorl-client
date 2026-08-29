@@ -492,25 +492,59 @@ class XorlBackend:
         step.optimizer_complete = True
         return OptimizerResult(numeric_metrics(getattr(result, "metrics", {})))
 
+    async def sync_samplers(self) -> PublishResult:
+        """Sync trainer weights to the sampler fleet.
+
+        With ``sync_pool_per_endpoint`` each registered endpoint pool syncs as
+        its own pairwise NCCL group. One group spanning every endpoint is known
+        to hang on multi-replica fleets, so world-2 per-pool syncs are the
+        proven path (mirrors rl-bench's wordle_convergence harness).
+        """
+        if not self.backend_config.sync_pool_per_endpoint:
+            result = await self.client.sync_weights_to_inference(
+                sync_method=self.backend_config.sync_method
+            )
+            return PublishResult(
+                success=bool(getattr(result, "success", False)),
+                metrics={
+                    "transfer_time": float(getattr(result, "transfer_time", 0.0)),
+                    "total_bytes": float(getattr(result, "total_bytes", 0)),
+                },
+                detail=str(getattr(result, "message", "")),
+            )
+        total_time = 0.0
+        total_bytes = 0.0
+        for index in range(max(len(self.backend_config.sync_urls), 1)):
+            result = await self.client.sync_weights_to_inference(
+                sync_method=self.backend_config.sync_method,
+                pools=[f"r{index}"],
+                group_name=f"weight_sync_group_r{index}",
+            )
+            if not getattr(result, "success", False):
+                return PublishResult(
+                    success=False,
+                    metrics={
+                        "transfer_time": total_time,
+                        "total_bytes": total_bytes,
+                    },
+                    detail=f"pool r{index}: {getattr(result, 'message', '')}",
+                )
+            total_time += float(getattr(result, "transfer_time", 0.0))
+            total_bytes += float(getattr(result, "total_bytes", 0))
+        return PublishResult(
+            success=True,
+            metrics={"transfer_time": total_time, "total_bytes": total_bytes},
+        )
+
     async def publish_policy(self, step: BackendStep) -> PublishResult:
         if not step.optimizer_complete or step.policy_published:
             raise RuntimeError(
                 "policy publication requires one completed optimizer update"
             )
-        result = await self.client.sync_weights_to_inference(
-            sync_method=self.backend_config.sync_method
-        )
-        success = bool(getattr(result, "success", False))
-        if success:
+        result = await self.sync_samplers()
+        if result.success:
             step.policy_published = True
-        return PublishResult(
-            success=success,
-            metrics={
-                "transfer_time": float(getattr(result, "transfer_time", 0.0)),
-                "total_bytes": float(getattr(result, "total_bytes", 0)),
-            },
-            detail=str(getattr(result, "message", "")),
-        )
+        return result
 
     async def checkpoint(self, step: BackendStep, *, name: str) -> CheckpointResult:
         if step.submitted_datums and not step.optimizer_complete:
@@ -575,14 +609,25 @@ async def create_xorl_backend(
         )
     if resume_checkpoint:
         await training_client.load_state_with_optimizer(resume_checkpoint)
-    for url in backend.sync_urls:
+    for index, url in enumerate(backend.sync_urls):
         host, port = _endpoint_host_port(url)
+        kwargs: dict[str, Any] = {}
+        if backend.sync_pool_per_endpoint:
+            # Distinct rendezvous port per endpoint: back-to-back registrations
+            # on a shared port hit EADDRINUSE before the previous TCPStore is
+            # released. Each pool then syncs as its own pairwise NCCL group.
+            kwargs.update(
+                pool=f"r{index}",
+                group_name=f"weight_sync_group_r{index}",
+                master_port=29600 + index,
+            )
         registered = training_client.add_inference_endpoint(
             host=host,
             port=port,
             world_size=backend.sync_world_size,
             sync_weights=False,
             buffer_size_mb=backend.sync_buffer_mb,
+            **kwargs,
         ).result()
         if not registered.success:
             raise RuntimeError(
@@ -605,10 +650,10 @@ async def create_xorl_backend(
         tokenizer=tokenizer,
         config=config,
     )
-    initial_sync = await result.client.sync_weights_to_inference(
-        sync_method=backend.sync_method
-    )
-    if not getattr(initial_sync, "success", False):
+    initial_sync = await result.sync_samplers()
+    if not initial_sync.success:
         state = "restored checkpoint" if resume_checkpoint else "initial policy"
-        raise RuntimeError(f"failed to publish XoRL {state}")
+        raise RuntimeError(
+            f"failed to publish XoRL {state}: {initial_sync.detail}"
+        )
     return result
