@@ -302,6 +302,11 @@ class WandbSink:
             job_type="train",
             config=run_config,
         )
+        # Shared cross-backend axis: the rl-bench convergence harnesses log
+        # every metric against global_step, so runs from this example overlay
+        # directly with theirs in one W&B workspace.
+        self.run.define_metric("global_step")
+        self.run.define_metric("*", step_metric="global_step")
 
     def log_step(self, record: dict) -> None:
         if self.run is None:
@@ -312,12 +317,19 @@ class WandbSink:
         def collect(prefix: str, value: object) -> None:
             if isinstance(value, dict):
                 for key, child in value.items():
+                    if not prefix and key == "overlay":
+                        continue  # logged below under its own harness names
                     collect(f"{prefix}/{key}" if prefix else str(key), child)
             elif isinstance(value, (int, float)) and not isinstance(value, bool):
                 key = prefix if prefix.startswith("hybrid/") else f"train/{prefix}"
                 scalar[key] = value
 
         collect("", record)
+        # Overlay keys are already fully-qualified harness names; a train/
+        # prefix would break curve overlay with the rl-bench runs.
+        for key, value in (record.get("overlay") or {}).items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                scalar[str(key)] = value
         self.run.log(scalar, step=step)
 
     def log_samples(self, *, step: int, trajectories: list[object]) -> None:

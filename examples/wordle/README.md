@@ -91,3 +91,62 @@ python -m examples.wordle.train \
 
 W&B may consume `metrics.jsonl`, but publication is optional and is not used to
 decide whether a run completed.
+
+Matched Tinker comparison
+
+`configs/tinker_matched.yaml` pins the matched-Tinker convergence posture used
+by the rl-bench Wordle harnesses: clipped PPO with ratio bounds [0.8, 1.28]
+(XoRL offsets `eps_clip=0.2` / `eps_clip_high=0.28`, Tinker absolute
+thresholds), constant LR 1e-5, Adam (0.9, 0.95, 1e-8), grad clip 1.0, no
+weight decay, and — via three trainer flags — the matched advantage semantics:
+
+- `advantage_std_normalization: false` — group mean-centred advantages with no
+  per-group std rescaling.
+- `skip_zero_advantage_trajectories: false` — every member of a kept group is
+  trained. Zero-advantage episodes contribute no policy gradient, but they do
+  count in XoRL's valid-token loss denominator, so dropping them silently
+  rescales the gradient relative to Tinker.
+- `remove_constant_reward_groups: true` — groups whose rewards are all equal
+  are dropped wholesale; if every group in a step is uniform, one group is
+  kept (all-zero advantages) so the optimizer step still runs and Adam state
+  stays step-aligned across backends.
+
+Datum shape: this example submits one datum per turn with the re-rendered
+prompt masked out, while the harnesses pack an episode into one prefix-extended
+sequence. The trained-token multiset and advantages are identical, so under
+XoRL's valid-token-sum reduction the gradients match; the difference is compute
+layout, not semantics.
+
+Every committed step also carries an `overlay` block: a flat superset of the
+rl-bench/Tinker metric names (`quality/train_reward`, `quality/solve_rate`,
+`env/all/*`, `optim/kl_sample_train_v1/v2/v3`, `optim/entropy`, `tokens/*`,
+`bench/*`, `perf/*`, `global_step`). W&B logs these keys unprefixed against a
+`global_step` axis so curves overlay directly with harness runs; all original
+metric names remain unchanged, so the two schemas coexist as a superset. Note
+the KL sign convention: the harness defines `d = logp_sampler - logp_trainer`,
+this example's internal `logratio_*` metrics use the opposite sign, and the
+overlay does the mapping (`v1 = -logratio_mean`, `v2 = sq_logratio_mean / 2`,
+`v3 = k3_mean`, which is symmetric).
+
+To compare runs, execute the same matched config on both backends and align
+them:
+
+```bash
+python -m examples.wordle.train --backend xorl \
+  --config examples/wordle/configs/tinker_matched.yaml \
+  --trainer-url http://trainer:8000 --generation-url http://router:30000 \
+  --sync-url http://sampler-a:30000 --output-dir artifacts/wordle/matched-xorl
+python -m examples.wordle.train --backend tinker \
+  --config examples/wordle/configs/tinker_matched.yaml \
+  --output-dir artifacts/wordle/matched-tinker   # needs TINKER_API_KEY
+python -m examples.wordle.compare_tinker \
+  --xorl-dir artifacts/wordle/matched-xorl \
+  --tinker-dir artifacts/wordle/matched-tinker
+```
+
+`compare_tinker.py` prints a per-step table (reward, K3, grad norm for both
+stacks) and writes `comparison.json` with tail-mean reward gaps. Passing
+`--launch` runs the two `train` invocations itself before comparing. The
+matched config also enables `sync_pool_per_endpoint`, registering each sampler
+as its own pairwise NCCL pool (`r0`, `r1`, ...) with a distinct rendezvous
+port — a single sync group spanning a multi-replica fleet is known to hang.

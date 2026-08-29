@@ -83,7 +83,10 @@ def reward_key(config: ExperimentConfig) -> str:
 
 
 def retain_training_tokens(
-    group: Sequence[Any], *, config: ExperimentConfig
+    group: Sequence[Any],
+    *,
+    config: ExperimentConfig,
+    force_keep_zero_variance: bool = False,
 ) -> GroupTrainingBatch:
     """Apply group-relative advantages to every retained turn in the group.
 
@@ -92,6 +95,13 @@ def retain_training_tokens(
     skips zero-advantage trajectories unless replay metadata must be consumed,
     and produces the sole common datum shape from which backend wire requests
     are built.
+
+    Under ``trainer.remove_constant_reward_groups`` a group whose rewards are
+    all identical yields no samples (only its metrics), matching the matched-
+    Tinker posture's group-level drop. ``force_keep_zero_variance`` overrides
+    that for the keep-one fallback: when every group in a step is uniform, one
+    group is still trained (with all-zero advantages) so the optimizer step
+    happens instead of being skipped.
     """
 
     if not group:
@@ -105,7 +115,13 @@ def retain_training_tokens(
         rewards,
         group_ids=group_ids,
         normalize=True,
-        std_normalization=True,
+        std_normalization=config.trainer.advantage_std_normalization,
+    )
+    zero_variance = all(value == rewards[0] for value in rewards)
+    drop_group = (
+        config.trainer.remove_constant_reward_groups
+        and zero_variance
+        and not force_keep_zero_variance
     )
     samples: list[TrainingSample] = []
     skipped_zero = 0
@@ -116,7 +132,12 @@ def retain_training_tokens(
         group, advantages, rewards, strict=True
     ):
         trajectory.advantage = float(advantage)
-        if abs(float(advantage)) <= 1e-12:
+        if drop_group:
+            continue
+        if (
+            abs(float(advantage)) <= 1e-12
+            and config.trainer.skip_zero_advantage_trajectories
+        ):
             if config.router_replay.enabled:
                 retained_zero_replay += len(trajectory.turns)
             else:
@@ -162,6 +183,8 @@ def retain_training_tokens(
             sum(len(item.output_tokens) for item in samples)
         ),
         "prompt_tokens": float(sum(len(item.prompt_tokens) for item in samples)),
+        "zero_variance_groups": float(zero_variance),
+        "dropped_zero_variance_groups": float(drop_group),
     }
     score_keys = {
         key
@@ -229,3 +252,16 @@ def river_loss_inputs(sample: TrainingSample) -> dict[str, list[Any]]:
 def merge_metrics(target: dict[str, float], source: dict[str, float]) -> None:
     for key, value in source.items():
         target[key] = target.get(key, 0.0) + float(value)
+
+
+def merge_metric_diff(
+    target: dict[str, float],
+    new: dict[str, float],
+    old: dict[str, float],
+) -> None:
+    """Replace an already-merged ``old`` contribution with ``new`` in place."""
+
+    for key in set(new) | set(old):
+        delta = float(new.get(key, 0.0)) - float(old.get(key, 0.0))
+        if delta:
+            target[key] = target.get(key, 0.0) + delta

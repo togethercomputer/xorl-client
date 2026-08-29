@@ -21,9 +21,15 @@ from .backends.base import (
 )
 from .config import ExperimentConfig
 from .metrics import StructuralAlignmentError, finite_metric_present
+from .overlay import step_overlay
 from .rollout import Trajectory, TurnRecord, rollout_complete_groups
 from .task import WordleTask
-from .training import GroupTrainingBatch, merge_metrics, retain_training_tokens
+from .training import (
+    GroupTrainingBatch,
+    merge_metric_diff,
+    merge_metrics,
+    retain_training_tokens,
+)
 
 _PIPELINE_END = object()
 _PIPELINE_ROLLOUT_SCHEMA = "wordle.pipeline-rollout.v1"
@@ -260,15 +266,24 @@ class ExperimentRunner:
         step = backend_step or await self.backend.begin_step(step_number)
         totals: dict[str, float] = {}
         group_order: list[str] = []
+        held_uniform: list[tuple[list[Any], dict[str, float]]] = []
+        submitted_samples = 0
 
-        async def completed(group: list[Any]) -> None:
-            batch = retain_training_tokens(group, config=self.config)
-            merge_metrics(totals, batch.metrics)
-            group_order.append(str(group[0].group_id))
+        async def submit(batch: GroupTrainingBatch) -> None:
             if batch_queue is None:
                 await self.backend.add_group(step, batch)
             else:
                 await batch_queue.put(batch)
+
+        async def completed(group: list[Any]) -> None:
+            nonlocal submitted_samples
+            batch = retain_training_tokens(group, config=self.config)
+            merge_metrics(totals, batch.metrics)
+            group_order.append(str(group[0].group_id))
+            submitted_samples += len(batch.samples)
+            if not batch.samples and batch.metrics.get("dropped_zero_variance_groups"):
+                held_uniform.append((list(group), dict(batch.metrics)))
+            await submit(batch)
 
         rollout_started = time.monotonic()
         trajectories = await rollout_complete_groups(
@@ -279,6 +294,17 @@ class ExperimentRunner:
             config=self.config,
             on_group_complete=completed,
         )
+        if submitted_samples == 0 and held_uniform:
+            # Every group this step had constant rewards. Mirror the matched
+            # posture's keep-one fallback: train the first uniform group with
+            # all-zero advantages so the optimizer step still happens instead
+            # of being skipped (Adam state stays step-aligned across backends).
+            group, dropped_metrics = held_uniform[0]
+            batch = retain_training_tokens(
+                group, config=self.config, force_keep_zero_variance=True
+            )
+            merge_metric_diff(totals, batch.metrics, dropped_metrics)
+            await submit(batch)
         return _PreparedStep(
             number=step_number,
             backend_step=step,
@@ -369,6 +395,8 @@ class ExperimentRunner:
             )
         backend_step = await self.backend.begin_step(step_number)
         totals: dict[str, float] = {}
+        held_uniform: list[tuple[list[Trajectory], dict[str, float]]] = []
+        submitted_samples = 0
         for group_id in group_order:
             group = groups[group_id]
             if len(group) != self.config.wordle.group_size:
@@ -377,6 +405,19 @@ class ExperimentRunner:
                 )
             batch = retain_training_tokens(group, config=self.config)
             merge_metrics(totals, batch.metrics)
+            submitted_samples += len(batch.samples)
+            if not batch.samples and batch.metrics.get("dropped_zero_variance_groups"):
+                held_uniform.append((group, dict(batch.metrics)))
+            await self.backend.add_group(backend_step, batch)
+        if submitted_samples == 0 and held_uniform:
+            # Deterministic mirror of _prepare_step's keep-one fallback: the
+            # stored totals were produced with it, so the identity check below
+            # only holds if the restore replays the same substitution.
+            group, dropped_metrics = held_uniform[0]
+            batch = retain_training_tokens(
+                group, config=self.config, force_keep_zero_variance=True
+            )
+            merge_metric_diff(totals, batch.metrics, dropped_metrics)
             await self.backend.add_group(backend_step, batch)
         stored_totals = {
             str(key): float(item) for key, item in value.get("totals", {}).items()
@@ -572,6 +613,25 @@ class ExperimentRunner:
     ) -> dict[str, Any]:
         prepared = outcome.prepared
         optimizer_metrics = outcome.optimizer.metrics if outcome.optimizer else {}
+        step_wall_s = time.monotonic() - prepared.started_at
+        overlay = step_overlay(
+            config=self.config,
+            step=prepared.number,
+            trajectories=prepared.trajectories,
+            totals=prepared.totals,
+            forward_metrics=outcome.forward.metrics,
+            alignment=outcome.forward.alignment,
+            optimizer_metrics=optimizer_metrics,
+            learning_rate=outcome.learning_rate,
+            optimizer_skipped=not outcome.has_update,
+            rollout_wall_s=prepared.rollout_wall_s,
+            train_wall_s=outcome.forward_wall_s + outcome.optimizer_wall_s,
+            sync_transfer_s=float(
+                publish.metrics.get("transfer_time", publish_wall_s)
+            ),
+            publish_wall_s=publish_wall_s,
+            step_wall_s=step_wall_s,
+        )
         metrics: dict[str, Any] = {
             "step": prepared.number,
             "backend": self.backend.name,
@@ -610,7 +670,12 @@ class ExperimentRunner:
             "forward_backward_wall_s": outcome.forward_wall_s,
             "optimizer_wall_s": outcome.optimizer_wall_s,
             "policy_publish_wall_s": publish_wall_s,
-            "step_wall_s": time.monotonic() - prepared.started_at,
+            "step_wall_s": step_wall_s,
+            # Flat superset of the rl-bench convergence-harness metric names
+            # (quality/*, env/all/*, optim/*, tokens/*, bench/*, perf/*,
+            # global_step). W&B logs these keys unprefixed so curves overlay
+            # with harness runs on either stack.
+            "overlay": overlay,
         }
         if hybrid is not None:
             metrics["hybrid"] = hybrid

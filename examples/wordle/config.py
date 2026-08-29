@@ -51,9 +51,27 @@ class TrainerConfig(StrictModel):
     weight_decay: float = Field(default=0.0, ge=0)
     grad_clip_norm: float = Field(default=0.0, ge=0)
     checkpoint_every: int = Field(default=8, gt=0)
+    # Matched-Tinker posture controls (rl-bench wordle_convergence contract).
+    # The defaults preserve the shipped presets' GRPO behavior; the matched
+    # configuration flips all three: mean-centred advantages with no per-group
+    # std rescaling, every member of a kept group trained (zero-advantage
+    # episodes still count in the loss denominator), and constant-reward
+    # groups dropped at the group level with a keep-one fallback.
+    advantage_std_normalization: bool = True
+    skip_zero_advantage_trajectories: bool = True
+    remove_constant_reward_groups: bool = False
 
     @model_validator(mode="after")
     def validate_loss_and_schedule(self) -> "TrainerConfig":
+        if (
+            self.remove_constant_reward_groups
+            and self.skip_zero_advantage_trajectories
+        ):
+            raise ValueError(
+                "remove_constant_reward_groups drops uniform groups wholesale and "
+                "trains every member of kept groups; it requires "
+                "skip_zero_advantage_trajectories=false"
+            )
         if self.cispo_clip_high_threshold < self.cispo_clip_low_threshold:
             raise ValueError(
                 "cispo_clip_high_threshold must be >= cispo_clip_low_threshold"
@@ -83,6 +101,11 @@ class TrainerConfig(StrictModel):
                     eps_clip=self.ppo_clip_low,
                     eps_clip_high=self.ppo_clip_high,
                 )
+                # Explicit on the wire: Tinker applies no truncated-importance-
+                # sampling correction, so the matched posture must not either.
+                # XoRL silently ignores unknown loss_fn_params keys, so the
+                # protection is stating the known key, not omitting it.
+                params.setdefault("use_tis", False)
                 if self.ppo_dual_clip is not None:
                     params["eps_clip_c"] = self.ppo_dual_clip
             elif backend == "river":
@@ -110,11 +133,13 @@ class TrainerConfig(StrictModel):
         # always returns per-token logprobs and has no corresponding switch.
         if backend == "river":
             params.pop("return_per_token", None)
+            params.pop("use_tis", None)
             if self.loss_fn == "importance_sampling":
                 params.pop("compute_kl_stats", None)
         if backend == "tinker":
             params.pop("compute_kl_stats", None)
             params.pop("return_per_token", None)
+            params.pop("use_tis", None)
         return params
 
 
@@ -249,6 +274,10 @@ class XorlBackendConfig(StrictModel):
     sync_world_size: int = Field(default=1, gt=0)
     sync_method: Literal["nccl_ep_scatter", "nccl", "rdma_direct", "p2p"] = "p2p"
     sync_buffer_mb: int = Field(default=1024, gt=0)
+    # Register each sync endpoint as its own pool (r0, r1, ...) with a distinct
+    # NCCL group and rendezvous port, then sync the pools pairwise. A single
+    # all-endpoints group is known to hang on multi-replica sampler fleets.
+    sync_pool_per_endpoint: bool = False
     streaming: XorlStreamingConfig = Field(default_factory=XorlStreamingConfig)
 
 

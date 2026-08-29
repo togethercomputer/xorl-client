@@ -1,0 +1,101 @@
+# Matched-Tinker convergence posture (rl-bench wordle_convergence contract):
+# clipped PPO with ratio bounds [0.8, 1.28], constant LR 1e-5, Adam
+# (0.9, 0.95, 1e-8), grad clip 1.0, no weight decay, group mean-centred
+# advantages with NO std normalisation, zero-variance groups dropped at the
+# group level (keep-one fallback), every member of a kept group trained.
+# Run the same file on --backend xorl and --backend tinker, then compare with
+# examples/wordle/compare_tinker.py.
+model:
+  model: Qwen/Qwen3.5-4B
+  tokenizer: Qwen/Qwen3.5-4B
+  mode: lora
+  model_id: wordle-matched-lora32
+  lora_rank: 32
+  lora_seed: 9234
+  train_mlp: true
+  train_attn: true
+  train_unembed: false
+trainer:
+  loss_fn: ppo
+  # XoRL takes these as offsets around 1.0 (eps_clip / eps_clip_high); Tinker
+  # receives the equivalent absolute thresholds 0.8 / 1.28. The mapping is done
+  # by TrainerConfig.effective_loss_fn_params per backend.
+  ppo_clip_low: 0.2
+  ppo_clip_high: 0.28
+  loss_fn_params:
+    compute_kl_stats: true
+  steps: 60
+  learning_rate: 0.00001
+  learning_rate_schedule: constant
+  learning_rate_warmup_steps: 0
+  min_learning_rate: 0.0
+  beta1: 0.9
+  beta2: 0.95
+  eps: 0.00000001
+  weight_decay: 0.0
+  grad_clip_norm: 1.0
+  checkpoint_every: 10
+  advantage_std_normalization: false
+  skip_zero_advantage_trajectories: false
+  remove_constant_reward_groups: true
+wordle:
+  train_targets_path: data/train_targets.txt
+  eval_targets_path: data/eval_targets.txt
+  legal_guesses_path: data/legal_guesses.txt
+  train_targets: 4000
+  eval_targets: 170
+  targets_per_step: 32
+  target_selection: shuffled_epochs_without_replacement
+  group_size: 8
+  max_turns: 6
+  reward: shaped
+  target_seed: 9234
+generation:
+  max_new_tokens: 512
+  max_length: 6144
+  temperature: 1.0
+  top_p: 1.0
+  top_k: -1
+  ignore_eos: true
+  stop: ["</guess>"]
+  batch_size: 128
+  concurrency: 8
+  sampling_seed: 9234
+  timeout: 3600
+  max_retries: 3
+artifacts:
+  output_dir: outputs/wordle/tinker-matched
+  resume_from: null
+  source_root: .
+wandb:
+  project: ""
+  entity: ""
+  name: ""
+  group: ""
+  tags: []
+  log_samples: 0
+router_replay:
+  enabled: false
+  max_payload_bytes: 268435456
+backends:
+  xorl:
+    trainer_url: ""
+    generation_url: ""
+    sync_urls: []
+    # Pairwise trainer<->sampler NCCL groups per endpoint pool (r0, r1, ...);
+    # a single group over every endpoint hangs on multi-replica fleets.
+    sync_world_size: 2
+    sync_pool_per_endpoint: true
+    sync_method: nccl
+    sync_buffer_mb: 1024
+    streaming:
+      pipeline_rl: false
+      min_datums_per_submission: 8
+      max_groups_per_submission: 8
+      queue_max_groups: 32
+  tinker:
+    base_model: Qwen/Qwen3.5-4B
+    run_name: wordle-matched-lora32
+    sample_inflight: 256
+    sample_timeout: 3600
+    operation_timeout: 3600

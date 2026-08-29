@@ -129,7 +129,9 @@ def compute_k3_metrics(
             "ratio_min": float(ratio.min()),
             "ratio_max": float(ratio.max()),
             "logratio_mean": float(delta.mean()),
+            "sq_logratio_mean": float((delta * delta).mean()),
             "abs_logratio_mean": float(np.abs(delta).mean()),
+            "abs_logratio_p99": float(np.percentile(np.abs(delta), 99)),
             "abs_logratio_max": float(np.abs(delta).max()),
         }
     )
